@@ -12,6 +12,7 @@ import type {
   LiveFeedEvent,
   LiveGroundingSource,
   PatentGrantCaptureTelemetry,
+  ProbeExecutionRecord,
   SanctionsTradeTelemetry,
   ShadowFinanceTelemetry,
   SwarmBehaviorTelemetry,
@@ -27,7 +28,21 @@ import {
 } from '../src/forensics/stealthAndAdversarialProbe.ts';
 import { safeForensicFetch } from './adversarialShield.ts';
 import { fetchLiveBitcoinMainnetTip } from './blockchainAnchor.ts';
+import { runDeepLiveProbes } from './deepLiveProbes.ts';
 import { liveDaemon } from './liveIngestionDaemon.ts';
+import {
+  detectUnknownFraudAnomalies,
+  type KnownFraudTypologyHit,
+  type TelemetryVector,
+} from '../src/engine/unknownFraudDetector.ts';
+import {
+  crawlSubsidiaryTree,
+  deriveSubsidiaryPivotDomains,
+  detectOrchestratedSwarmAndCyber,
+  identifyExhibit21ShadowCandidates,
+  type SubsidiaryAndSwarmSynthesis,
+} from '../src/engine/subsidiaryAndSwarmMapper.ts';
+import { discoverPrivateEntityFootprint } from '../src/engine/privateEntityDiscovery.ts';
 
 export interface LiveSearchParams {
   query: string;
@@ -37,6 +52,12 @@ export interface LiveSearchParams {
   constraints?: string;
   uploadedFileContext?: string;
 }
+
+export type LiveInvestigationStreamEvent =
+  | { type: 'stage'; stage: string; progress: number; detail: string; timestampIso: string }
+  | { type: 'probe'; probe: ProbeExecutionRecord; completedProbes: number; estimatedTotalProbes: number }
+  | { type: 'complete'; intelligence: LiveBusinessIntelligence }
+  | { type: 'error'; error: string };
 
 const DEFAULT_UA = 'SovereignInvestigationsGrid/2.0 (research@sovereigngrid.local)';
 const BROWSER_UA =
@@ -3052,27 +3073,189 @@ async function fetchLegalSlappBankruptcyTelemetry(searchName: string): Promise<L
 // MAIN EXPORTED ZERO-KEY LIVE OSINT SYNTHESIZER
 // =============================================================================
 export async function runLiveOsintInvestigation(
-  params: LiveSearchParams
+  params: LiveSearchParams,
+  onProgress?: (event: LiveInvestigationStreamEvent) => void
 ): Promise<LiveBusinessIntelligence> {
   const query = params.query.trim();
   const { coreName, locationHint } = extractBusinessAndLocationHint(query);
   const registriesQueried: string[] = [];
   const startTrapsCount = globalPromptTrapsObserved;
   const startTruncationsCount = globalStreamTruncationsObserved;
+  const probeTelemetry: ProbeExecutionRecord[] = [];
+  const ESTIMATED_TOTAL_PROBES = 34;
+
+  const emitStage = (stage: string, progress: number, detail: string) => {
+    onProgress?.({
+      type: 'stage',
+      stage,
+      progress,
+      detail,
+      timestampIso: new Date().toISOString(),
+    });
+  };
+
+  const recordProbe = (rec: ProbeExecutionRecord) => {
+    probeTelemetry.push(rec);
+    onProgress?.({
+      type: 'probe',
+      probe: rec,
+      completedProbes: probeTelemetry.length,
+      estimatedTotalProbes: ESTIMATED_TOTAL_PROBES,
+    });
+  };
+
+  async function trackProbe<T>(
+    meta: {
+      probeId: string;
+      sourceName: string;
+      phase: ProbeExecutionRecord['phase'];
+      squads: string[];
+    },
+    fn: () => Promise<T>,
+    describe: (val: T) => { recordsFound: number; summary: string; url?: string }
+  ): Promise<T> {
+    const t0 = Date.now();
+    try {
+      const val = await fn();
+      const info = describe(val);
+      recordProbe({
+        ...meta,
+        status: info.recordsFound > 0 ? 'ok' : 'empty',
+        latencyMs: Date.now() - t0,
+        recordsFound: info.recordsFound,
+        summary: info.summary,
+        url: info.url,
+        timestampIso: new Date().toISOString(),
+      });
+      return val;
+    } catch (err) {
+      recordProbe({
+        ...meta,
+        status: 'error',
+        latencyMs: Date.now() - t0,
+        recordsFound: 0,
+        summary: err instanceof Error ? err.message : 'Probe unreachable',
+        timestampIso: new Date().toISOString(),
+      });
+      throw err;
+    }
+  }
+
+  emitStage(
+    'Phase 1: Parallel Global Registries, GLEIF LEI, Wikidata, EPA ECHO & Bitcoin Mainnet Tip',
+    12,
+    `Dispatching 11 concurrent statutory & open-web probes for "${query}"`
+  );
 
   // Phase 1: Parallel zero-key OSINT probe across primary, global & specialized registries + Live Bitcoin Tip
   const [wd, ddgIa, webHits, gleif, nominatim, yahoo, spec, ukCh, dbpedia, epaFacilities, btcTip] = await Promise.all([
-    fetchWikidataIntelligence(query),
-    fetchDuckDuckGoIA(coreName || query),
-    fetchWebIntelligenceMulti(query, params.geography),
-    fetchGleifIntelligence(coreName || query),
-    fetchNominatimLocations(query, params.geography),
-    fetchYahooFinanceIntelligence(query),
-    fetchSpecializedRegistries(query),
-    fetchUkCompaniesHouse(query),
-    fetchDbpediaIntelligence(query),
-    fetchEpaEchoFacilities(query),
-    fetchLiveBitcoinMainnetTip(),
+    trackProbe(
+      { probeId: 'wikidata', sourceName: 'Wikidata Structured Knowledge Graph', phase: 'Phase 1', squads: ['A', 'D'] },
+      () => fetchWikidataIntelligence(query),
+      (v) => ({
+        recordsFound: v ? 1 + (v.subsidiaries?.length || 0) : 0,
+        summary: v ? `Matched ${v.qid} (${v.label}) · ${v.subsidiaries.length} subsidiaries` : 'No Wikidata entity match',
+        url: v?.url,
+      })
+    ),
+    trackProbe(
+      { probeId: 'ddg_ia', sourceName: 'DuckDuckGo Instant Answer & Infobox', phase: 'Phase 1', squads: ['A'] },
+      () => fetchDuckDuckGoIA(coreName || query),
+      (v) => ({
+        recordsFound: v && (v.abstract || v.officialSite) ? 1 : 0,
+        summary: v?.officialSite ? `Site: ${v.officialSite}` : v?.abstract ? 'Abstract retrieved' : 'No instant answer',
+        url: v?.officialSite,
+      })
+    ),
+    trackProbe(
+      { probeId: 'web_multi', sourceName: 'Bing / Google News / DuckDuckGo / HN Multi-Index', phase: 'Phase 1', squads: ['A', 'E', 'H'] },
+      () => fetchWebIntelligenceMulti(query, params.geography),
+      (v) => ({
+        recordsFound: v.length,
+        summary: `${v.length} live open-web & 30d news hits indexed`,
+        url: v[0]?.url,
+      })
+    ),
+    trackProbe(
+      { probeId: 'gleif_lei', sourceName: 'GLEIF Global LEI & Parent/Child Tree', phase: 'Phase 1', squads: ['B', 'D', 'F'] },
+      () => fetchGleifIntelligence(coreName || query),
+      (v) => ({
+        recordsFound: v ? 1 + v.directChildren.length : 0,
+        summary: v ? `LEI ${v.primaryLei} (${v.country}) · ${v.directChildren.length} children` : 'No LEI record matched',
+        url: v ? `https://search.gleif.org/#/record/${v.primaryLei}` : undefined,
+      })
+    ),
+    trackProbe(
+      { probeId: 'osm_nominatim', sourceName: 'OpenStreetMap Nominatim & Photon POI', phase: 'Phase 1', squads: ['C', 'D'] },
+      () => fetchNominatimLocations(query, params.geography),
+      (v) => ({
+        recordsFound: v.length,
+        summary: v.length > 0 ? `${v.length} physical location(s) (${v[0].city || v[0].country})` : 'No local POI matched',
+        url: v[0]?.osmUrl,
+      })
+    ),
+    trackProbe(
+      { probeId: 'yahoo_search', sourceName: 'Yahoo Finance Entity & Live News Wire', phase: 'Phase 1', squads: ['F', 'O'] },
+      () => fetchYahooFinanceIntelligence(query),
+      (v) => ({
+        recordsFound: v ? 1 + v.news.length : 0,
+        summary: v ? `${v.symbol || v.shortname} · ${v.news.length} news articles` : 'No Yahoo Finance profile',
+        url: v?.news[0]?.link,
+      })
+    ),
+    trackProbe(
+      { probeId: 'specialized_regs', sourceName: 'ProPublica 990 / FDIC / OpenFDA / ClinicalTrials / GitHub', phase: 'Phase 1', squads: ['B', 'C', 'N'] },
+      () => fetchSpecializedRegistries(query),
+      (v) => {
+        const count =
+          (v.nonprofit ? 1 : 0) +
+          (v.fdicBank ? 1 : 0) +
+          v.clinicalTrials.length +
+          v.fdaClearances.length +
+          (v.githubOrg ? 1 : 0);
+        return {
+          recordsFound: count,
+          summary: count > 0 ? `${count} specialized registry record(s) matched` : 'No specialized sector matches',
+          url: v.githubOrg?.url || v.nonprofit?.url || v.clinicalTrials[0]?.url,
+        };
+      }
+    ),
+    trackProbe(
+      { probeId: 'uk_companies_house', sourceName: 'UK Companies House Registry', phase: 'Phase 1', squads: ['B', 'D'] },
+      () => fetchUkCompaniesHouse(query),
+      (v) => ({
+        recordsFound: v ? 1 : 0,
+        summary: v ? `#${v.companyNumber} (${v.statusMeta || 'Registered'})` : 'No UK CH filing matched',
+        url: v?.url,
+      })
+    ),
+    trackProbe(
+      { probeId: 'dbpedia', sourceName: 'DBpedia Semantic Entity Graph', phase: 'Phase 1', squads: ['A', 'D'] },
+      () => fetchDbpediaIntelligence(query),
+      (v) => ({
+        recordsFound: v ? 1 : 0,
+        summary: v ? `Matched ${v.label}` : 'No DBpedia graph node',
+        url: v?.resourceUrl,
+      })
+    ),
+    trackProbe(
+      { probeId: 'epa_echo', sourceName: 'US EPA ECHO Environmental Enforcement', phase: 'Phase 1', squads: ['M'] },
+      () => fetchEpaEchoFacilities(query),
+      (v) => ({
+        recordsFound: v.length,
+        summary: v.length > 0 ? `${v.length} regulated EPA facility record(s)` : 'Zero EPA ECHO facilities matched',
+        url: v[0] ? `https://echo.epa.gov/detailed-facility-report?fid=${v[0].sourceId}` : undefined,
+      })
+    ),
+    trackProbe(
+      { probeId: 'bitcoin_tip', sourceName: 'Bitcoin Mainnet Proof-of-Work Chain Tip', phase: 'Phase 1', squads: ['E', 'O'] },
+      () => fetchLiveBitcoinMainnetTip(),
+      (v) => ({
+        recordsFound: v ? 1 : 0,
+        summary: v ? `Block #${v.bitcoinBlockHeight} (${v.bitcoinBlockHash.slice(0, 14)}...)` : 'Chain tip unreachable',
+        url: v?.providerUrl,
+      })
+    ),
   ]);
 
   if (wd) registriesQueried.push('Wikidata Structured Knowledge Graph');
@@ -3119,16 +3302,127 @@ export async function runLiveOsintInvestigation(
   const allowSecTickerGuess = !wd?.dissolvedDate;
 
   const searchBase = coreName || query;
+  // Launch recursive GLEIF Level-2 Subsidiary & Opacity Tree crawl in parallel with Phase 2 & 2B (zero added latency)
+  const gleifSubTreePromise = trackProbe(
+    {
+      probeId: 'gleif_level2_tree',
+      sourceName: 'GLEIF Level-2 Recursive Subsidiary Tree & Opacity Exceptions',
+      phase: 'Phase 2',
+      squads: ['D', 'F', 'I'],
+    },
+    () => crawlSubsidiaryTree(wd?.officialName || wd?.label || gleif?.legalName || searchBase, 2, 25, gleif?.primaryLei),
+    (nodes) => {
+      const opaqueCount = nodes.filter((n) => n.opacityRiskFlag).length;
+      return {
+        recordsFound: nodes.length,
+        summary:
+          nodes.length > 0
+            ? `${nodes.length} GLEIF Level-2 node(s) mapped (${Math.max(0, nodes.length - 1)} child entities · ${opaqueCount} opacity exception flag(s))`
+            : 'No GLEIF Level-2 parent/child LEI hierarchy returned',
+        url: nodes[0]?.gleifUrl,
+      };
+    }
+  );
+
+  // Launch v19.0 Private-Entity Shadow Discovery (SEC EFTS Form D + 10-K/8-K Counterparties + ClinicalTrials v2 + openFDA + OpenAlex) concurrently with Phase 2 & 2B
+  const privateDiscoveryPromise = trackProbe(
+    {
+      probeId: 'private_entity_discovery',
+      sourceName: 'Private-Entity Shadow Discovery (SEC EFTS / ClinicalTrials v2 / openFDA / OpenAlex)',
+      phase: 'Phase 2',
+      squads: ['D', 'F', 'N'],
+    },
+    () => discoverPrivateEntityFootprint(searchBase),
+    (rep) => ({
+      recordsFound: rep.totalSignals,
+      summary:
+        rep.totalSignals > 0
+          ? `${rep.totalSignals} shadow signal(s) (${rep.formDCount} Form D · ${rep.counterpartyMentionsCount} 10-K/8-K counterparties · ${rep.clinicalTrialsCount} trials · ${rep.openFdaRecallsCount} FDA · ${rep.openAlexInstitutionsCount} OpenAlex)`
+          : 'Zero private-entity shadow filings matched across SEC EFTS / ClinicalTrials / openFDA / OpenAlex',
+      url: rep.signals[0]?.url,
+    })
+  );
+
+  emitStage(
+    'Phase 2: SEC EDGAR Submissions & Form D, USASpending, Senate LDA Lobbying, Federal Register & Official Site',
+    35,
+    `Probing statutory filings, federal contracts, lobbying disclosures & corporate web presence for "${searchBase}"`
+  );
+
   const [wiki, sec, usaAwards, siteMeta, formDOfferings, lobbyingFilings, fedRegisterDocs, patentWebHits] =
     await Promise.all([
-      fetchWikipediaIntelligence(query, wd?.wikiTitle),
-      allowSecTickerGuess || wd?.secCik ? fetchSecIntelligence(query, wd?.secCik) : Promise.resolve(null),
-      fetchUsaSpendingAwards(legalNameHint),
-      fetchWebsiteMetadata(candidateWebsite),
-      fetchSecFormDOfferings(searchBase),
-      fetchSenateLobbying(searchBase),
-      fetchFederalRegister(searchBase),
-      runSingleBingQuery(`"${searchBase}" site:patents.google.com OR uspto assignee`, 'structure'),
+      trackProbe(
+        { probeId: 'wikipedia', sourceName: 'Wikipedia Full-Text Section Parser', phase: 'Phase 2', squads: ['A', 'E'] },
+        () => fetchWikipediaIntelligence(query, wd?.wikiTitle),
+        (v) => ({
+          recordsFound: v ? 1 : 0,
+          summary: v ? `Parsed "${v.title}" (${v.fullExtract.length} chars)` : 'No Wikipedia article matched',
+          url: v?.url,
+        })
+      ),
+      trackProbe(
+        { probeId: 'sec_edgar', sourceName: 'SEC EDGAR Submissions & Filings Index', phase: 'Phase 2', squads: ['B', 'F', 'J', 'K'] },
+        () => (allowSecTickerGuess || wd?.secCik ? fetchSecIntelligence(query, wd?.secCik) : Promise.resolve(null)),
+        (v) => ({
+          recordsFound: v ? 1 + v.recentFilings.length : 0,
+          summary: v ? `CIK ${v.cik} (${v.tickers[0] || 'Private'}) · ${v.recentFilings.length} filings` : 'No SEC EDGAR issuer match',
+          url: v?.submissionsUrl,
+        })
+      ),
+      trackProbe(
+        { probeId: 'usaspending', sourceName: 'USASpending.gov Federal Awards & Grants', phase: 'Phase 2', squads: ['B', 'D', 'F'] },
+        () => fetchUsaSpendingAwards(legalNameHint),
+        (v) => ({
+          recordsFound: v.length,
+          summary: v.length > 0 ? `${v.length} federal contract/grant award(s) retrieved` : 'No US federal awards matched',
+          url: v.length > 0 ? 'https://www.usaspending.gov/search' : undefined,
+        })
+      ),
+      trackProbe(
+        { probeId: 'site_meta', sourceName: 'Official Website Schema.org & /About Parser', phase: 'Phase 2', squads: ['A', 'C'] },
+        () => fetchWebsiteMetadata(candidateWebsite),
+        (v) => ({
+          recordsFound: v ? 1 : 0,
+          summary: v ? `${v.url} · ${v.title?.slice(0, 60) || 'Metadata extracted'}` : 'Official site not resolved',
+          url: v?.url,
+        })
+      ),
+      trackProbe(
+        { probeId: 'sec_form_d', sourceName: 'SEC EFTS Form D Exempt SPV Offerings', phase: 'Phase 2', squads: ['F'] },
+        () => fetchSecFormDOfferings(searchBase),
+        (v) => ({
+          recordsFound: v.length,
+          summary: v.length > 0 ? `${v.length} Form D exempt offering(s) indexed` : 'Zero Form D exempt offerings matched',
+          url: v[0]?.url,
+        })
+      ),
+      trackProbe(
+        { probeId: 'senate_lda', sourceName: 'US Senate LDA Revolving-Door Lobbying Registry', phase: 'Phase 2', squads: ['F'] },
+        () => fetchSenateLobbying(searchBase),
+        (v) => ({
+          recordsFound: v.length,
+          summary: v.length > 0 ? `${v.length} lobbying filing(s) retrieved` : 'Zero Senate LDA filings matched',
+          url: v[0]?.url,
+        })
+      ),
+      trackProbe(
+        { probeId: 'federal_register', sourceName: 'US Federal Register Executive & Regulatory API', phase: 'Phase 2', squads: ['B', 'F'] },
+        () => fetchFederalRegister(searchBase),
+        (v) => ({
+          recordsFound: v.length,
+          summary: v.length > 0 ? `${v.length} Federal Register regulatory notice(s)` : 'Zero Federal Register notices matched',
+          url: v[0]?.url,
+        })
+      ),
+      trackProbe(
+        { probeId: 'patents_web', sourceName: 'USPTO / Google Patents Assignee Index', phase: 'Phase 2', squads: ['F', 'N'] },
+        () => runSingleBingQuery(`"${searchBase}" site:patents.google.com OR uspto assignee`, 'structure'),
+        (v) => ({
+          recordsFound: v.length,
+          summary: v.length > 0 ? `${v.length} patent assignee reference(s)` : 'Zero patent web leads',
+          url: v[0]?.url,
+        })
+      ),
     ]);
 
   // Phase 2B: Dependent on CIK / Verified Domain -> XBRL Facts + Cyber DNS/BGP/CT/CVE + Squad I Sanctions
@@ -3142,14 +3436,47 @@ export async function runLiveOsintInvestigation(
     ...(wd?.executives || []).slice(0, 3),
   ];
 
+  emitStage(
+    'Phase 2B: SEC XBRL GAAP Forensics, Passive DNS/BGP/CT/NVD & OFAC/BIS Sanctions Screening',
+    58,
+    `Executing cryptographic DNS/BGP/CT logs, XBRL financial ratios & Jaro-Winkler sanctions screening`
+  );
+
   const [xbrlResult, cyberProbe, sanctionsTrade] = await Promise.all([
-    sec?.cik ? fetchSecXbrlFacts(sec.cik) : Promise.resolve({ facts: [], annualCurrent: null, annualPrior: null }),
-    fetchCyberInfraTelemetry(resolvedSiteUrl, searchBase, webHits),
-    fetchSanctionsAndTradeTelemetry(searchBase, initialCandidateNames),
+    trackProbe(
+      { probeId: 'sec_xbrl', sourceName: 'SEC EDGAR CompanyFacts XBRL Ledger', phase: 'Phase 2B', squads: ['F', 'J'] },
+      () => (sec?.cik ? fetchSecXbrlFacts(sec.cik) : Promise.resolve({ facts: [], annualCurrent: null, annualPrior: null })),
+      (v) => ({
+        recordsFound: v.facts.length,
+        summary: v.facts.length > 0 ? `${v.facts.length} XBRL GAAP fact series points parsed` : 'No public XBRL facts available',
+        url: sec?.cik ? `https://data.sec.gov/api/xbrl/companyfacts/CIK${sec.cik}.json` : undefined,
+      })
+    ),
+    trackProbe(
+      { probeId: 'cyber_infra', sourceName: 'Cloudflare DoH / RIPEstat BGP / crt.sh CT / NVD CVE', phase: 'Phase 2B', squads: ['G'] },
+      () => fetchCyberInfraTelemetry(resolvedSiteUrl, searchBase, webHits),
+      (v) => ({
+        recordsFound:
+          v.telemetry.resolvedIps.length +
+          v.telemetry.ctSubdomains.length +
+          v.telemetry.disclosedCves.length,
+        summary: `${v.telemetry.resolvedIps.length} IP(s) · ${v.telemetry.asnInfo.length} ASN(s) · ${v.telemetry.ctSubdomains.length} CT subdomains · ${v.telemetry.disclosedCves.length} NVD CVE(s)`,
+        url: v.telemetry.primaryDomain ? `https://crt.sh/?q=${encodeURIComponent(v.telemetry.primaryDomain)}` : undefined,
+      })
+    ),
+    trackProbe(
+      { probeId: 'sanctions_trade', sourceName: 'OFAC / Commerce BIS Sanctions & PEP Screening', phase: 'Phase 2B', squads: ['I'] },
+      () => fetchSanctionsAndTradeTelemetry(searchBase, initialCandidateNames),
+      (v) => ({
+        recordsFound: v.ofacBisNotices.length + v.pepAndOffshoreHits.length,
+        summary: v.screeningVerdict.slice(0, 120),
+        url: v.ofacBisNotices[0]?.url,
+      })
+    ),
   ]);
   const xbrlFacts = xbrlResult.facts;
 
-  // Phase 2C: Squad K (CFPB/OSHA/NLRB/Form4 Timing) & Squad L (Wayback CDX, Unicode Prompt Injection, CISA KEV, RPKI, Abuse.ch)
+  // Phase 2C & Phase 3 (Parallel): Squads K–P + Deep Attack Surface (Shodan InternetDB, HTTP/CSP Origin Extractor, RDAP/DNSSEC, npm/PyPI + OSV.dev, Wikimedia 14d Attention, Live Yahoo Finance Quote)
   const combinedCorpusForAdversarial = [
     siteMeta?.description || '',
     siteMeta?.aboutSummary || '',
@@ -3161,6 +3488,31 @@ export async function runLiveOsintInvestigation(
     ...(cyberProbe.telemetry.cyberNewsHits.map((n) => n.date)),
   ];
 
+  emitStage(
+    'Phase 2C & Phase 3: Shodan InternetDB, CSP Origin Audit, RDAP/DNSSEC, OSV.dev, CourtListener, EPA ECHO & 13F',
+    78,
+    `Running live attack-surface fingerprinting, open-source CVE audit, judicial dockets & 14d attention velocity`
+  );
+
+  const primaryTickerForQuote =
+    (sec?.isPublicEquityIssuer && sec.tickers[0]) ||
+    (yahoo?.symbol && !yahoo.symbol.includes(' ') ? yahoo.symbol : undefined);
+
+  // Resolve recursive GLEIF Level-2 tree & v19.0 Private-Entity Shadow Discovery before Phase 3/4
+  const [gleifSubTree, privateDiscovery] = await Promise.all([
+    gleifSubTreePromise,
+    privateDiscoveryPromise,
+  ]);
+  const subsidiaryPivotDomains = deriveSubsidiaryPivotDomains(gleifSubTree, resolvedSiteUrl);
+  if (gleifSubTree.length > 0) {
+    registriesQueried.push('GLEIF Level-2 Recursive Subsidiary & Opacity Exception Tree');
+  }
+  if (privateDiscovery.totalSignals > 0) {
+    registriesQueried.push(
+      'Private-Entity Shadow Discovery (SEC EFTS Form D & Counterparty 10-K/8-K · ClinicalTrials v2 · openFDA · OpenAlex)'
+    );
+  }
+
   const [
     insiderLabor,
     adversarialInfra,
@@ -3168,14 +3520,119 @@ export async function runLiveOsintInvestigation(
     patentGrantCapture,
     darkPoolCrypto,
     legalSlappBankruptcy,
+    deepProbeOut,
   ] = await Promise.all([
-    fetchInsiderAndLaborTelemetry(searchBase, sec, rawDocketDates),
-    fetchAdversarialAndDarkInfraTelemetry(searchBase, cyberProbe.telemetry, combinedCorpusForAdversarial),
-    fetchEnvironmentalEpaTelemetry(searchBase, epaFacilities),
-    fetchPatentAndGrantCaptureTelemetry(searchBase),
-    fetchDarkPoolAndCryptoTelemetry(searchBase, btcTip),
-    fetchLegalSlappBankruptcyTelemetry(searchBase),
+    trackProbe(
+      { probeId: 'insider_labor', sourceName: 'SEC Form 4/8-K + CFPB Complaints + OSHA/NLRB', phase: 'Phase 2C', squads: ['K'] },
+      () => fetchInsiderAndLaborTelemetry(searchBase, sec, rawDocketDates),
+      (v) => ({
+        recordsFound: v.form4AndOwnershipFilings.length + v.cfpbComplaintsTotal,
+        summary: `${v.form4AndOwnershipFilings.length} Form 4/ownership · ${v.cfpbComplaintsTotal} CFPB complaints`,
+        url: v.form4AndOwnershipFilings[0]?.url,
+      })
+    ),
+    trackProbe(
+      { probeId: 'adversarial_infra', sourceName: 'Wayback CDX Diff + CISA KEV + RPKI ROA + Abuse.ch', phase: 'Phase 2C', squads: ['L'] },
+      () => fetchAdversarialAndDarkInfraTelemetry(searchBase, cyberProbe.telemetry, combinedCorpusForAdversarial),
+      (v) => ({
+        recordsFound: v.waybackSnapshotsFound + v.cisaKevMatches.length + v.rpkiValidation.length,
+        summary: `Wayback: ${v.waybackSnapshotsFound} snaps · CISA KEV: ${v.cisaKevMatches.length} · PromptTrap=${v.adversarialPromptInjectionIndicators.threatLevel}`,
+        url: cyberProbe.telemetry.primaryDomain
+          ? `https://web.archive.org/web/*/${cyberProbe.telemetry.primaryDomain}`
+          : undefined,
+      })
+    ),
+    trackProbe(
+      { probeId: 'epa_multi_statute', sourceName: 'EPA ECHO Multi-Statute (CWA/CAA/RCRA) Audit', phase: 'Phase 2C', squads: ['M'] },
+      () => fetchEnvironmentalEpaTelemetry(searchBase, epaFacilities),
+      (v) => ({
+        recordsFound: v.epaFacilitiesCount,
+        summary: `${v.epaFacilitiesCount} facilities · $${Math.round(v.totalPenaltiesUsd).toLocaleString('en-US')} penalties`,
+        url: v.facilities[0]?.sourceUrl,
+      })
+    ),
+    trackProbe(
+      { probeId: 'patent_grant_capture', sourceName: 'NIH RePORTER / NSF Awards / OpenAlex Bayh-Dole', phase: 'Phase 2C', squads: ['N'] },
+      () => fetchPatentAndGrantCaptureTelemetry(searchBase),
+      (v) => ({
+        recordsFound: v.nihAwardsCount + v.nsfAwardsCount + v.openAlexWorksCount,
+        summary: `${v.nihAwardsCount} NIH + ${v.nsfAwardsCount} NSF grants · ${v.openAlexWorksCount} academic works`,
+        url: v.publicGrants[0]?.url || v.academicWorks[0]?.url,
+      })
+    ),
+    trackProbe(
+      { probeId: 'darkpool_crypto', sourceName: 'SEC Form 13F-HR / NPORT-P & Mempool Fee Telemetry', phase: 'Phase 2C', squads: ['O'] },
+      () => fetchDarkPoolAndCryptoTelemetry(searchBase, btcTip),
+      (v) => ({
+        recordsFound: v.form13fAndNportFilings.length + (v.mempoolTipHeight ? 1 : 0),
+        summary: `${v.form13fAndNportFilings.length} 13F/NPORT filings · BTC Tip #${v.mempoolTipHeight ?? 'N/A'}`,
+        url: v.form13fAndNportFilings[0]?.url,
+      })
+    ),
+    trackProbe(
+      { probeId: 'courtlistener', sourceName: 'CourtListener REST v4 Federal Dockets & SLAPP', phase: 'Phase 2C', squads: ['P'] },
+      () => fetchLegalSlappBankruptcyTelemetry(searchBase),
+      (v) => ({
+        recordsFound: v.courtDockets.length,
+        summary: `${v.courtDockets.length} federal docket(s) sampled (total ${v.courtListenerDocketsCount})`,
+        url: v.courtDockets[0]?.url,
+      })
+    ),
+    runDeepLiveProbes({
+      entityName: wd?.label || coreName || query,
+      wikiTitle: wiki?.title || wd?.wikiTitle || coreName || query,
+      websiteUrl: resolvedSiteUrl,
+      resolvedIps: cyberProbe.telemetry.resolvedIps,
+      ctSubdomains: cyberProbe.telemetry.ctSubdomains,
+      subsidiaryPivotDomains,
+      existingCves: cyberProbe.telemetry.disclosedCves.map((c) => c.cveId),
+      tickerSymbol: primaryTickerForQuote,
+      onProbeComplete: (rec) => recordProbe(rec),
+    }),
   ]);
+  const deepAttackSurface = deepProbeOut.telemetry;
+
+  if (deepAttackSurface.shodanHosts.length > 0) {
+    registriesQueried.push('Shodan InternetDB Live IP Ports, CPEs & CVEs');
+  }
+  if (deepAttackSurface.httpSecurityAudit) {
+    registriesQueried.push('Live HTTP Security Headers & CSP Backend Origin Extractor');
+  }
+  if (deepAttackSurface.rdapAndDnssec) {
+    registriesQueried.push('Authoritative RDAP & Google DoH DNSSEC Validation');
+  }
+  if (deepAttackSurface.mozillaObservatory || deepAttackSurface.hstsPreload) {
+    registriesQueried.push('Mozilla MDN HTTP Observatory & Chrome HSTS Preload');
+  }
+  if ((deepAttackSurface.epssScores || []).length > 0) {
+    registriesQueried.push('FIRST.org EPSS 30-Day Exploit Prediction');
+  }
+  if (deepAttackSurface.spamhausDropCheck) {
+    registriesQueried.push('Spamhaus DROP & Abuse.ch SSLBL Threat Netblocks');
+  }
+  if ((deepAttackSurface.commonCrawlSnapshots || []).length > 0) {
+    registriesQueried.push('Common Crawl Historical Web Index');
+  }
+  if (
+    deepAttackSurface.softwareSupplyChain.npmPackages.length > 0 ||
+    deepAttackSurface.softwareSupplyChain.pypiPackage ||
+    (deepAttackSurface.softwareSupplyChain.cratesIoPackages || []).length > 0 ||
+    (deepAttackSurface.softwareSupplyChain.dockerHubRepos || []).length > 0
+  ) {
+    registriesQueried.push('npm / PyPI / Crates.io / Docker Hub & Google OSV.dev CVEs');
+  }
+  if ((deepAttackSurface.recursivePivots || []).some((p) => p.status === 'HIT')) {
+    registriesQueried.push('Phase-4 Autonomous Recursive Pivot Queue (CSP & crt.sh SANs)');
+  }
+  if (
+    deepAttackSurface.publicAttention.dailyViews.length > 0 ||
+    deepAttackSurface.publicAttention.hackerNewsThreads.length > 0
+  ) {
+    registriesQueried.push('Wikimedia 14d Pageview Velocity & Hacker News Algolia');
+  }
+  if (deepAttackSurface.liveMarketQuote) {
+    registriesQueried.push(`Yahoo Finance v8 Live Quote (${deepAttackSurface.liveMarketQuote.symbol})`);
+  }
 
   if (usaAwards.length > 0) registriesQueried.push('USASpending.gov Federal Awards & Grants');
   if (wiki) registriesQueried.push('Wikipedia Encyclopedic Full-Text Parser');
@@ -3231,6 +3688,12 @@ export async function runLiveOsintInvestigation(
   if (ukCh) addSource(`UK Companies House: ${ukCh.name} (#${ukCh.companyNumber})`, ukCh.url, 'uk_companies_house');
   if (gleif) {
     addSource(`GLEIF LEI: ${gleif.legalName} (${gleif.primaryLei})`, `https://search.gleif.org/#/record/${gleif.primaryLei}`, 'gleif_lei');
+  }
+  for (const subNode of gleifSubTree.slice(1, 8)) {
+    addSource(`GLEIF Level-2 Subsidiary: ${subNode.legalName} (${subNode.lei})`, subNode.gleifUrl, 'gleif_lei');
+  }
+  for (const sig of privateDiscovery.signals.slice(0, 8)) {
+    addSource(`${sig.source}: ${sig.entityName} (${sig.recordId})`, sig.url, 'sec_edgar');
   }
   if (sec) {
     addSource(`SEC EDGAR: ${sec.legalName} (CIK ${sec.cik})`, sec.submissionsUrl, 'sec_edgar');
@@ -3315,6 +3778,29 @@ export async function runLiveOsintInvestigation(
   }
   for (const cd of legalSlappBankruptcy.courtDockets.slice(0, 3)) {
     addSource(`CourtListener (${cd.court}): ${cd.caseName}`, cd.url, 'court_docket');
+  }
+  for (const sh of deepAttackSurface.shodanHosts.slice(0, 2)) {
+    addSource(`Shodan InternetDB (${sh.ip}: ${sh.ports.length} ports, ${sh.vulns.length} CVEs)`, sh.sourceUrl, 'cyber_dns_bgp');
+  }
+  if (deepAttackSurface.rdapAndDnssec?.rdapServer.startsWith('http')) {
+    addSource(
+      `Authoritative RDAP (${deepAttackSurface.rdapAndDnssec.domain} · ${deepAttackSurface.rdapAndDnssec.registrar})`,
+      deepAttackSurface.rdapAndDnssec.rdapServer,
+      'cyber_dns_bgp'
+    );
+  }
+  for (const pkg of deepAttackSurface.softwareSupplyChain.npmPackages.slice(0, 2)) {
+    addSource(`npm Supply Chain: ${pkg.name}@${pkg.version}`, pkg.npmUrl, 'official_site');
+  }
+  for (const vuln of deepAttackSurface.softwareSupplyChain.osvVulnerabilities.slice(0, 2)) {
+    addSource(`OSV.dev ${vuln.id} (${vuln.packageName})`, vuln.url, 'cve_advisory');
+  }
+  if (deepAttackSurface.liveMarketQuote) {
+    addSource(
+      `Yahoo Finance Live (${deepAttackSurface.liveMarketQuote.symbol}: ${deepAttackSurface.liveMarketQuote.currency} ${deepAttackSurface.liveMarketQuote.price})`,
+      deepAttackSurface.liveMarketQuote.sourceUrl,
+      'darkpool_crypto'
+    );
   }
   for (const hit of webHits.slice(0, 12)) {
     addSource(
@@ -3642,7 +4128,23 @@ export async function runLiveOsintInvestigation(
   ).slice(0, 12);
   if (productsAndServices.length === 0) productsAndServices.push(industry);
 
-  const { acquisitions, divestitures, dockets, subsidiaries } = extractDealsAndDockets(query, wiki, webHits, gleif, wd);
+  const { acquisitions, divestitures, dockets, subsidiaries: extractedSubsidiaries } = extractDealsAndDockets(
+    query,
+    wiki,
+    webHits,
+    gleif,
+    wd
+  );
+  // Capture Exhibit-21 shadow candidates before merging GLEIF Level-2 discoveries into the unified subsidiaries list
+  const exhibit21ShadowCandidates = identifyExhibit21ShadowCandidates(gleifSubTree, extractedSubsidiaries);
+  const subsidiaries = Array.from(
+    new Set([
+      ...extractedSubsidiaries,
+      ...gleifSubTree
+        .filter((n) => n.depth > 0)
+        .map((n) => `${n.legalName} [${n.jurisdiction}${n.opacityRiskFlag ? ` · OPACITY:${n.reportingExceptions.join('/')}` : ''}]`),
+    ])
+  ).slice(0, 30);
 
   if (sec && sec.recentFilings.length > 0) {
     for (const f of sec.recentFilings.slice(0, 3)) {
@@ -3856,6 +4358,18 @@ export async function runLiveOsintInvestigation(
       identifier: gleif?.primaryLei || '',
     });
   }
+  for (const subNode of gleifSubTree.filter((n) => n.depth > 0).slice(0, 15)) {
+    const parentNode = gleifSubTree.find((p) => p.lei === subNode.parentLei);
+    spvAndParentLinks.push({
+      sourceEntity: parentNode?.legalName || gleif?.legalName || legalName,
+      relatedEntity: `${subNode.legalName} (${subNode.jurisdiction})`,
+      relationshipType: subNode.opacityRiskFlag
+        ? `GLEIF L2 Subsidiary [OPACITY: ${subNode.reportingExceptions.join(', ')}]`
+        : `GLEIF L2 Subsidiary (Depth ${subNode.depth})`,
+      jurisdiction: subNode.jurisdiction || 'Global',
+      identifier: subNode.lei,
+    });
+  }
   for (const m of (gleif?.allMatches || []).slice(0, 6)) {
     if (m.lei !== gleif?.primaryLei) {
       spvAndParentLinks.push({
@@ -4055,6 +4569,319 @@ export async function runLiveOsintInvestigation(
       }
     : undefined;
 
+  // v18.0: Layer-1 Known-Fraud Typology Matrix + Layer-2 Zero-Day Anomaly Detector + MITRE ATLAS v2026.10 Engine
+  const archivedPeers = liveDaemon
+    .getInvestigationArchive(100)
+    .filter((p) => p.entityName.toLowerCase() !== entityName.toLowerCase());
+
+  const peerHardening = archivedPeers
+    .map((p) => p.httpHardeningScore)
+    .filter((v): v is number => typeof v === 'number' && Number.isFinite(v));
+  const peerFri = archivedPeers.map((p) => p.fri).filter((v) => Number.isFinite(v));
+  const peerMai = archivedPeers.map((p) => p.mai).filter((v) => Number.isFinite(v));
+  const peerPorts = archivedPeers.map((p) => p.shodanOpenPortsCount).filter((v) => Number.isFinite(v));
+  const peerOsv = archivedPeers.map((p) => p.osvVulnsCount).filter((v) => Number.isFinite(v));
+  const peerSources = archivedPeers.map((p) => p.sourcesCount).filter((v) => Number.isFinite(v));
+
+  const currentShodanPortsCount = deepAttackSurface.shodanHosts.reduce((acc, h) => acc + h.ports.length, 0);
+  const currentOsvVulnsCount = deepAttackSurface.softwareSupplyChain.osvVulnerabilities.length;
+  const currentHardening = deepAttackSurface.httpSecurityAudit?.hardeningScore ?? null;
+
+  const peerMetrics: TelemetryVector['peerMetrics'] = {
+    ...(currentHardening !== null && peerHardening.length >= 3
+      ? { http_hardening_score: { value: currentHardening, peerValues: peerHardening } }
+      : {}),
+    ...(peerFri.length >= 3 ? { forensic_risk_index: { value: friBase, peerValues: peerFri } } : {}),
+    ...(peerMai.length >= 3 ? { market_asymmetry_index: { value: maiBase, peerValues: peerMai } } : {}),
+    ...(peerPorts.length >= 3 ? { shodan_open_ports: { value: currentShodanPortsCount, peerValues: peerPorts } } : {}),
+    ...(peerOsv.length >= 3 ? { osv_supply_chain_cves: { value: currentOsvVulnsCount, peerValues: peerOsv } } : {}),
+    ...(peerSources.length >= 3 ? { live_sources_density: { value: groundingSources.length, peerValues: peerSources } } : {}),
+  };
+
+  const cspOrigins = deepAttackSurface.httpSecurityAudit?.cspDiscoveredOrigins || [];
+  const highRiskEpss = (deepAttackSurface.epssScores || []).filter((e) => e.epss >= 0.7);
+  const invalidRpki = adversarialInfra.rpkiValidation.filter((r) => r.validity === 'invalid');
+  const spamhausHits = deepAttackSurface.spamhausDropCheck?.matchedCidrs || [];
+  const opacityNodes = gleifSubTree.filter((n) => n.opacityRiskFlag);
+
+  const contradictionChecks: TelemetryVector['contradictionChecks'] = [
+    ...publicClaimsVsReality.map((c) => ({
+      claimSource: c.claimArea,
+      claimAssertion: c.publicClaim,
+      observedTelemetry: c.verifiedReality,
+      contradicts: c.severity === 'HIGH',
+      severity: (c.severity === 'HIGH' ? 'HIGH' : 'MEDIUM') as 'CRITICAL' | 'HIGH' | 'MEDIUM',
+    })),
+    {
+      claimSource: 'Perimeter & Supply-Chain Cyber Posture',
+      claimAssertion: 'Production infrastructure free of actively exploited KEV CVEs, invalid RPKI routes, and DROP netblocks.',
+      observedTelemetry: `CISA KEV=${adversarialInfra.cisaKevMatches.length}, Spamhaus DROP=${spamhausHits.length}, RPKI Invalid=${invalidRpki.length}, High-EPSS(>=0.70)=${highRiskEpss.length}`,
+      contradicts:
+        adversarialInfra.cisaKevMatches.length > 0 ||
+        spamhausHits.length > 0 ||
+        invalidRpki.length > 0 ||
+        highRiskEpss.length > 0,
+      severity:
+        adversarialInfra.cisaKevMatches.length > 0 || spamhausHits.length > 0 ? 'CRITICAL' : 'HIGH',
+    },
+    {
+      claimSource: 'Web Security & Data-Exfiltration Surface (CSP Headers)',
+      claimAssertion: 'Minimal third-party script/origin leakage and hardened transport headers.',
+      observedTelemetry: `HTTP Hardening=${currentHardening ?? 'N/A'}/100 · ${cspOrigins.length} CSP third-party origin(s) exposed`,
+      contradicts: (currentHardening !== null && currentHardening < 50) || cspOrigins.length >= 12,
+      severity: currentHardening !== null && currentHardening < 35 ? 'HIGH' : 'MEDIUM',
+    },
+    {
+      claimSource: 'Environmental & Physical Compliance (US EPA ECHO)',
+      claimAssertion: 'Full statutory compliance across regulated physical facilities.',
+      observedTelemetry: `${environmentalEpa.epaFacilitiesCount} EPA ECHO facilities · $${Math.round(environmentalEpa.totalPenaltiesUsd).toLocaleString('en-US')} formal penalties`,
+      contradicts: environmentalEpa.totalPenaltiesUsd > 0,
+      severity: environmentalEpa.totalPenaltiesUsd >= 100000 ? 'CRITICAL' : 'HIGH',
+    },
+  ];
+
+  const omissionChecks: TelemetryVector['omissionChecks'] = [
+    {
+      artifact: 'DNSSEC Cryptographic Zone Validation (RDAP / Google DoH)',
+      expectedCondition: 'Primary corporate domain should enforce DNSSEC AD=true against BGP/DNS spoofing.',
+      isMissing: Boolean(deepAttackSurface.rdapAndDnssec && !deepAttackSurface.rdapAndDnssec.dnssecValidated),
+      evidenceRef: deepAttackSurface.rdapAndDnssec?.rdapServer || cyber.primaryDomain || 'No domain resolved',
+    },
+    {
+      artifact: 'RFC 9116 /.well-known/security.txt Vulnerability Disclosure Policy',
+      expectedCondition: 'Enterprise web properties should publish machine-readable security contact metadata.',
+      isMissing: Boolean(cyber.primaryDomain && !cyber.securityTxtPresent),
+      evidenceRef: cyber.primaryDomain ? `https://${cyber.primaryDomain}/.well-known/security.txt` : 'No domain resolved',
+    },
+    {
+      artifact: 'GLEIF Level-2 Parent/Child Beneficial Ownership Transparency',
+      expectedCondition: 'Corporate LEI hierarchy should not conceal controlling parents via NO_LEI / NON_CONSOLIDATING / NO_KNOWN_PERSON reporting exceptions.',
+      isMissing: opacityNodes.length > 0,
+      evidenceRef: opacityNodes[0]
+        ? `${opacityNodes[0].legalName} (${opacityNodes[0].lei}): ${opacityNodes[0].reportingExceptions.join(', ')}`
+        : gleif?.primaryLei || 'No GLEIF reporting exceptions observed',
+    },
+    {
+      artifact: 'Wayback CDX Policy Stability (Stealth-Edit Detection)',
+      expectedCondition: 'Legal, privacy, and investor pages should not exhibit high-frequency unannounced churn.',
+      isMissing: adversarialInfra.highFrequencyChurnDetected,
+      evidenceRef: cyber.primaryDomain
+        ? `https://web.archive.org/web/*/${cyber.primaryDomain} (${adversarialInfra.waybackSnapshotsFound} snaps / ${adversarialInfra.uniqueContentDigests} digests)`
+        : 'No Wayback CDX domain probed',
+    },
+    {
+      artifact: 'SEC Form 8-K Item 4.01 / 4.02 Auditor Continuity & Restatement Integrity',
+      expectedCondition: 'Public issuers should have zero auditor dismissals (4.01) or non-reliance restatements (4.02).',
+      isMissing: insiderLabor.item4AuditorOrRestatement8Ks.length > 0,
+      evidenceRef:
+        insiderLabor.item4AuditorOrRestatement8Ks[0]?.url ||
+        (sec?.submissionsUrl ?? 'No SEC 8-K Item 4.01/4.02 flags'),
+    },
+  ];
+
+  const directedEdges: TelemetryVector['directedEdges'] = [
+    ...spvAndParentLinks.map((l) => ({
+      from: l.sourceEntity,
+      to: l.relatedEntity,
+      relation: l.relationshipType,
+    })),
+    ...gleifSubTree
+      .filter((n) => n.parentLei)
+      .map((n) => {
+        const parent = gleifSubTree.find((p) => p.lei === n.parentLei);
+        return {
+          from: parent?.legalName || n.parentLei!,
+          to: n.legalName,
+          relation: 'GLEIF_DIRECT_CHILD',
+        };
+      }),
+  ];
+
+  const beneishScore = accountingForensics.beneishMScore;
+  const altmanZ = accountingForensics.altmanZScore;
+  const sloanRatio = accountingForensics.sloanAccrualRatio;
+
+  const knownTypologyHits: KnownFraudTypologyHit[] = [
+    {
+      domain: 'Financial & Accounting',
+      typology: 'Earnings Manipulation & Bankruptcy Distress (Beneish M-Score / Altman Z / Sloan Accruals)',
+      forensicTest: 'SEC XBRL GAAP M-Score > -1.78, Z-Score < 1.81, Sloan Accruals > 10%',
+      status:
+        beneishScore === null && altmanZ === null
+          ? 'INSUFFICIENT_DATA'
+          : (beneishScore !== null && beneishScore > -1.78) || (altmanZ !== null && altmanZ < 1.81)
+          ? 'TRIGGERED'
+          : sloanRatio !== null && Math.abs(sloanRatio) > 0.1
+          ? 'WATCH'
+          : 'CLEAR',
+      measuredValue: `M=${beneishScore ?? 'N/A'} · Z=${altmanZ ?? 'N/A'} · Sloan=${sloanRatio !== null ? `${(sloanRatio * 100).toFixed(1)}%` : 'N/A'}`,
+      evidenceRef: sec?.cik ? `https://data.sec.gov/api/xbrl/companyfacts/CIK${sec.cik}.json` : 'Private / Non-XBRL issuer',
+    },
+    {
+      domain: 'Market & Insider',
+      typology: 'Pre-Event Insider Trading & Auditor/Restatement Shock (SEC Form 4 / 8-K Item 4.01-4.02)',
+      forensicTest: 'Form 4 insider filing clustering + SEC 8-K Item 4.01/4.02 flags + Live Yahoo Finance volatility',
+      status:
+        insiderLabor.item4AuditorOrRestatement8Ks.length > 0
+          ? 'TRIGGERED'
+          : insiderLabor.form4AndOwnershipFilings.length >= 5 ||
+            (deepAttackSurface.liveMarketQuote && Math.abs(deepAttackSurface.liveMarketQuote.changePercent) >= 8)
+          ? 'WATCH'
+          : sec?.cik
+          ? 'CLEAR'
+          : 'INSUFFICIENT_DATA',
+      measuredValue: `Form4=${insiderLabor.form4AndOwnershipFilings.length} · 8K-4.01/4.02=${insiderLabor.item4AuditorOrRestatement8Ks.length} · Quote=${deepAttackSurface.liveMarketQuote ? `${deepAttackSurface.liveMarketQuote.changePercent.toFixed(2)}%` : 'Private'}`,
+      evidenceRef: insiderLabor.item4AuditorOrRestatement8Ks[0]?.url || insiderLabor.form4AndOwnershipFilings[0]?.url || 'SEC EDGAR',
+    },
+    {
+      domain: 'Corporate & Governance',
+      typology: 'Shell Layering, Exhibit-21 Shadow Entities & Revolving-Door Capture',
+      forensicTest: 'GLEIF Level-2 opacity exceptions + Exhibit-21 shadow entity diff + Senate LDA covered officials + SEC Form D SPVs',
+      status:
+        opacityNodes.length > 0 || exhibit21ShadowCandidates.length >= 2
+          ? 'TRIGGERED'
+          : formDOfferings.length > 0 || totalRevDoors > 0
+          ? 'WATCH'
+          : gleifSubTree.length > 0
+          ? 'CLEAR'
+          : 'INSUFFICIENT_DATA',
+      measuredValue: `GLEIF-L2=${gleifSubTree.length} · OpacityFlags=${opacityNodes.length} · ShadowCandidates=${exhibit21ShadowCandidates.length} · FormD=${formDOfferings.length} · RevDoors=${totalRevDoors}`,
+      evidenceRef: gleifSubTree[0]?.gleifUrl || formDOfferings[0]?.url || 'GLEIF / Senate LDA',
+    },
+    {
+      domain: 'Legal & Regulatory',
+      typology: 'Federal Litigation Concentration, SLAPP/Arbitration & Consumer Harm (CourtListener / CFPB)',
+      forensicTest: 'CourtListener federal dockets + CFPB complaint volume + OFAC/BIS notices',
+      status:
+        sanctionsTrade.ofacBisNotices.length > 0 || legalSlappBankruptcy.courtListenerDocketsCount >= 50 || insiderLabor.cfpbComplaintsTotal >= 100
+          ? 'TRIGGERED'
+          : legalSlappBankruptcy.courtDockets.length > 0 || insiderLabor.cfpbComplaintsTotal > 0
+          ? 'WATCH'
+          : 'CLEAR',
+      measuredValue: `CourtListener=${legalSlappBankruptcy.courtListenerDocketsCount} · CFPB=${insiderLabor.cfpbComplaintsTotal} · OFAC/BIS=${sanctionsTrade.ofacBisNotices.length}`,
+      evidenceRef: legalSlappBankruptcy.courtDockets[0]?.url || sanctionsTrade.ofacBisNotices[0]?.url || 'CourtListener / CFPB',
+    },
+    {
+      domain: 'Cyber & Supply Chain',
+      typology: 'Active Exploitation, BGP Hijack Exposure & Open-Source Dependency Compromise',
+      forensicTest: 'CISA KEV + FIRST EPSS >= 0.70 + Spamhaus DROP + Google OSV.dev CVEs + Shodan open ports',
+      status:
+        adversarialInfra.cisaKevMatches.length > 0 ||
+        spamhausHits.length > 0 ||
+        highRiskEpss.length > 0 ||
+        invalidRpki.length > 0
+          ? 'TRIGGERED'
+          : currentOsvVulnsCount > 0 || cyber.disclosedCves.length > 0 || currentShodanPortsCount >= 6
+          ? 'WATCH'
+          : cyber.primaryDomain
+          ? 'CLEAR'
+          : 'INSUFFICIENT_DATA',
+      measuredValue: `KEV=${adversarialInfra.cisaKevMatches.length} · EPSS>=0.7=${highRiskEpss.length} · OSV=${currentOsvVulnsCount} · NVD=${cyber.disclosedCves.length} · ShodanPorts=${currentShodanPortsCount}`,
+      evidenceRef: cyber.primaryDomain ? `https://crt.sh/?q=${encodeURIComponent(cyber.primaryDomain)}` : 'Passive Cyber Telemetry',
+    },
+    {
+      domain: 'Physical & Environmental',
+      typology: 'Multi-Statute Environmental Violations & Enforcement Penalties (US EPA ECHO)',
+      forensicTest: 'EPA ECHO Clean Water/Air/RCRA facility violations and cumulative formal penalty dollars',
+      status:
+        environmentalEpa.totalPenaltiesUsd >= 50000
+          ? 'TRIGGERED'
+          : environmentalEpa.epaFacilitiesCount > 0
+          ? 'WATCH'
+          : 'CLEAR',
+      measuredValue: `EPA Facilities=${environmentalEpa.epaFacilitiesCount} · Penalties=$${Math.round(environmentalEpa.totalPenaltiesUsd).toLocaleString('en-US')}`,
+      evidenceRef: environmentalEpa.facilities[0]?.sourceUrl || 'https://echo.epa.gov/',
+    },
+  ];
+
+  const zeroDayFraud = detectUnknownFraudAnomalies(
+    {
+      entityId: entityName,
+      numericSeries: numericSamples.map((s) => s.value),
+      peerMetrics,
+      contradictionChecks,
+      omissionChecks,
+      directedEdges,
+      textSamples: textSamples.map((t) => t.text),
+    },
+    knownTypologyHits
+  );
+
+  // MITRE ATLAS v2026.10 Agentic Swarm & Cyber Correlation (100% live timestamps, CSP AI origins, prompt traps, KEV/C2)
+  const actionTimestampsMs = [
+    ...timestampedEvents.map((e) => Date.parse(e.isoDate)),
+    ...deepAttackSurface.publicAttention.hackerNewsThreads.map((h) => Date.parse(h.createdAt)),
+  ].filter((ms) => Number.isFinite(ms) && ms > 0);
+
+  const aiApiOriginRegex =
+    /(openai\.com|anthropic\.com|cohere\.(ai|com)|huggingface\.co|replicate\.com|together\.xyz|groq\.com|perplexity\.ai|generativelanguage\.googleapis\.com|api\.mistral\.ai|api\.x\.ai)/i;
+  const isNativeAiLab = /artificial intelligence|foundation model|ai research|llm|machine learning/i.test(
+    `${industry} ${entityName} ${executiveSummary.slice(0, 300)}`
+  );
+  const anomalousAiApiEndpoints = isNativeAiLab
+    ? []
+    : cspOrigins.filter((origin) => aiApiOriginRegex.test(origin));
+
+  const poisonedToolArtifacts: string[] = [];
+  if (adversarialInfra.adversarialPromptInjectionIndicators.invisibleUnicodeTagsCount > 0) {
+    poisonedToolArtifacts.push(
+      `Invisible Unicode Tag steganography (${adversarialInfra.adversarialPromptInjectionIndicators.invisibleUnicodeTagsCount} codepoints)`
+    );
+  }
+  if (adversarialInfra.adversarialPromptInjectionIndicators.zeroWidthCharsCount > 10) {
+    poisonedToolArtifacts.push(
+      `Zero-width obfuscation cluster (${adversarialInfra.adversarialPromptInjectionIndicators.zeroWidthCharsCount} chars)`
+    );
+  }
+  for (const pat of adversarialInfra.adversarialPromptInjectionIndicators.suspiciousDirectivePatterns.slice(0, 5)) {
+    poisonedToolArtifacts.push(`Adversarial directive pattern: ${pat}`);
+  }
+
+  const activeCyberIndicators: string[] = [
+    ...adversarialInfra.cisaKevMatches.map((k) => `CISA KEV ${k.cveId}: ${k.vulnerabilityName}`),
+    ...adversarialInfra.abuseChIndicators.map((a) => `Abuse.ch ${a.feed}: ${a.indicator}`),
+    ...spamhausHits.map((c) => `Spamhaus DROP netblock: ${c}`),
+    ...highRiskEpss.map((e) => `FIRST EPSS Critical (${(e.epss * 100).toFixed(1)}%): ${e.cve}`),
+  ];
+
+  const swarmAndCyberReport = detectOrchestratedSwarmAndCyber({
+    entityId: entityName,
+    actionTimestampsMs,
+    anomalousAiApiEndpoints,
+    poisonedToolArtifacts,
+    activeCyberIndicators,
+  });
+
+  const subsidiarySwarm: SubsidiaryAndSwarmSynthesis = {
+    rootLegalName: gleifSubTree[0]?.legalName || gleif?.legalName || legalName,
+    rootLei: gleifSubTree[0]?.lei || gleif?.primaryLei || null,
+    subsidiaryTree: gleifSubTree,
+    opacityFlaggedCount: opacityNodes.length,
+    exhibit21ShadowCandidates,
+    subsidiaryPivotCandidates: subsidiaryPivotDomains,
+    swarmAndCyberReport,
+    crawledAtIso: new Date().toISOString(),
+  };
+
+  // v20.0: Persist Counterparty Contagion Graph edges & run ClinicalTrials.gov v2 Field-Level Silent-Mutation Diffing in SQLite WAL
+  try {
+    if (privateDiscovery.signals.length > 0) {
+      liveDaemon.recordCounterpartyContagionEdges(entityName, privateDiscovery.signals);
+    }
+    if (privateDiscovery.clinicalSnapshots.length > 0) {
+      const silentMutations = liveDaemon.recordAndDiffClinicalTrialSnapshots(
+        entityName,
+        privateDiscovery.clinicalSnapshots
+      );
+      privateDiscovery.clinicalSilentMutations = silentMutations;
+    }
+  } catch {
+    // Non-fatal persistence guard
+  }
+
+  registriesQueried.push('Zero-Day Unknown-Fraud Detector (6-Domain Typology + 5 Unsupervised Invariants)');
+  registriesQueried.push('MITRE ATLAS v2026.10 Agentic Swarm & Cyber Correlator');
+
   const rawPayloads: Record<string, unknown> = {
     shadow_finance_payload: {
       screeningSummary: squadFHighlights.join(' | '),
@@ -4078,7 +4905,17 @@ export async function runLiveOsintInvestigation(
     patent_grant_payload: patentGrantCapture,
     darkpool_crypto_payload: darkPoolCrypto,
     legal_slapp_payload: legalSlappBankruptcy,
+    deep_attack_surface_payload: deepAttackSurface,
+    zero_day_anomaly_payload: zeroDayFraud,
+    subsidiary_swarm_payload: subsidiarySwarm,
+    private_entity_discovery_payload: privateDiscovery,
   };
+
+  emitStage(
+    'Phase 4: Forensic Synthesis Complete — Handing Off to 160-Agent Matrix & Cryptographic Sealer',
+    92,
+    `Synthesized ${groundingSources.length} verified live sources across ${registriesQueried.length} public registries`
+  );
 
   return {
     query,
@@ -4169,7 +5006,12 @@ export async function runLiveOsintInvestigation(
           ? `${usaAwards.length} US federal contract/grant award(s) verified via USASpending.gov.`
           : 'No direct US federal procurement awards matched on USASpending.gov.',
       ],
-      squadC: technicalOrOperationalProfile.slice(0, 3),
+      squadC: [
+        ...technicalOrOperationalProfile.slice(0, 2),
+        deepAttackSurface.httpSecurityAudit
+          ? `Live HTTP Hardening ${deepAttackSurface.httpSecurityAudit.hardeningScore}/100 (${deepAttackSurface.httpSecurityAudit.cdnOrWafDetected}) · ${deepAttackSurface.httpSecurityAudit.cspDiscoveredOrigins.length} CSP backend origins leaked.`
+          : technicalOrOperationalProfile[2] || `Evaluated digital footprint for ${legalName}.`,
+      ],
       squadD: [
         `Ownership / UBO Chain: ${ownershipAndUboChain.join(' -> ')}`,
         `Verified Subsidiaries / Children: ${subsidiaries.length > 0 ? subsidiaries.slice(0, 5).join(', ') : 'Single operating entity / none listed in LEI or Wikidata'}.`,
@@ -4181,8 +5023,14 @@ export async function runLiveOsintInvestigation(
         `Primary Oversight Note: ${industrySpecificLoopholesOrRisks[0]?.mechanism || 'Standard commercial oversight'}.`,
       ],
       squadF: squadFHighlights,
-      squadG: squadGHighlights,
-      squadH: squadHHighlights,
+      squadG: [
+        ...squadGHighlights.slice(0, 2),
+        deepAttackSurface.attackSurfaceVerdict,
+      ],
+      squadH: [
+        ...squadHHighlights.slice(0, 2),
+        `Wikimedia 14d Attention: ${deepAttackSurface.publicAttention.totalViews14d.toLocaleString('en-US')} views (Peak Z=${deepAttackSurface.publicAttention.spikeZScore}) · ${deepAttackSurface.publicAttention.hackerNewsThreads.length} HN discourse thread(s).`,
+      ],
       squadI: squadIHighlights,
       squadJ: squadJHighlights,
       squadK: squadKHighlights,
@@ -4203,6 +5051,11 @@ export async function runLiveOsintInvestigation(
     patentGrantCapture,
     darkPoolCrypto,
     legalSlappBankruptcy,
+    deepAttackSurface,
+    zeroDayFraud,
+    subsidiarySwarm,
+    privateDiscovery,
+    probeTelemetry,
     bftCorroboration,
     blockchainAnchor,
     realtimeDaemonFeedSnapshot,

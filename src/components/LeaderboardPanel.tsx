@@ -8,7 +8,7 @@ import {
   X,
   Download
 } from 'lucide-react';
-import { DomainCategory, TechEntity, VelocityTag } from '../types/investigation';
+import { DomainCategory, LiveMarketQuote, TechEntity, VelocityTag } from '../types/investigation';
 import { SHOCK_EVENTS } from '../data/heatmapsDatabase';
 import { getTop20EntitiesForSector, getAllUniqueCatalogEntities } from '../data/sectorTop20Database';
 
@@ -16,7 +16,10 @@ interface LeaderboardPanelProps {
   entities: TechEntity[];
   onSelectEntityForInvestigation: (entityName: string) => void;
   onOpenShockwaveSimulator: () => void;
-  onSimulateMarketShock: () => void;
+  onSyncLiveMarket: () => void;
+  isSyncingMarket?: boolean;
+  liveQuotesByEntity?: Record<string, LiveMarketQuote>;
+  lastMarketSyncIso?: string | null;
 }
 
 const CATEGORY_TABS: { id: DomainCategory; label: string }[] = [
@@ -45,7 +48,10 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
   entities,
   onSelectEntityForInvestigation,
   onOpenShockwaveSimulator,
-  onSimulateMarketShock
+  onSyncLiveMarket,
+  isSyncingMarket = false,
+  liveQuotesByEntity = {},
+  lastMarketSyncIso = null,
 }) => {
   const [selectedCategory, setSelectedCategory] = useState<DomainCategory>('all');
   const [selectedCountry, setSelectedCountry] = useState<string>('ALL');
@@ -207,15 +213,21 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
             className="px-3 py-1 rounded bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-['Chakra_Petch'] font-bold uppercase tracking-wider flex items-center gap-1 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
           >
             <Zap className="w-3 h-3" />
-            <span className="hidden sm:inline">Start Simulation</span>
+            <span className="hidden sm:inline">Cascade Model</span>
           </button>
           <button
             type="button"
-            onClick={onSimulateMarketShock}
-            className="p-1.5 rounded bg-slate-900 hover:bg-slate-800 text-amber-400 border border-slate-700 transition-colors cursor-pointer"
-            title="Recalculate market velocity"
+            onClick={onSyncLiveMarket}
+            disabled={isSyncingMarket}
+            className="px-2.5 py-1 rounded bg-slate-900 hover:bg-slate-800 disabled:opacity-60 text-emerald-400 border border-slate-700 text-xs font-mono flex items-center gap-1.5 transition-colors whitespace-nowrap shrink-0 cursor-pointer"
+            title={
+              lastMarketSyncIso
+                ? `Last live Yahoo Finance + Daemon sync: ${new Date(lastMarketSyncIso).toLocaleTimeString()}`
+                : 'Sync live Yahoo Finance market quotes & SEC/CISA daemon events'
+            }
           >
-            <RefreshCw className="w-3.5 h-3.5" />
+            <RefreshCw className={`w-3 h-3 ${isSyncingMarket ? 'animate-spin' : ''}`} />
+            <span className="hidden md:inline">{isSyncingMarket ? 'Syncing Live...' : 'Sync Live Market'}</span>
           </button>
         </div>
       </div>
@@ -407,6 +419,22 @@ export const LeaderboardPanel: React.FC<LeaderboardPanelProps> = ({
                       <span className="text-xs text-cyan-400">
                         {entity.country || entity.jurisdictions[0] || 'Global'}
                       </span>
+                      {liveQuotesByEntity[entity.name] && (
+                        <>
+                          <span className="text-slate-600">·</span>
+                          <span
+                            className={`text-xs tabular-nums font-semibold ${
+                              liveQuotesByEntity[entity.name].changePercent >= 0
+                                ? 'text-emerald-400'
+                                : 'text-rose-400'
+                            }`}
+                          >
+                            {liveQuotesByEntity[entity.name].symbol} ${liveQuotesByEntity[entity.name].price.toFixed(2)} (
+                            {liveQuotesByEntity[entity.name].changePercent >= 0 ? '+' : ''}
+                            {liveQuotesByEntity[entity.name].changePercent.toFixed(2)}%)
+                          </span>
+                        </>
+                      )}
                       {entity.cryptoLayer && (
                         <>
                           <span className="text-slate-600">·</span>

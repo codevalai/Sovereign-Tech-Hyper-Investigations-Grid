@@ -3,9 +3,12 @@ import express from 'express';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { runLiveOsintInvestigation } from './server/osintEngine.ts';
+import { fetchLiveLeaderboardMarketSync, runLightweightDeltaReprobe } from './server/deepLiveProbes.ts';
 import { liveDaemon } from './server/liveIngestionDaemon.ts';
 import { computeIpfsCidV1FromSha256Hex } from './server/adversarialShield.ts';
-import type { LiveFeedEvent } from './src/types/investigation.ts';
+import { anchorMerkleRootExternally } from './src/crypto/externalAnchor.ts';
+import { computeSignedDeltaPatch, type LivingSnapshot } from './src/engine/livingDossierDelta.ts';
+import type { LiveFeedEvent, PersistedInvestigationSummary } from './src/types/investigation.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -56,7 +59,13 @@ async function startServer() {
         'OpenAlex, NIH RePORTER & NSF Awards Bayh-Dole Patent/Grant Capture',
         'Mempool.space / Blockstream Bitcoin Mainnet Chain Tip & RFC 3161 TSA',
         'CourtListener REST v4 Federal SLAPP, Bankruptcy & Judge/Forum Dockets',
-        'SQLite WAL 24/7 Live Ingestion Daemon + Ring-5 Custody Watchdog',
+        'Shodan InternetDB Live IP Open Ports, CPE Fingerprints & IP CVEs',
+        'Live HTTP Security Headers & Content-Security-Policy (CSP) Shadow Backend Origin Extractor',
+        'Authoritative RDAP Domain Registration & Google DoH DNSSEC Validation',
+        'npm / PyPI Software Supply Chain & Google OSV.dev Open-Source Vulnerability Database',
+        'Wikimedia 14-Day Public Attention Velocity & Hacker News Algolia Engineering Discourse',
+        'DefiLlama Live Protocol TVL & Yahoo Finance v8 Live Market Telemetry',
+        'SQLite WAL 24/7 Live Ingestion Daemon + Persistent Investigation Archive + Ring-5 Custody Watchdog',
       ],
     });
   });
@@ -137,18 +146,36 @@ async function startServer() {
     try {
       const ipfsCidV1 =
         String(body.ipfsCidV1 || '').trim() || computeIpfsCidV1FromSha256Hex(merkleRoot);
-      const out = await liveDaemon.registerDossierCustody({
-        investigationId,
-        entityName,
-        merkleRoot,
-        ed25519Signature,
-        ed25519PublicKeyHex,
-        ipfsCidV1,
-        existingBitcoinHash: body.existingBitcoinHash ?? null,
-        existingBitcoinHeight:
-          typeof body.existingBitcoinHeight === 'number' ? body.existingBitcoinHeight : null,
+      const ed25519PublicKeyPem =
+        typeof (body as Record<string, unknown>).ed25519PublicKeyPem === 'string'
+          ? String((body as Record<string, unknown>).ed25519PublicKeyPem)
+          : undefined;
+
+      const [out, externalAnchor] = await Promise.all([
+        liveDaemon.registerDossierCustody({
+          investigationId,
+          entityName,
+          merkleRoot,
+          ed25519Signature,
+          ed25519PublicKeyHex,
+          ipfsCidV1,
+          existingBitcoinHash: body.existingBitcoinHash ?? null,
+          existingBitcoinHeight:
+            typeof body.existingBitcoinHeight === 'number' ? body.existingBitcoinHeight : null,
+        }),
+        anchorMerkleRootExternally(merkleRoot, ed25519Signature, ed25519PublicKeyPem).catch(
+          () => null
+        ),
+      ]);
+
+      if (externalAnchor) {
+        liveDaemon.saveExternalAnchorReceipt(investigationId, entityName, externalAnchor);
+      }
+
+      res.json({
+        ...out,
+        externalAnchor,
       });
-      res.json(out);
     } catch (err: unknown) {
       const message =
         err instanceof Error ? err.message : 'Failed to finalize Ring-5 dossier custody anchor.';
@@ -157,7 +184,244 @@ async function startServer() {
   });
 
   app.get('/api/integrity/status', (_req, res) => {
-    res.json(liveDaemon.verifyCustodyChain());
+    res.json({
+      ...liveDaemon.verifyCustodyChain(),
+      records: liveDaemon.getCustodyChainRecords(50),
+      externalAnchors: liveDaemon.getExternalAnchorReceipts(50),
+      livingDeltas: liveDaemon.getLivingDeltaPatches(50),
+      clinicalTrialMutations: liveDaemon.getClinicalTrialMutations(50),
+      counterpartyContagionEdgesCount: liveDaemon.getCounterpartyContagionEdges(500).length,
+    });
+  });
+
+  app.get('/api/vault/apex-graph', (_req, res) => {
+    try {
+      res.json(liveDaemon.buildApexVaultGraph());
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Apex vault graph builder failed.' });
+    }
+  });
+
+  app.get('/api/investigations/archive', (req, res) => {
+    const rawLimit = Number(req.query.limit ?? 50);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+    res.json({
+      items: liveDaemon.getInvestigationArchive(limit),
+    });
+  });
+
+  app.post('/api/investigations/archive', (req, res) => {
+    const body = req.body as Partial<PersistedInvestigationSummary> | undefined;
+    if (!body?.investigationId || !body?.entityName) {
+      res.status(400).json({ error: 'investigationId and entityName are required.' });
+      return;
+    }
+    try {
+      const saved = liveDaemon.saveInvestigationArchive({
+        investigationId: String(body.investigationId),
+        query: String(body.query || body.entityName),
+        entityName: String(body.entityName),
+        legalName: String(body.legalName || body.entityName),
+        industry: String(body.industry || 'Verified Enterprise'),
+        country: String(body.country || 'Global'),
+        primaryDomain: String(body.primaryDomain || ''),
+        fri: Number(body.fri ?? 0),
+        mai: Number(body.mai ?? 0),
+        sourcesCount: Number(body.sourcesCount ?? 0),
+        filesCount: Number(body.filesCount ?? 0),
+        merkleRoot: body.merkleRoot ? String(body.merkleRoot) : null,
+        ed25519Signature: body.ed25519Signature ? String(body.ed25519Signature) : null,
+        ipfsCidV1: body.ipfsCidV1 ? String(body.ipfsCidV1) : null,
+        bitcoinBlockHeight: typeof body.bitcoinBlockHeight === 'number' ? body.bitcoinBlockHeight : null,
+        httpHardeningScore: typeof body.httpHardeningScore === 'number' ? body.httpHardeningScore : null,
+        shodanOpenPortsCount: Number(body.shodanOpenPortsCount ?? 0),
+        osvVulnsCount: Number(body.osvVulnsCount ?? 0),
+        asns: Array.isArray(body.asns) ? body.asns.map(String) : [],
+        cspOrigins: Array.isArray(body.cspOrigins) ? body.cspOrigins.map(String) : [],
+        regulatorsAndCourts: Array.isArray(body.regulatorsAndCourts) ? body.regulatorsAndCourts.map(String) : [],
+        lobbyingFirms: Array.isArray(body.lobbyingFirms) ? body.lobbyingFirms.map(String) : [],
+        subsidiaries: Array.isArray(body.subsidiaries) ? body.subsidiaries.map(String) : [],
+        openPorts: Array.isArray(body.openPorts) ? body.openPorts.map(Number).filter(Number.isFinite) : [],
+        osvCveIds: Array.isArray(body.osvCveIds) ? body.osvCveIds.map(String) : [],
+        rdapStatuses: Array.isArray(body.rdapStatuses) ? body.rdapStatuses.map(String) : [],
+        dnssecValidated: typeof body.dnssecValidated === 'boolean' ? body.dnssecValidated : null,
+        hstsPreloadStatus: body.hstsPreloadStatus ? String(body.hstsPreloadStatus) : null,
+        livePriceUsd: typeof body.livePriceUsd === 'number' ? body.livePriceUsd : null,
+        liveChangePct: typeof body.liveChangePct === 'number' ? body.liveChangePct : null,
+        completedAtIso: String(body.completedAtIso || new Date().toISOString()),
+      });
+      res.json({ ok: true, item: saved });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to archive investigation.' });
+    }
+  });
+
+  app.get('/api/investigations/correlate', (_req, res) => {
+    try {
+      res.json(liveDaemon.computeCrossEntityCorrelation());
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Correlation engine failed.' });
+    }
+  });
+
+  app.get('/api/vault/deltas', (req, res) => {
+    const rawLimit = Number(req.query.limit ?? 50);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
+    res.json({
+      items: liveDaemon.getLivingDeltaPatches(limit),
+    });
+  });
+
+  app.post('/api/vault/delta-check/:investigationId', async (req, res) => {
+    const investigationId = String(req.params.investigationId || '').trim();
+    if (!investigationId) {
+      res.status(400).json({ error: 'investigationId is required.' });
+      return;
+    }
+
+    const archived = liveDaemon.getInvestigationById(investigationId);
+    if (!archived) {
+      res.status(404).json({ error: `Archived investigation ${investigationId} not found.` });
+      return;
+    }
+
+    const startedMs = Date.now();
+    try {
+      const previousSnapshot: LivingSnapshot = {
+        investigationId: archived.investigationId,
+        entityName: archived.entityName,
+        primaryDomain: archived.primaryDomain,
+        capturedAtIso: archived.completedAtIso,
+        cspOrigins: archived.cspOrigins || [],
+        openPorts: archived.openPorts || [],
+        osvCveIds: archived.osvCveIds || [],
+        rdapStatuses: archived.rdapStatuses || [],
+        httpHardeningScore: archived.httpHardeningScore,
+        dnssecValidated: archived.dnssecValidated ?? null,
+        hstsPreloadStatus: archived.hstsPreloadStatus ?? null,
+      };
+
+      const currentSnapshot = await runLightweightDeltaReprobe({
+        investigationId: archived.investigationId,
+        entityName: archived.entityName,
+        primaryDomain: archived.primaryDomain,
+      });
+
+      const signedPatch = computeSignedDeltaPatch(previousSnapshot, currentSnapshot);
+      liveDaemon.saveLivingDeltaPatch(signedPatch);
+
+      if (signedPatch.hasMutation) {
+        liveDaemon.saveInvestigationArchive({
+          ...archived,
+          cspOrigins: currentSnapshot.cspOrigins,
+          openPorts: currentSnapshot.openPorts,
+          shodanOpenPortsCount: currentSnapshot.openPorts.length,
+          osvCveIds: currentSnapshot.osvCveIds,
+          osvVulnsCount: currentSnapshot.osvCveIds.length,
+          rdapStatuses: currentSnapshot.rdapStatuses,
+          httpHardeningScore: currentSnapshot.httpHardeningScore,
+          dnssecValidated: currentSnapshot.dnssecValidated,
+          hstsPreloadStatus: currentSnapshot.hstsPreloadStatus,
+          completedAtIso: currentSnapshot.capturedAtIso,
+        });
+      }
+
+      res.json({
+        ok: true,
+        investigationId: archived.investigationId,
+        entityName: archived.entityName,
+        reprobeMs: Date.now() - startedMs,
+        patch: signedPatch,
+        currentSnapshot,
+      });
+    } catch (err: unknown) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Living dossier delta re-probe failed.',
+      });
+    }
+  });
+
+  app.post('/api/market/live-sync', async (_req, res) => {
+    try {
+      const [marketData, daemonStats] = await Promise.all([
+        fetchLiveLeaderboardMarketSync(),
+        liveDaemon.ingestAllLiveStreams().catch(() => ({ ingestedTotal: 0 })),
+      ]);
+      res.json({
+        ok: true,
+        ...marketData,
+        daemonAdded: daemonStats.ingestedTotal,
+        latestEvents: liveDaemon.getLatestEvents(60),
+        custody: liveDaemon.getCustodyStatus(),
+      });
+    } catch (err: unknown) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Live market & regulatory sync failed.',
+      });
+    }
+  });
+
+  app.post('/api/investigate/live/stream', async (req, res) => {
+    const body = (req.body || {}) as {
+      query?: string;
+      geography?: string;
+      timeRange?: string;
+      focus?: string[];
+      constraints?: string;
+      uploadedFileContext?: string;
+    };
+
+    const query = String(body.query || '').trim();
+    if (!query) {
+      res.status(400).json({ error: 'Search query is required.' });
+      return;
+    }
+
+    res.writeHead(200, {
+      'Content-Type': 'application/x-ndjson; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+    });
+
+    let closed = false;
+    res.on('close', () => {
+      if (!res.writableEnded) {
+        closed = true;
+      }
+    });
+
+    const sendLine = (obj: unknown) => {
+      if (closed || res.writableEnded) return;
+      try {
+        res.write(`${JSON.stringify(obj)}\n`);
+      } catch {
+        closed = true;
+      }
+    };
+
+    try {
+      const intelligence = await runLiveOsintInvestigation(
+        {
+          query,
+          geography: body.geography,
+          timeRange: body.timeRange,
+          focus: body.focus,
+          constraints: body.constraints,
+          uploadedFileContext: body.uploadedFileContext,
+        },
+        (ev) => sendLine(ev)
+      );
+      sendLine({ type: 'complete', intelligence });
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error
+          ? err.message
+          : 'Live OSINT business intelligence investigation failed.';
+      sendLine({ type: 'error', error: message });
+    } finally {
+      if (!res.writableEnded) res.end();
+    }
   });
 
   app.post('/api/investigate/live', async (req, res) => {

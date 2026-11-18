@@ -5,7 +5,18 @@ import { DatabaseSync } from 'node:sqlite';
 import type { Request, Response } from 'express';
 import { safeForensicFetch } from './adversarialShield.ts';
 import { fetchLiveBitcoinMainnetTip, submitRfc3161TimestampRequest } from './blockchainAnchor.ts';
-import type { LiveFeedEvent } from '../src/types/investigation.ts';
+import { findFuzzyEntityMatches } from '../src/engine/entityResolution.ts';
+import type {
+  ClinicalTrialMutationSnapshot,
+  ClinicalTrialSilentMutationAlert,
+  CrossEntityCorrelationReport,
+  CrossEntityOverlapEdge,
+  ExternalAnchorReceiptRecord,
+  LiveFeedEvent,
+  LivingDeltaPatchRecord,
+  PersistedInvestigationSummary,
+  PrivateEntitySignal,
+} from '../src/types/investigation.ts';
 
 export interface CustodyChainRecord {
   seq: number;
@@ -94,7 +105,135 @@ class SovereignRealtimeDaemon {
         prev_chain_hash TEXT NOT NULL,
         chain_hash TEXT NOT NULL
       );
+
+      CREATE TABLE IF NOT EXISTS investigations_archive (
+        investigation_id TEXT PRIMARY KEY,
+        query TEXT NOT NULL,
+        entity_name TEXT NOT NULL,
+        legal_name TEXT NOT NULL,
+        industry TEXT NOT NULL,
+        country TEXT NOT NULL,
+        primary_domain TEXT NOT NULL DEFAULT '',
+        fri REAL NOT NULL,
+        mai REAL NOT NULL,
+        sources_count INTEGER NOT NULL,
+        files_count INTEGER NOT NULL,
+        merkle_root TEXT,
+        ed25519_signature TEXT,
+        ipfs_cid_v1 TEXT,
+        bitcoin_block_height INTEGER,
+        http_hardening_score INTEGER,
+        shodan_open_ports_count INTEGER NOT NULL DEFAULT 0,
+        osv_vulns_count INTEGER NOT NULL DEFAULT 0,
+        asns_json TEXT NOT NULL DEFAULT '[]',
+        csp_origins_json TEXT NOT NULL DEFAULT '[]',
+        regulators_courts_json TEXT NOT NULL DEFAULT '[]',
+        lobbying_firms_json TEXT NOT NULL DEFAULT '[]',
+        subsidiaries_json TEXT NOT NULL DEFAULT '[]',
+        live_price_usd REAL,
+        live_change_pct REAL,
+        completed_at_iso TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_inv_archive_completed ON investigations_archive(completed_at_iso DESC);
+
+      CREATE TABLE IF NOT EXISTS external_anchor_receipts (
+        merkle_root TEXT PRIMARY KEY,
+        investigation_id TEXT NOT NULL,
+        entity_name TEXT NOT NULL,
+        anchored_at_iso TEXT NOT NULL,
+        ots_calendar_url TEXT NOT NULL,
+        ots_status TEXT NOT NULL,
+        ots_commitment_base64 TEXT,
+        ots_bytes_length INTEGER NOT NULL DEFAULT 0,
+        rekor_endpoint TEXT NOT NULL,
+        rekor_status TEXT NOT NULL,
+        rekor_log_index INTEGER,
+        rekor_uuid TEXT,
+        rekor_integrated_time INTEGER,
+        rekor_error_note TEXT
+      );
+
+      CREATE TABLE IF NOT EXISTS living_dossier_deltas (
+        patch_id TEXT PRIMARY KEY,
+        investigation_id TEXT NOT NULL,
+        entity_name TEXT NOT NULL,
+        primary_domain TEXT NOT NULL,
+        previous_captured_at TEXT NOT NULL,
+        current_captured_at TEXT NOT NULL,
+        has_mutation INTEGER NOT NULL DEFAULT 0,
+        severity TEXT NOT NULL,
+        mutations_json TEXT NOT NULL,
+        patch_sha256 TEXT NOT NULL,
+        ed25519_signature_base64 TEXT NOT NULL,
+        ed25519_public_key_pem TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_living_deltas_time ON living_dossier_deltas(current_captured_at DESC);
+
+      CREATE TABLE IF NOT EXISTS counterparty_contagion_edges (
+        edge_id TEXT PRIMARY KEY,
+        target_entity TEXT NOT NULL,
+        counterparty_entity TEXT NOT NULL,
+        source TEXT NOT NULL,
+        form_type TEXT NOT NULL DEFAULT '',
+        record_id TEXT NOT NULL,
+        filing_date TEXT NOT NULL DEFAULT '',
+        url TEXT NOT NULL DEFAULT '',
+        evidence_sha256 TEXT NOT NULL,
+        captured_at_iso TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_contagion_target ON counterparty_contagion_edges(target_entity);
+      CREATE INDEX IF NOT EXISTS idx_contagion_cp ON counterparty_contagion_edges(counterparty_entity);
+
+      CREATE TABLE IF NOT EXISTS clinical_trial_snapshots (
+        nct_id TEXT PRIMARY KEY,
+        target_entity TEXT NOT NULL,
+        sponsor_name TEXT NOT NULL,
+        brief_title TEXT NOT NULL,
+        overall_status TEXT NOT NULL,
+        last_update_date TEXT NOT NULL,
+        outcomes_sha256 TEXT NOT NULL,
+        status_sha256 TEXT NOT NULL,
+        primary_outcomes_summary TEXT NOT NULL DEFAULT '',
+        study_url TEXT NOT NULL,
+        captured_at_iso TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS clinical_trial_mutations (
+        alert_id TEXT PRIMARY KEY,
+        target_entity TEXT NOT NULL,
+        nct_id TEXT NOT NULL,
+        brief_title TEXT NOT NULL,
+        previous_status TEXT NOT NULL,
+        current_status TEXT NOT NULL,
+        status_mutated INTEGER NOT NULL DEFAULT 0,
+        outcomes_mutated INTEGER NOT NULL DEFAULT 0,
+        previous_outcomes_sha256 TEXT NOT NULL,
+        current_outcomes_sha256 TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        detected_at_iso TEXT NOT NULL,
+        study_url TEXT NOT NULL,
+        alert_sha256 TEXT NOT NULL,
+        ed25519_signature_base64 TEXT NOT NULL,
+        ed25519_public_key_pem TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_trial_mut_time ON clinical_trial_mutations(detected_at_iso DESC);
     `);
+
+    // Non-destructive schema evolution for existing SQLite databases (preserves 100% of prior rows)
+    const additiveColumns = [
+      `ALTER TABLE investigations_archive ADD COLUMN open_ports_json TEXT NOT NULL DEFAULT '[]'`,
+      `ALTER TABLE investigations_archive ADD COLUMN osv_cves_json TEXT NOT NULL DEFAULT '[]'`,
+      `ALTER TABLE investigations_archive ADD COLUMN rdap_statuses_json TEXT NOT NULL DEFAULT '[]'`,
+      `ALTER TABLE investigations_archive ADD COLUMN dnssec_validated INTEGER`,
+      `ALTER TABLE investigations_archive ADD COLUMN hsts_preload_status TEXT`,
+    ];
+    for (const ddl of additiveColumns) {
+      try {
+        db.exec(ddl);
+      } catch {
+        // Column already exists
+      }
+    }
 
     const rows = db
       .prepare(
@@ -712,6 +851,810 @@ class SovereignRealtimeDaemon {
         corroborated: false,
       });
     }
+  }
+
+  public getCustodyChainRecords(limit = 50): CustodyChainRecord[] {
+    this.initDatabase();
+    const db = this.db!;
+    const rows = db
+      .prepare(
+        `SELECT seq, investigation_id, entity_name, merkle_root, ed25519_signature, ed25519_public_key_hex,
+                ipfs_cid_v1, bitcoin_block_hash, bitcoin_block_height, rfc3161_token_sha256,
+                created_at_iso, prev_chain_hash, chain_hash
+         FROM dossier_custody_chain ORDER BY seq DESC LIMIT ?`
+      )
+      .all(Math.max(1, Math.min(limit, 200))) as Array<Record<string, unknown>>;
+
+    return rows.map((r) => ({
+      seq: Number(r.seq),
+      investigationId: String(r.investigation_id),
+      entityName: String(r.entity_name),
+      merkleRoot: String(r.merkle_root),
+      ed25519Signature: String(r.ed25519_signature),
+      ed25519PublicKeyHex: String(r.ed25519_public_key_hex),
+      ipfsCidV1: String(r.ipfs_cid_v1),
+      bitcoinBlockHash: r.bitcoin_block_hash ? String(r.bitcoin_block_hash) : null,
+      bitcoinBlockHeight: r.bitcoin_block_height != null ? Number(r.bitcoin_block_height) : null,
+      rfc3161TokenSha256: r.rfc3161_token_sha256 ? String(r.rfc3161_token_sha256) : null,
+      createdAtIso: String(r.created_at_iso),
+      prevChainHash: String(r.prev_chain_hash),
+      chainHash: String(r.chain_hash),
+    }));
+  }
+
+  public saveInvestigationArchive(rec: PersistedInvestigationSummary): PersistedInvestigationSummary {
+    this.initDatabase();
+    const db = this.db!;
+    db.prepare(
+      `INSERT INTO investigations_archive (
+        investigation_id, query, entity_name, legal_name, industry, country, primary_domain,
+        fri, mai, sources_count, files_count, merkle_root, ed25519_signature, ipfs_cid_v1,
+        bitcoin_block_height, http_hardening_score, shodan_open_ports_count, osv_vulns_count,
+        asns_json, csp_origins_json, regulators_courts_json, lobbying_firms_json, subsidiaries_json,
+        open_ports_json, osv_cves_json, rdap_statuses_json, dnssec_validated, hsts_preload_status,
+        live_price_usd, live_change_pct, completed_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(investigation_id) DO UPDATE SET
+        merkle_root = COALESCE(excluded.merkle_root, investigations_archive.merkle_root),
+        ed25519_signature = COALESCE(excluded.ed25519_signature, investigations_archive.ed25519_signature),
+        ipfs_cid_v1 = COALESCE(excluded.ipfs_cid_v1, investigations_archive.ipfs_cid_v1),
+        bitcoin_block_height = COALESCE(excluded.bitcoin_block_height, investigations_archive.bitcoin_block_height),
+        http_hardening_score = COALESCE(excluded.http_hardening_score, investigations_archive.http_hardening_score),
+        shodan_open_ports_count = excluded.shodan_open_ports_count,
+        osv_vulns_count = excluded.osv_vulns_count,
+        csp_origins_json = excluded.csp_origins_json,
+        open_ports_json = excluded.open_ports_json,
+        osv_cves_json = excluded.osv_cves_json,
+        rdap_statuses_json = excluded.rdap_statuses_json,
+        dnssec_validated = COALESCE(excluded.dnssec_validated, investigations_archive.dnssec_validated),
+        hsts_preload_status = COALESCE(excluded.hsts_preload_status, investigations_archive.hsts_preload_status),
+        completed_at_iso = excluded.completed_at_iso`
+    ).run(
+      rec.investigationId,
+      rec.query,
+      rec.entityName,
+      rec.legalName,
+      rec.industry,
+      rec.country,
+      rec.primaryDomain || '',
+      rec.fri,
+      rec.mai,
+      rec.sourcesCount,
+      rec.filesCount,
+      rec.merkleRoot,
+      rec.ed25519Signature,
+      rec.ipfsCidV1,
+      rec.bitcoinBlockHeight,
+      rec.httpHardeningScore,
+      rec.shodanOpenPortsCount,
+      rec.osvVulnsCount,
+      JSON.stringify(rec.asns || []),
+      JSON.stringify(rec.cspOrigins || []),
+      JSON.stringify(rec.regulatorsAndCourts || []),
+      JSON.stringify(rec.lobbyingFirms || []),
+      JSON.stringify(rec.subsidiaries || []),
+      JSON.stringify(rec.openPorts || []),
+      JSON.stringify(rec.osvCveIds || []),
+      JSON.stringify(rec.rdapStatuses || []),
+      rec.dnssecValidated == null ? null : rec.dnssecValidated ? 1 : 0,
+      rec.hstsPreloadStatus ?? null,
+      rec.livePriceUsd,
+      rec.liveChangePct,
+      rec.completedAtIso
+    );
+    return rec;
+  }
+
+  private mapArchiveRow(r: Record<string, unknown>): PersistedInvestigationSummary {
+    const safeJsonArr = (val: unknown): string[] => {
+      try {
+        const parsed = JSON.parse(String(val || '[]'));
+        return Array.isArray(parsed) ? parsed.map(String) : [];
+      } catch {
+        return [];
+      }
+    };
+    const safeNumArr = (val: unknown): number[] => {
+      try {
+        const parsed = JSON.parse(String(val || '[]'));
+        return Array.isArray(parsed) ? parsed.map(Number).filter((n) => Number.isFinite(n)) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    return {
+      investigationId: String(r.investigation_id),
+      query: String(r.query),
+      entityName: String(r.entity_name),
+      legalName: String(r.legal_name),
+      industry: String(r.industry),
+      country: String(r.country),
+      primaryDomain: String(r.primary_domain || ''),
+      fri: Number(r.fri || 0),
+      mai: Number(r.mai || 0),
+      sourcesCount: Number(r.sources_count || 0),
+      filesCount: Number(r.files_count || 0),
+      merkleRoot: r.merkle_root ? String(r.merkle_root) : null,
+      ed25519Signature: r.ed25519_signature ? String(r.ed25519_signature) : null,
+      ipfsCidV1: r.ipfs_cid_v1 ? String(r.ipfs_cid_v1) : null,
+      bitcoinBlockHeight: r.bitcoin_block_height != null ? Number(r.bitcoin_block_height) : null,
+      httpHardeningScore: r.http_hardening_score != null ? Number(r.http_hardening_score) : null,
+      shodanOpenPortsCount: Number(r.shodan_open_ports_count || 0),
+      osvVulnsCount: Number(r.osv_vulns_count || 0),
+      asns: safeJsonArr(r.asns_json),
+      cspOrigins: safeJsonArr(r.csp_origins_json),
+      regulatorsAndCourts: safeJsonArr(r.regulators_courts_json),
+      lobbyingFirms: safeJsonArr(r.lobbying_firms_json),
+      subsidiaries: safeJsonArr(r.subsidiaries_json),
+      openPorts: safeNumArr(r.open_ports_json),
+      osvCveIds: safeJsonArr(r.osv_cves_json),
+      rdapStatuses: safeJsonArr(r.rdap_statuses_json),
+      dnssecValidated: r.dnssec_validated == null ? null : Boolean(r.dnssec_validated),
+      hstsPreloadStatus: r.hsts_preload_status ? String(r.hsts_preload_status) : null,
+      livePriceUsd: r.live_price_usd != null ? Number(r.live_price_usd) : null,
+      liveChangePct: r.live_change_pct != null ? Number(r.live_change_pct) : null,
+      completedAtIso: String(r.completed_at_iso),
+    };
+  }
+
+  public getInvestigationById(investigationId: string): PersistedInvestigationSummary | null {
+    this.initDatabase();
+    const db = this.db!;
+    const row = db
+      .prepare(`SELECT * FROM investigations_archive WHERE investigation_id = ? LIMIT 1`)
+      .get(investigationId) as Record<string, unknown> | undefined;
+    return row ? this.mapArchiveRow(row) : null;
+  }
+
+  public getInvestigationArchive(limit = 50): PersistedInvestigationSummary[] {
+    this.initDatabase();
+    const db = this.db!;
+    const rows = db
+      .prepare(`SELECT * FROM investigations_archive ORDER BY completed_at_iso DESC LIMIT ?`)
+      .all(Math.max(1, Math.min(limit, 200))) as Array<Record<string, unknown>>;
+    return rows.map((r) => this.mapArchiveRow(r));
+  }
+
+  public saveExternalAnchorReceipt(
+    investigationId: string,
+    entityName: string,
+    receipt: ExternalAnchorReceiptRecord
+  ): void {
+    this.initDatabase();
+    const db = this.db!;
+    db.prepare(
+      `INSERT OR REPLACE INTO external_anchor_receipts (
+        merkle_root, investigation_id, entity_name, anchored_at_iso,
+        ots_calendar_url, ots_status, ots_commitment_base64, ots_bytes_length,
+        rekor_endpoint, rekor_status, rekor_log_index, rekor_uuid, rekor_integrated_time, rekor_error_note
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      receipt.merkleRootHex,
+      investigationId,
+      entityName,
+      receipt.anchoredAtIso,
+      receipt.opentimestamps.calendarUrl,
+      receipt.opentimestamps.status,
+      receipt.opentimestamps.otsCommitmentBase64,
+      receipt.opentimestamps.otsBytesLength,
+      receipt.sigstoreRekor.endpoint,
+      receipt.sigstoreRekor.status,
+      receipt.sigstoreRekor.logIndex ?? null,
+      receipt.sigstoreRekor.uuid ?? null,
+      receipt.sigstoreRekor.integratedTime ?? null,
+      receipt.sigstoreRekor.errorNote ?? null
+    );
+  }
+
+  public getExternalAnchorReceipts(limit = 50): Array<
+    ExternalAnchorReceiptRecord & { investigationId: string; entityName: string }
+  > {
+    this.initDatabase();
+    const db = this.db!;
+    const rows = db
+      .prepare(`SELECT * FROM external_anchor_receipts ORDER BY anchored_at_iso DESC LIMIT ?`)
+      .all(Math.max(1, Math.min(limit, 200))) as Array<Record<string, unknown>>;
+    return rows.map((r) => ({
+      investigationId: String(r.investigation_id),
+      entityName: String(r.entity_name),
+      merkleRootHex: String(r.merkle_root),
+      anchoredAtIso: String(r.anchored_at_iso),
+      opentimestamps: {
+        calendarUrl: String(r.ots_calendar_url),
+        status: String(r.ots_status) as 'STAMPED_PENDING_BTC_BLOCK' | 'FAILED',
+        otsCommitmentBase64: r.ots_commitment_base64 ? String(r.ots_commitment_base64) : null,
+        otsBytesLength: Number(r.ots_bytes_length || 0),
+      },
+      sigstoreRekor: {
+        endpoint: String(r.rekor_endpoint),
+        status: String(r.rekor_status) as 'LOGGED' | 'SKIPPED_OR_FAILED',
+        logIndex: r.rekor_log_index != null ? Number(r.rekor_log_index) : undefined,
+        uuid: r.rekor_uuid ? String(r.rekor_uuid) : undefined,
+        integratedTime: r.rekor_integrated_time != null ? Number(r.rekor_integrated_time) : undefined,
+        errorNote: r.rekor_error_note ? String(r.rekor_error_note) : undefined,
+      },
+    }));
+  }
+
+  public saveLivingDeltaPatch(patch: LivingDeltaPatchRecord): void {
+    this.initDatabase();
+    const db = this.db!;
+    db.prepare(
+      `INSERT OR REPLACE INTO living_dossier_deltas (
+        patch_id, investigation_id, entity_name, primary_domain,
+        previous_captured_at, current_captured_at, has_mutation, severity,
+        mutations_json, patch_sha256, ed25519_signature_base64, ed25519_public_key_pem
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      patch.patchId,
+      patch.investigationId,
+      patch.entityName,
+      patch.primaryDomain,
+      patch.previousCapturedAt,
+      patch.currentCapturedAt,
+      patch.hasMutation ? 1 : 0,
+      patch.severity,
+      JSON.stringify(patch.mutations),
+      patch.patchSha256,
+      patch.ed25519SignatureBase64,
+      patch.ed25519PublicKeyPem
+    );
+  }
+
+  public getLivingDeltaPatches(limit = 50): LivingDeltaPatchRecord[] {
+    this.initDatabase();
+    const db = this.db!;
+    const rows = db
+      .prepare(`SELECT * FROM living_dossier_deltas ORDER BY current_captured_at DESC LIMIT ?`)
+      .all(Math.max(1, Math.min(limit, 200))) as Array<Record<string, unknown>>;
+
+    return rows.map((r) => ({
+      patchId: String(r.patch_id),
+      investigationId: String(r.investigation_id),
+      entityName: String(r.entity_name),
+      primaryDomain: String(r.primary_domain),
+      previousCapturedAt: String(r.previous_captured_at),
+      currentCapturedAt: String(r.current_captured_at),
+      hasMutation: Boolean(r.has_mutation),
+      severity: String(r.severity) as LivingDeltaPatchRecord['severity'],
+      mutations: JSON.parse(String(r.mutations_json || '{}')),
+      patchSha256: String(r.patch_sha256),
+      ed25519SignatureBase64: String(r.ed25519_signature_base64),
+      ed25519PublicKeyPem: String(r.ed25519_public_key_pem),
+    }));
+  }
+
+  public computeCrossEntityCorrelation(): CrossEntityCorrelationReport {
+    const all = this.getInvestigationArchive(80);
+    const latestByEntity = new Map<string, PersistedInvestigationSummary>();
+    for (const item of all) {
+      const key = item.entityName.toLowerCase();
+      if (!latestByEntity.has(key)) latestByEntity.set(key, item);
+    }
+    const entities = Array.from(latestByEntity.values());
+    const overlaps: CrossEntityOverlapEdge[] = [];
+
+    const normOriginHost = (raw: string): string => {
+      try {
+        const u = new URL(raw.startsWith('http') ? raw : `https://${raw}`);
+        const parts = u.hostname.replace(/^\*\./, '').split('.');
+        return parts.length >= 2 ? parts.slice(-2).join('.').toLowerCase() : u.hostname.toLowerCase();
+      } catch {
+        return raw.toLowerCase();
+      }
+    };
+
+    const intersect = (a: string[], b: string[]): string[] => {
+      const setB = new Set(b.map((s) => s.toLowerCase().trim()).filter(Boolean));
+      const out: string[] = [];
+      for (const item of a) {
+        const norm = item.toLowerCase().trim();
+        if (norm && setB.has(norm) && !out.some((x) => x.toLowerCase() === norm)) {
+          out.push(item);
+        }
+      }
+      return out;
+    };
+
+    for (let i = 0; i < entities.length; i++) {
+      for (let j = i + 1; j < entities.length; j++) {
+        const a = entities[i];
+        const b = entities[j];
+
+        const sharedAsns = intersect(a.asns, b.asns);
+        if (sharedAsns.length > 0) {
+          overlaps.push({
+            entityA: a.entityName,
+            entityB: b.entityName,
+            overlapType: 'SHARED_ASN',
+            sharedValues: sharedAsns.slice(0, 6),
+            strength: Math.min(1, 0.35 + sharedAsns.length * 0.2),
+          });
+        }
+
+        const sharedCsp = intersect(
+          a.cspOrigins.map(normOriginHost),
+          b.cspOrigins.map(normOriginHost)
+        );
+        if (sharedCsp.length > 0) {
+          overlaps.push({
+            entityA: a.entityName,
+            entityB: b.entityName,
+            overlapType: 'SHARED_CSP_VENDOR',
+            sharedValues: sharedCsp.slice(0, 6),
+            strength: Math.min(1, 0.25 + sharedCsp.length * 0.15),
+          });
+        }
+
+        const sharedReg = intersect(a.regulatorsAndCourts, b.regulatorsAndCourts);
+        if (sharedReg.length > 0) {
+          overlaps.push({
+            entityA: a.entityName,
+            entityB: b.entityName,
+            overlapType: 'SHARED_REGULATOR_OR_COURT',
+            sharedValues: sharedReg.slice(0, 6),
+            strength: Math.min(1, 0.3 + sharedReg.length * 0.15),
+          });
+        }
+
+        const sharedLobby = intersect(a.lobbyingFirms, b.lobbyingFirms);
+        if (sharedLobby.length > 0) {
+          overlaps.push({
+            entityA: a.entityName,
+            entityB: b.entityName,
+            overlapType: 'SHARED_LOBBYIST',
+            sharedValues: sharedLobby.slice(0, 6),
+            strength: Math.min(1, 0.45 + sharedLobby.length * 0.2),
+          });
+        }
+
+        const sharedSubs = intersect(a.subsidiaries, b.subsidiaries);
+        if (sharedSubs.length > 0) {
+          overlaps.push({
+            entityA: a.entityName,
+            entityB: b.entityName,
+            overlapType: 'SHARED_SUBSIDIARY_OR_UBO',
+            sharedValues: sharedSubs.slice(0, 6),
+            strength: Math.min(1, 0.55 + sharedSubs.length * 0.2),
+          });
+        }
+
+        // Jaro-Winkler + Token-Set Fuzzy Shell/Subsidiary/Lobbyist Entity Resolution
+        const fuzzyCandidatesA = [a.legalName, ...a.subsidiaries, ...a.lobbyingFirms].filter(Boolean);
+        const fuzzyCandidatesB = [b.legalName, ...b.subsidiaries, ...b.lobbyingFirms].filter(Boolean);
+        const fuzzyHits = findFuzzyEntityMatches(fuzzyCandidatesA, fuzzyCandidatesB, 0.86).filter(
+          (m) => m.left.toLowerCase() !== m.right.toLowerCase()
+        );
+        if (fuzzyHits.length > 0) {
+          const topSim = fuzzyHits[0].similarity;
+          overlaps.push({
+            entityA: a.entityName,
+            entityB: b.entityName,
+            overlapType: 'FUZZY_ENTITY_OR_SHELL_MATCH',
+            sharedValues: fuzzyHits
+              .slice(0, 4)
+              .map((m) => `${m.left} ≈ ${m.right} (${Math.round(m.similarity * 100)}%)`),
+            strength: Number(Math.min(0.98, topSim).toFixed(2)),
+            similarityScore: topSim,
+          });
+        }
+      }
+    }
+
+    // Counterparty Contagion Graph overlap correlation (public 10-K/8-K/Form D/ClinicalTrials/OpenAlex mirrors)
+    const cpRows = this.getCounterpartyContagionEdges(500);
+    const cpByTarget = new Map<string, Set<string>>();
+    for (const row of cpRows) {
+      const k = row.targetEntity.toLowerCase();
+      if (!cpByTarget.has(k)) cpByTarget.set(k, new Set());
+      cpByTarget.get(k)!.add(row.counterpartyEntity);
+    }
+    for (let i = 0; i < entities.length; i++) {
+      for (let j = i + 1; j < entities.length; j++) {
+        const a = entities[i];
+        const b = entities[j];
+        const setA = Array.from(cpByTarget.get(a.entityName.toLowerCase()) || []);
+        const setB = Array.from(cpByTarget.get(b.entityName.toLowerCase()) || []);
+        const sharedCp = intersect(setA, setB);
+        if (sharedCp.length > 0) {
+          overlaps.push({
+            entityA: a.entityName,
+            entityB: b.entityName,
+            overlapType: 'COUNTERPARTY_CONTAGION_LINK',
+            sharedValues: sharedCp.slice(0, 6),
+            strength: Math.min(1, 0.5 + sharedCp.length * 0.15),
+          });
+        }
+      }
+    }
+
+    return {
+      totalArchivedInvestigations: all.length,
+      entities,
+      overlaps,
+      generatedAtIso: new Date().toISOString(),
+    };
+  }
+
+  /**
+   * Persists discovered counterparties from SEC EFTS (10-K/8-K/Form D), ClinicalTrials.gov v2,
+   * and OpenAlex into the persistent SQLite WAL Counterparty Contagion Graph.
+   */
+  public recordCounterpartyContagionEdges(
+    targetEntity: string,
+    signals: ReadonlyArray<PrivateEntitySignal>
+  ): number {
+    this.initDatabase();
+    const db = this.db!;
+    const nowIso = new Date().toISOString();
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO counterparty_contagion_edges (
+        edge_id, target_entity, counterparty_entity, source, form_type,
+        record_id, filing_date, url, evidence_sha256, captured_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    const targetNorm = targetEntity.trim().toLowerCase();
+    let inserted = 0;
+    for (const sig of signals) {
+      const candidates =
+        sig.discoveredRelatedEntities.length > 0
+          ? sig.discoveredRelatedEntities
+          : sig.entityName && sig.entityName.toLowerCase() !== targetNorm
+          ? [sig.entityName]
+          : [];
+      for (const cp of candidates.slice(0, 6)) {
+        const cleanCp = cp.trim();
+        if (!cleanCp || cleanCp.toLowerCase() === targetNorm) continue;
+        const edgeId = crypto
+          .createHash('sha256')
+          .update(`${targetNorm}|${cleanCp.toLowerCase()}|${sig.source}|${sig.recordId}`)
+          .digest('hex')
+          .slice(0, 24);
+        stmt.run(
+          edgeId,
+          targetEntity,
+          cleanCp,
+          sig.source,
+          sig.formType || '',
+          sig.recordId,
+          sig.date || '',
+          sig.url || '',
+          sig.sha256,
+          nowIso
+        );
+        inserted++;
+      }
+    }
+    return inserted;
+  }
+
+  public getCounterpartyContagionEdges(limit = 300): Array<{
+    edgeId: string;
+    targetEntity: string;
+    counterpartyEntity: string;
+    source: string;
+    formType: string;
+    recordId: string;
+    filingDate: string;
+    url: string;
+    evidenceSha256: string;
+    capturedAtIso: string;
+  }> {
+    this.initDatabase();
+    const db = this.db!;
+    const rows = db
+      .prepare(
+        `SELECT * FROM counterparty_contagion_edges ORDER BY captured_at_iso DESC LIMIT ?`
+      )
+      .all(Math.max(1, Math.min(limit, 1000))) as Array<Record<string, unknown>>;
+
+    return rows.map((r) => ({
+      edgeId: String(r.edge_id),
+      targetEntity: String(r.target_entity),
+      counterpartyEntity: String(r.counterparty_entity),
+      source: String(r.source),
+      formType: String(r.form_type || ''),
+      recordId: String(r.record_id),
+      filingDate: String(r.filing_date || ''),
+      url: String(r.url || ''),
+      evidenceSha256: String(r.evidence_sha256),
+      capturedAtIso: String(r.captured_at_iso),
+    }));
+  }
+
+  /**
+   * Field-Level Registry Mutation Diffing for ClinicalTrials.gov v2:
+   * Persists canonical SHA-256 hashes of outcomesModule and statusModule per NCT ID in SQLite WAL.
+   * When a previously observed trial mutates its primary endpoint or status (e.g. -> WITHDRAWN/TERMINATED),
+   * emits and signs an Ed25519 Silent-Mutation Alert.
+   */
+  public recordAndDiffClinicalTrialSnapshots(
+    targetEntity: string,
+    snapshots: ReadonlyArray<ClinicalTrialMutationSnapshot>
+  ): ClinicalTrialSilentMutationAlert[] {
+    this.initDatabase();
+    const db = this.db!;
+    const nowIso = new Date().toISOString();
+    const alerts: ClinicalTrialSilentMutationAlert[] = [];
+
+    const selectPrev = db.prepare(`SELECT * FROM clinical_trial_snapshots WHERE nct_id = ? LIMIT 1`);
+    const upsertSnap = db.prepare(
+      `INSERT OR REPLACE INTO clinical_trial_snapshots (
+        nct_id, target_entity, sponsor_name, brief_title, overall_status, last_update_date,
+        outcomes_sha256, status_sha256, primary_outcomes_summary, study_url, captured_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    const insertAlert = db.prepare(
+      `INSERT OR REPLACE INTO clinical_trial_mutations (
+        alert_id, target_entity, nct_id, brief_title, previous_status, current_status,
+        status_mutated, outcomes_mutated, previous_outcomes_sha256, current_outcomes_sha256,
+        severity, detected_at_iso, study_url, alert_sha256, ed25519_signature_base64, ed25519_public_key_pem
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    const highSeverityStatuses = new Set(['WITHDRAWN', 'TERMINATED', 'SUSPENDED']);
+
+    for (const snap of snapshots) {
+      const prev = selectPrev.get(snap.nctId) as Record<string, unknown> | undefined;
+
+      if (prev) {
+        const prevOutcomesSha = String(prev.outcomes_sha256 || '');
+        const prevStatusSha = String(prev.status_sha256 || '');
+        const prevStatus = String(prev.overall_status || 'UNKNOWN');
+        const outcomesMutated = prevOutcomesSha !== snap.outcomesSha256;
+        const statusMutated = prevStatusSha !== snap.statusSha256 || prevStatus !== snap.overallStatus;
+
+        if (outcomesMutated || statusMutated) {
+          const isCritical =
+            highSeverityStatuses.has(snap.overallStatus.toUpperCase()) ||
+            (outcomesMutated && statusMutated);
+          const severity: ClinicalTrialSilentMutationAlert['severity'] = isCritical
+            ? 'CRITICAL'
+            : outcomesMutated
+            ? 'HIGH'
+            : 'MEDIUM';
+
+          const payload = {
+            targetEntity,
+            nctId: snap.nctId,
+            briefTitle: snap.briefTitle,
+            previousStatus: prevStatus,
+            currentStatus: snap.overallStatus,
+            statusMutated,
+            outcomesMutated,
+            previousOutcomesSha256: prevOutcomesSha,
+            currentOutcomesSha256: snap.outcomesSha256,
+            severity,
+            detectedAtIso: nowIso,
+            studyUrl: snap.studyUrl,
+          };
+
+          const alertSha256 = crypto
+            .createHash('sha256')
+            .update(JSON.stringify(payload))
+            .digest('hex');
+          const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+          const ed25519SignatureBase64 = crypto
+            .sign(null, Buffer.from(alertSha256, 'utf8'), privateKey)
+            .toString('base64');
+          const ed25519PublicKeyPem = publicKey
+            .export({ type: 'spki', format: 'pem' })
+            .toString();
+
+          const alertId = `ctmut-${snap.nctId}-${alertSha256.slice(0, 12)}`;
+          const alert: ClinicalTrialSilentMutationAlert = {
+            alertId,
+            ...payload,
+            alertSha256,
+            ed25519SignatureBase64,
+            ed25519PublicKeyPem,
+          };
+
+          insertAlert.run(
+            alert.alertId,
+            alert.targetEntity,
+            alert.nctId,
+            alert.briefTitle,
+            alert.previousStatus,
+            alert.currentStatus,
+            alert.statusMutated ? 1 : 0,
+            alert.outcomesMutated ? 1 : 0,
+            alert.previousOutcomesSha256,
+            alert.currentOutcomesSha256,
+            alert.severity,
+            alert.detectedAtIso,
+            alert.studyUrl,
+            alert.alertSha256,
+            ed25519SignatureBase64,
+            ed25519PublicKeyPem
+          );
+          alerts.push(alert);
+        }
+      }
+
+      upsertSnap.run(
+        snap.nctId,
+        targetEntity,
+        snap.sponsorName,
+        snap.briefTitle,
+        snap.overallStatus,
+        snap.lastUpdateDate,
+        snap.outcomesSha256,
+        snap.statusSha256,
+        snap.primaryOutcomesSummary,
+        snap.studyUrl,
+        nowIso
+      );
+    }
+
+    return alerts;
+  }
+
+  public getClinicalTrialMutations(limit = 50): ClinicalTrialSilentMutationAlert[] {
+    this.initDatabase();
+    const db = this.db!;
+    const rows = db
+      .prepare(`SELECT * FROM clinical_trial_mutations ORDER BY detected_at_iso DESC LIMIT ?`)
+      .all(Math.max(1, Math.min(limit, 200))) as Array<Record<string, unknown>>;
+
+    return rows.map((r) => ({
+      alertId: String(r.alert_id),
+      targetEntity: String(r.target_entity),
+      nctId: String(r.nct_id),
+      briefTitle: String(r.brief_title),
+      previousStatus: String(r.previous_status),
+      currentStatus: String(r.current_status),
+      statusMutated: Boolean(r.status_mutated),
+      outcomesMutated: Boolean(r.outcomes_mutated),
+      previousOutcomesSha256: String(r.previous_outcomes_sha256),
+      currentOutcomesSha256: String(r.current_outcomes_sha256),
+      severity: String(r.severity) as ClinicalTrialSilentMutationAlert['severity'],
+      detectedAtIso: String(r.detected_at_iso),
+      studyUrl: String(r.study_url),
+      alertSha256: String(r.alert_sha256),
+      ed25519SignatureBase64: String(r.ed25519_signature_base64),
+      ed25519PublicKeyPem: String(r.ed25519_public_key_pem),
+    }));
+  }
+
+  /**
+   * Builds the unified multi-company SQLite WAL Knowledge Universe for the v20.0 WebGPU Force-Directed Graph.
+   */
+  public buildApexVaultGraph(): {
+    nodes: Array<{
+      id: string;
+      label: string;
+      nodeType: 'target' | 'counterparty' | 'subsidiary' | 'asn' | 'csp' | 'regulator' | 'lobbyist';
+      subtitle: string;
+      url?: string;
+      degree: number;
+    }>;
+    edges: Array<{
+      source: string;
+      target: string;
+      relation: string;
+      weight: number;
+    }>;
+    stats: {
+      archivedTargets: number;
+      counterpartyEdges: number;
+      clinicalMutations: number;
+    };
+  } {
+    const archive = this.getInvestigationArchive(80);
+    const latestByEntity = new Map<string, PersistedInvestigationSummary>();
+    for (const item of archive) {
+      const k = item.entityName.toLowerCase();
+      if (!latestByEntity.has(k)) latestByEntity.set(k, item);
+    }
+    const targets = Array.from(latestByEntity.values());
+    const cpEdges = this.getCounterpartyContagionEdges(300);
+    const clinicalMuts = this.getClinicalTrialMutations(50);
+
+    const nodeMap = new Map<
+      string,
+      {
+        id: string;
+        label: string;
+        nodeType: 'target' | 'counterparty' | 'subsidiary' | 'asn' | 'csp' | 'regulator' | 'lobbyist';
+        subtitle: string;
+        url?: string;
+        degree: number;
+      }
+    >();
+    const edgeSet = new Set<string>();
+    const edges: Array<{ source: string; target: string; relation: string; weight: number }> = [];
+
+    const ensureNode = (
+      id: string,
+      label: string,
+      nodeType: 'target' | 'counterparty' | 'subsidiary' | 'asn' | 'csp' | 'regulator' | 'lobbyist',
+      subtitle: string,
+      url?: string
+    ) => {
+      if (!nodeMap.has(id)) {
+        nodeMap.set(id, { id, label: label.slice(0, 48), nodeType, subtitle, url, degree: 0 });
+      }
+    };
+
+    const addEdge = (source: string, target: string, relation: string, weight: number) => {
+      if (source === target) return;
+      const key = `${source}->${target}|${relation}`;
+      if (edgeSet.has(key)) return;
+      edgeSet.add(key);
+      edges.push({ source, target, relation, weight });
+      const ns = nodeMap.get(source);
+      const nt = nodeMap.get(target);
+      if (ns) ns.degree++;
+      if (nt) nt.degree++;
+    };
+
+    for (const t of targets) {
+      const tid = `target:${t.entityName.toLowerCase()}`;
+      ensureNode(
+        tid,
+        t.entityName,
+        'target',
+        `${t.legalName} · ${t.industry} · FRI ${t.fri.toFixed(2)} · MAI ${t.mai.toFixed(2)}`,
+        t.primaryDomain ? `https://${t.primaryDomain}` : undefined
+      );
+
+      for (const sub of t.subsidiaries.slice(0, 6)) {
+        const sid = `sub:${sub.toLowerCase()}`;
+        ensureNode(sid, sub, 'subsidiary', `Subsidiary / LEI child of ${t.entityName}`);
+        addEdge(tid, sid, 'SUBSIDIARY', 1.1);
+      }
+      for (const asn of t.asns.slice(0, 3)) {
+        const aid = `asn:${asn.toLowerCase()}`;
+        ensureNode(aid, asn, 'asn', `BGP Autonomous System routed by ${t.entityName}`, `https://stat.ripe.net/${asn}`);
+        addEdge(tid, aid, 'ROUTED_VIA_ASN', 0.9);
+      }
+      for (const csp of t.cspOrigins.slice(0, 5)) {
+        const host = csp.replace(/^https?:\/\//i, '').split('/')[0];
+        if (!host) continue;
+        const cid = `csp:${host.toLowerCase()}`;
+        ensureNode(cid, host, 'csp', `CSP whitelisted third-party origin`);
+        addEdge(tid, cid, 'CSP_ORIGIN', 0.7);
+      }
+      for (const reg of t.regulatorsAndCourts.slice(0, 4)) {
+        const rid = `reg:${reg.toLowerCase()}`;
+        ensureNode(rid, reg, 'regulator', `Federal regulator or court docket forum`);
+        addEdge(tid, rid, 'REGULATED_BY', 0.95);
+      }
+      for (const lob of t.lobbyingFirms.slice(0, 4)) {
+        const lid = `lob:${lob.toLowerCase()}`;
+        ensureNode(lid, lob, 'lobbyist', `Senate LDA lobbying registrant`);
+        addEdge(tid, lid, 'RETAINS_LOBBYIST', 1.0);
+      }
+    }
+
+    for (const cp of cpEdges.slice(0, 120)) {
+      const tid = `target:${cp.targetEntity.toLowerCase()}`;
+      if (!nodeMap.has(tid)) {
+        ensureNode(tid, cp.targetEntity, 'target', `Investigated entity (Counterparty Contagion root)`);
+      }
+      const cpid = `cp:${cp.counterpartyEntity.toLowerCase()}`;
+      ensureNode(
+        cpid,
+        cp.counterpartyEntity,
+        'counterparty',
+        `${cp.source} ${cp.formType || ''} (${cp.filingDate}) · Record ${cp.recordId}`,
+        cp.url || undefined
+      );
+      addEdge(cpid, tid, `COUNTERPARTY_${cp.source}`, 1.25);
+    }
+
+    return {
+      nodes: Array.from(nodeMap.values()),
+      edges,
+      stats: {
+        archivedTargets: targets.length,
+        counterpartyEdges: cpEdges.length,
+        clinicalMutations: clinicalMuts.length,
+      },
+    };
   }
 }
 

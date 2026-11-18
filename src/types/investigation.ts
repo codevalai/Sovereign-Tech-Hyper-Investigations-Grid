@@ -1,3 +1,23 @@
+import type { ZeroDayAnomalyReport } from '../engine/unknownFraudDetector';
+import type { SubsidiaryAndSwarmSynthesis } from '../engine/subsidiaryAndSwarmMapper';
+import type {
+  ClinicalTrialMutationSnapshot,
+  ClinicalTrialSilentMutationAlert,
+  PrivateDiscoveryReport,
+  PrivateEntitySignal,
+} from '../engine/privateEntityDiscovery';
+import type { SquadCompressionSummary } from '../engine/sparseSquadCompressor';
+
+export type {
+  ZeroDayAnomalyReport,
+  SubsidiaryAndSwarmSynthesis,
+  PrivateDiscoveryReport,
+  PrivateEntitySignal,
+  ClinicalTrialMutationSnapshot,
+  ClinicalTrialSilentMutationAlert,
+  SquadCompressionSummary,
+};
+
 export type DomainCategory =
   | 'all'
   | 'ai_llm'
@@ -673,6 +693,334 @@ export interface PropertyGraphEdge {
   verifiedSource?: string;
 }
 
+export interface ProbeExecutionRecord {
+  probeId: string;
+  sourceName: string;
+  phase: 'Phase 1' | 'Phase 2' | 'Phase 2B' | 'Phase 2C' | 'Phase 3' | 'Phase 4';
+  squads: string[];
+  status: 'ok' | 'empty' | 'error';
+  latencyMs: number;
+  recordsFound: number;
+  summary: string;
+  url?: string;
+  timestampIso: string;
+  pivotDepth?: number;
+  discoveredFrom?: string;
+}
+
+export interface LiveMarketQuote {
+  symbol: string;
+  exchange: string;
+  currency: string;
+  price: number;
+  previousClose: number;
+  changePercent: number;
+  fiveDayCloseSeries: number[];
+  fetchedAtIso: string;
+  sourceUrl: string;
+}
+
+export interface ShodanInternetDbHost {
+  ip: string;
+  ports: number[];
+  cpes: string[];
+  hostnames: string[];
+  tags: string[];
+  vulns: string[];
+  sourceUrl: string;
+}
+
+export interface HttpSecurityAndCspAudit {
+  checkedUrl: string;
+  httpStatus: number;
+  serverBanner: string;
+  cdnOrWafDetected: string;
+  hsts: string;
+  xFrameOptions: string;
+  xContentTypeOptions: string;
+  referrerPolicy: string;
+  cspPresent: boolean;
+  cspDiscoveredOrigins: string[];
+  hardeningScore: number;
+  missingHeaders: string[];
+}
+
+export interface RdapAndDnssecRecord {
+  domain: string;
+  rdapServer: string;
+  registrar: string;
+  registeredDate: string;
+  expirationDate: string;
+  lastChangedDate: string;
+  eppStatuses: string[];
+  nameservers: string[];
+  dnssecValidated: boolean;
+  dsRecordsCount: number;
+}
+
+export interface CratesIoPackage {
+  name: string;
+  maxVersion: string;
+  downloads: number;
+  recentDownloads: number;
+  description: string;
+  repositoryUrl: string;
+  cratesUrl: string;
+}
+
+export interface DockerHubRepo {
+  namespace: string;
+  name: string;
+  pullCount: number;
+  starCount: number;
+  lastUpdated: string;
+  description: string;
+  hubUrl: string;
+}
+
+export interface SoftwareSupplyChainAudit {
+  npmPackages: {
+    name: string;
+    version: string;
+    description: string;
+    weeklyDownloads: number;
+    monthlyDownloads: number;
+    repositoryUrl: string;
+    npmUrl: string;
+  }[];
+  pypiPackage: {
+    name: string;
+    version: string;
+    summary: string;
+    author: string;
+    homePage: string;
+    pypiUrl: string;
+  } | null;
+  cratesIoPackages?: CratesIoPackage[];
+  dockerHubRepos?: DockerHubRepo[];
+  osvVulnerabilities: {
+    id: string;
+    packageName: string;
+    ecosystem: string;
+    summary: string;
+    published: string;
+    aliases: string[];
+    url: string;
+  }[];
+}
+
+export interface PublicAttentionTelemetry {
+  wikipediaArticle: string;
+  dailyViews: { date: string; views: number }[];
+  totalViews14d: number;
+  avgDailyViews: number;
+  peakDate: string;
+  peakViews: number;
+  spikeZScore: number;
+  hackerNewsThreads: {
+    objectId: string;
+    title: string;
+    author: string;
+    points: number;
+    numComments: number;
+    createdAt: string;
+    url: string;
+  }[];
+  defiLlamaTvlUsd: number | null;
+  defiLlamaSlug: string | null;
+  geckoTerminalPools?: {
+    id: string;
+    name: string;
+    network: string;
+    reserveUsd: number;
+    volume24hUsd: number;
+    url: string;
+  }[];
+}
+
+export interface HstsPreloadAudit {
+  domain: string;
+  status: string;
+  preloaded: boolean;
+  sourceUrl: string;
+}
+
+export interface MozillaObservatoryAudit {
+  host: string;
+  grade: string;
+  score: number;
+  testsPassed: number;
+  testsFailed: number;
+  detailsUrl: string;
+}
+
+export interface EpssCveScore {
+  cve: string;
+  epss: number;
+  percentile: number;
+  date: string;
+  sourceUrl: string;
+}
+
+export interface SpamhausDropCheck {
+  checkedIps: string[];
+  matchedCidrs: string[];
+  listEntriesCount: number;
+  sslblEntriesCount: number;
+  clean: boolean;
+}
+
+export interface CommonCrawlSnapshot {
+  indexId: string;
+  url: string;
+  status: string;
+  mime: string;
+  timestamp: string;
+}
+
+export interface ZkTlsAttestationRecord {
+  url: string;
+  serverName: string;
+  timestampIso: string;
+  httpStatus: number;
+  responseBytes: number;
+  responseSha256: string;
+  mode: 'ZKTLS_NOTARIZED' | 'DIRECT_SHA256_TRANSCRIPT';
+  notaryUrl?: string;
+  presentationProofBase64?: string;
+}
+
+export interface RecursivePivotDiscovery {
+  value: string;
+  type: 'DOMAIN' | 'IP' | 'ASN' | 'PACKAGE';
+  depth: number;
+  discoveredFrom: string;
+  status: 'HIT' | 'EMPTY' | 'ERR';
+  latencyMs: number;
+  summary: string;
+  childCount: number;
+  details: Record<string, unknown>;
+}
+
+export interface ExternalAnchorReceiptRecord {
+  merkleRootHex: string;
+  anchoredAtIso: string;
+  opentimestamps: {
+    calendarUrl: string;
+    status: 'STAMPED_PENDING_BTC_BLOCK' | 'FAILED';
+    otsCommitmentBase64: string | null;
+    otsBytesLength: number;
+  };
+  sigstoreRekor: {
+    endpoint: string;
+    status: 'LOGGED' | 'SKIPPED_OR_FAILED';
+    logIndex?: number;
+    uuid?: string;
+    integratedTime?: number;
+    errorNote?: string;
+  };
+}
+
+export interface LivingDeltaPatchRecord {
+  patchId: string;
+  investigationId: string;
+  entityName: string;
+  primaryDomain: string;
+  previousCapturedAt: string;
+  currentCapturedAt: string;
+  hasMutation: boolean;
+  severity: 'NONE' | 'LOW' | 'MODERATE' | 'HIGH' | 'CRITICAL';
+  mutations: {
+    addedCspOrigins: string[];
+    removedCspOrigins: string[];
+    addedPorts: number[];
+    removedPorts: number[];
+    addedCves: string[];
+    rdapLockChanged: boolean;
+    previousRdapStatuses: string[];
+    currentRdapStatuses: string[];
+    hardeningScoreDelta: number | null;
+    dnssecChanged: boolean;
+  };
+  patchSha256: string;
+  ed25519SignatureBase64: string;
+  ed25519PublicKeyPem: string;
+}
+
+export interface DeepAttackSurfaceTelemetry {
+  shodanHosts: ShodanInternetDbHost[];
+  httpSecurityAudit: HttpSecurityAndCspAudit | null;
+  rdapAndDnssec: RdapAndDnssecRecord | null;
+  hstsPreload?: HstsPreloadAudit | null;
+  mozillaObservatory?: MozillaObservatoryAudit | null;
+  epssScores?: EpssCveScore[];
+  spamhausDropCheck?: SpamhausDropCheck | null;
+  commonCrawlSnapshots?: CommonCrawlSnapshot[];
+  softwareSupplyChain: SoftwareSupplyChainAudit;
+  publicAttention: PublicAttentionTelemetry;
+  liveMarketQuote: LiveMarketQuote | null;
+  zkTlsAttestations?: ZkTlsAttestationRecord[];
+  recursivePivots?: RecursivePivotDiscovery[];
+  attackSurfaceVerdict: string;
+}
+
+export interface PersistedInvestigationSummary {
+  investigationId: string;
+  query: string;
+  entityName: string;
+  legalName: string;
+  industry: string;
+  country: string;
+  primaryDomain: string;
+  fri: number;
+  mai: number;
+  sourcesCount: number;
+  filesCount: number;
+  merkleRoot: string | null;
+  ed25519Signature: string | null;
+  ipfsCidV1: string | null;
+  bitcoinBlockHeight: number | null;
+  httpHardeningScore: number | null;
+  shodanOpenPortsCount: number;
+  osvVulnsCount: number;
+  asns: string[];
+  cspOrigins: string[];
+  regulatorsAndCourts: string[];
+  lobbyingFirms: string[];
+  subsidiaries: string[];
+  openPorts?: number[];
+  osvCveIds?: string[];
+  rdapStatuses?: string[];
+  dnssecValidated?: boolean | null;
+  hstsPreloadStatus?: string | null;
+  livePriceUsd: number | null;
+  liveChangePct: number | null;
+  completedAtIso: string;
+}
+
+export interface CrossEntityOverlapEdge {
+  entityA: string;
+  entityB: string;
+  overlapType:
+    | 'SHARED_ASN'
+    | 'SHARED_CSP_VENDOR'
+    | 'SHARED_REGULATOR_OR_COURT'
+    | 'SHARED_LOBBYIST'
+    | 'SHARED_SUBSIDIARY_OR_UBO'
+    | 'FUZZY_ENTITY_OR_SHELL_MATCH'
+    | 'COUNTERPARTY_CONTAGION_LINK';
+  sharedValues: string[];
+  strength: number;
+  similarityScore?: number;
+}
+
+export interface CrossEntityCorrelationReport {
+  totalArchivedInvestigations: number;
+  entities: PersistedInvestigationSummary[];
+  overlaps: CrossEntityOverlapEdge[];
+  generatedAtIso: string;
+}
+
 export interface LiveBusinessIntelligence {
   query: string;
   entityName: string;
@@ -805,6 +1153,11 @@ export interface LiveBusinessIntelligence {
   patentGrantCapture?: PatentGrantCaptureTelemetry;
   darkPoolCrypto?: DarkPoolCryptoTelemetry;
   legalSlappBankruptcy?: LegalSlappBankruptcyTelemetry;
+  deepAttackSurface?: DeepAttackSurfaceTelemetry;
+  zeroDayFraud?: ZeroDayAnomalyReport;
+  subsidiarySwarm?: SubsidiaryAndSwarmSynthesis;
+  privateDiscovery?: PrivateDiscoveryReport;
+  probeTelemetry?: ProbeExecutionRecord[];
   bftCorroboration?: BftCorroborationSummary;
   blockchainAnchor?: BlockchainTimestampAnchor;
   realtimeDaemonFeedSnapshot?: LiveFeedEvent[];
