@@ -1,0 +1,60 @@
+name: Sovereign 160-Agent Cryptographic CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  verify-forensic-matrix:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js 22 LTS
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: 'npm'
+
+      - name: Install Dependencies
+        run: npm ci || npm install
+
+      - name: Strict TypeScript Typecheck (tsc --noEmit)
+        run: npx tsc --noEmit
+
+      - name: Production Vite Bundle Build
+        run: npm run build
+
+      - name: Verify 160-Agent Dossier Cryptographic Seals (Composite & Verify)
+        run: |
+          npx tsx -e "
+          import fs from 'node:fs';
+          import path from 'node:path';
+          import { execSync } from 'node:child_process';
+          import { create160AgentSwarm } from './src/services/swarmOrchestrator.ts';
+          import { generateInvestigationDossier } from './src/services/dossierGenerator.ts';
+
+          const squads = create160AgentSwarm('Quantum Computing');
+          squads.forEach(sq => { sq.status = 'completed'; sq.agents.forEach(a => { a.status = 'completed'; a.progress = 100; }); });
+          const dossier = generateInvestigationDossier({
+            entity: 'Quantum Computing',
+            focus: ['quantum', 'semiconductors', 'monopoly'],
+            constraints: 'CI verification',
+            timeRange: '2019-2035',
+            geography: 'Global'
+          }, squads, 1.0);
+
+          const tmpDir = '/tmp/ci_dossier_verify';
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+          for (const file of dossier.files) {
+            const dest = path.join(tmpDir, file.filename);
+            fs.mkdirSync(path.dirname(dest), { recursive: true });
+            fs.writeFileSync(dest, file.content, 'utf8');
+          }
+          execSync('node verify_dossier.mjs', { cwd: tmpDir, stdio: 'inherit' });
+          fs.rmSync(tmpDir, { recursive: true, force: true });
+          "

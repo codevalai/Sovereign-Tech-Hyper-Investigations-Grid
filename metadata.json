@@ -1,0 +1,6 @@
+{
+  "name": "Sovereign Tech Hyper-Investigations Grid",
+  "description": "Planetary-grade investigation rig with 50-agent recursive swarm, live tech power leaderboard, planetary M&A news feed, and automated forensic dossier ZIP generator.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
