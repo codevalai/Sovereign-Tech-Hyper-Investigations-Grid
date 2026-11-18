@@ -1,0 +1,10 @@
+node_modules/
+dist/
+build/
+coverage/
+.sovereign_data/
+.git/
+*.log
+.env*
+!.env.example
+/tmp/

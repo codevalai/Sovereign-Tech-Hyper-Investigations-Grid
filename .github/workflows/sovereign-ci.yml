@@ -5,9 +5,18 @@ on:
     branches: [main, master]
   pull_request:
     branches: [main, master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: sovereign-ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   verify-forensic-matrix:
+    name: Typecheck, Production Build & 160-Agent Cryptographic Seals
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -18,43 +27,27 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '22'
-          cache: 'npm'
+          check-latest: false
 
       - name: Install Dependencies
-        run: npm ci || npm install
+        run: npm install --no-audit --no-fund
 
       - name: Strict TypeScript Typecheck (tsc --noEmit)
-        run: npx tsc --noEmit
+        run: npm run lint
 
       - name: Production Vite Bundle Build
         run: npm run build
 
-      - name: Verify 160-Agent Dossier Cryptographic Seals (Composite & Verify)
-        run: |
-          npx tsx -e "
-          import fs from 'node:fs';
-          import path from 'node:path';
-          import { execSync } from 'node:child_process';
-          import { create160AgentSwarm } from './src/services/swarmOrchestrator.ts';
-          import { generateInvestigationDossier } from './src/services/dossierGenerator.ts';
+      - name: Verify 160-Agent Dossier Cryptographic Seals & Ring-1/Ring-5 Defense
+        run: npx tsx scripts/verify-ci.ts --require-build
 
-          const squads = create160AgentSwarm('Quantum Computing');
-          squads.forEach(sq => { sq.status = 'completed'; sq.agents.forEach(a => { a.status = 'completed'; a.progress = 100; }); });
-          const dossier = generateInvestigationDossier({
-            entity: 'Quantum Computing',
-            focus: ['quantum', 'semiconductors', 'monopoly'],
-            constraints: 'CI verification',
-            timeRange: '2019-2035',
-            geography: 'Global'
-          }, squads, 1.0);
+  verify-container-build:
+    name: Multi-Stage Docker Image Build Verification
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
 
-          const tmpDir = '/tmp/ci_dossier_verify';
-          fs.rmSync(tmpDir, { recursive: true, force: true });
-          for (const file of dossier.files) {
-            const dest = path.join(tmpDir, file.filename);
-            fs.mkdirSync(path.dirname(dest), { recursive: true });
-            fs.writeFileSync(dest, file.content, 'utf8');
-          }
-          execSync('node verify_dossier.mjs', { cwd: tmpDir, stdio: 'inherit' });
-          fs.rmSync(tmpDir, { recursive: true, force: true });
-          "
+      - name: Build Production Docker Image (node:22-bookworm-slim)
+        run: docker build -t sovereign-forensic-matrix:ci .
