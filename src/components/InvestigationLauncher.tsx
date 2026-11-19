@@ -25,6 +25,7 @@ interface InvestigationLauncherProps {
   savedHistory?: InvestigationResult[];
   onSelectHistoryResult?: (res: InvestigationResult) => void;
   onDownloadZip: () => void;
+  onDownloadAuditBundle?: () => void;
   onOpenDossierViewer: () => void;
   prefillEntity?: string;
   errorMessage?: string | null;
@@ -118,6 +119,7 @@ export const InvestigationLauncher: React.FC<InvestigationLauncherProps> = ({
   savedHistory = [],
   onSelectHistoryResult,
   onDownloadZip,
+  onDownloadAuditBundle,
   onOpenDossierViewer,
   prefillEntity,
   errorMessage,
@@ -510,6 +512,18 @@ export const InvestigationLauncher: React.FC<InvestigationLauncherProps> = ({
                   <Download className="w-4 h-4" />
                   <span>Download Investigation ZIP</span>
                 </button>
+
+                {onDownloadAuditBundle && (
+                  <button
+                    type="button"
+                    onClick={onDownloadAuditBundle}
+                    title="Concatenates 00_EXEC_SUMMARY.md, 38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md, 37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md, and DELTA_ALERT_REPORT.md"
+                    className="px-3.5 py-2.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 text-cyan-200 hover:text-white border border-cyan-500/40 font-['Chakra_Petch'] font-bold text-xs uppercase tracking-wider flex items-center gap-2 transition-colors whitespace-nowrap cursor-pointer"
+                  >
+                    <FileText className="w-4 h-4 text-cyan-300" />
+                    <span>Download Audit Bundle (.md)</span>
+                  </button>
+                )}
 
                 <button
                   type="button"

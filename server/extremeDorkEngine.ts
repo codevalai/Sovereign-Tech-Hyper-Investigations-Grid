@@ -31,6 +31,7 @@ export interface DorkArtifact {
   quarantined: boolean;
   quarantineReason?: string;
   promptTrapsStripped: number;
+  pdfUrl?: string;
 }
 
 export interface StealthEditDiff {
@@ -59,7 +60,7 @@ export interface ExtremeDorkPayload {
   observedSourceClasses: DorkSourceClass[];
   discoveredSubdomains: string[];
   discoveredAgencies: string[];
-  engineStats: Record<string, { status: 'ok' | 'error'; count: number; latencyMs: number; error?: string }>;
+  engineStats: Record<string, { status: 'ok' | 'rate_limited' | 'error'; count: number; latencyMs: number; error?: string }>;
   artifacts: DorkArtifact[];
   stealthEditDiffs: StealthEditDiff[];
 }
@@ -116,7 +117,8 @@ export async function executeDuckDuckGoOperatorQuery(
   query: string,
   squadTags: string[],
   hopDepth = 1,
-  maxResults = 7
+  maxResults = 7,
+  diagnostics?: { rateLimited?: boolean; errorNote?: string }
 ): Promise<DorkArtifact[]> {
   const results: DorkArtifact[] = [];
   try {
@@ -133,8 +135,25 @@ export async function executeDuckDuckGoOperatorQuery(
       maxBytes: 768_000,
       bypassCache: true,
     });
-    if (!res.ok) return results;
-    const html = res.bodyText;
+    const html = res.bodyText || '';
+    const isBotChallenge =
+      res.status === 202 ||
+      res.status === 403 ||
+      res.status === 429 ||
+      /anomaly\.js|challenge|captcha-form|bots use|unusual traffic/i.test(html);
+    if (isBotChallenge) {
+      if (diagnostics) {
+        diagnostics.rateLimited = true;
+        diagnostics.errorNote = `DuckDuckGo HTML CAPTCHA/bot-challenge (HTTP ${res.status || 202})`;
+      }
+      return results;
+    }
+    if (!res.ok) {
+      if (diagnostics && !diagnostics.errorNote) {
+        diagnostics.errorNote = `DuckDuckGo HTTP ${res.status}`;
+      }
+      return results;
+    }
 
     const linkRegex = /<a[^>]+class="result__a"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/gi;
     let match: RegExpExecArray | null;
@@ -160,14 +179,19 @@ export async function executeDuckDuckGoOperatorQuery(
       );
       count++;
     }
-  } catch {
-    // Fail closed per query without breaking the suite
+  } catch (err) {
+    if (diagnostics && !diagnostics.errorNote) {
+      diagnostics.errorNote = err instanceof Error ? err.message : 'DDG query failed';
+    }
   }
   return results;
 }
 
 /** 1. Keyless DuckDuckGo HTML Operator Dorking (supports site:, filetype:, intitle:) */
-async function runDuckDuckGoDorks(target: string, domain: string): Promise<DorkArtifact[]> {
+async function runDuckDuckGoDorks(
+  target: string,
+  domain: string
+): Promise<{ artifacts: DorkArtifact[]; rateLimited: boolean; errorNote?: string }> {
   const packs: Array<{ squads: string[]; query: string }> = [
     { squads: ['A', 'E'], query: `"${target}" filetype:pdf` },
     ...(domain ? [{ squads: ['A', 'E'], query: `site:${domain} filetype:pdf` }] : []),
@@ -178,20 +202,28 @@ async function runDuckDuckGoDorks(target: string, domain: string): Promise<DorkA
   ];
 
   const results: DorkArtifact[] = [];
+  const diagnostics: { rateLimited?: boolean; errorNote?: string } = {};
   // Polite paced batches of 2 queries to respect DDG rate limits while keeping wall-clock brisk
   for (let i = 0; i < packs.length; i += 2) {
     const batch = packs.slice(i, i + 2);
     const settled = await Promise.allSettled(
-      batch.map((pack) => executeDuckDuckGoOperatorQuery(pack.query, pack.squads, 1, 6))
+      batch.map((pack) => executeDuckDuckGoOperatorQuery(pack.query, pack.squads, 1, 6, diagnostics))
     );
     for (const s of settled) {
       if (s.status === 'fulfilled') results.push(...s.value);
+    }
+    if (diagnostics.rateLimited && results.length === 0) {
+      break;
     }
     if (i + 2 < packs.length) {
       await new Promise((r) => setTimeout(r, 450));
     }
   }
-  return results;
+  return {
+    artifacts: results,
+    rateLimited: Boolean(diagnostics.rateLimited),
+    errorNote: diagnostics.errorNote,
+  };
 }
 
 /** 2. Keyless Wayback Machine CDX Dorking (Historical PDFs, Policy Docs & Deleted URLs) */
@@ -374,7 +406,8 @@ async function runFederalRegisterDork(target: string): Promise<{ artifacts: Dork
         : [];
       agencyList.forEach((ag) => agencies.add(ag));
       const snippet = `${String(r.type || 'Notice')} | ${agencyList.join(', ')} | ${String(r.abstract || '')}`;
-      return buildShieldedDorkArtifact({
+      const pdfUrl = r.pdf_url ? String(r.pdf_url) : undefined;
+      const art = buildShieldedDorkArtifact({
         idPrefix: 'fr',
         squadTags: ['B', 'M', 'P'],
         sourceEngine: 'federal_register',
@@ -384,13 +417,15 @@ async function runFederalRegisterDork(target: string): Promise<{ artifacts: Dork
         snippet,
         timestamp: r.publication_date ? String(r.publication_date) : undefined,
       });
+      if (pdfUrl && pdfUrl.startsWith('http')) art.pdfUrl = pdfUrl;
+      return art;
     });
 
   return { artifacts, agencies: Array.from(agencies) };
 }
 
 function htmlToNormalizedLines(html: string): string[] {
-  return html
+  const visible = html
     .replace(/<script[\s\S]*?<\/script>/gi, ' ')
     .replace(/<style[\s\S]*?<\/style>/gi, ' ')
     .replace(/<(?:p|div|li|br|h[1-6]|tr)[^>]*>/gi, '\n')
@@ -398,85 +433,131 @@ function htmlToNormalizedLines(html: string): string[] {
     .split('\n')
     .map((l) => l.replace(/\s+/g, ' ').trim())
     .filter((l) => l.length > 25);
+  if (visible.length > 0) return visible;
+
+  // SPA / JS-rendered shell fallback: extract meta tags, title, script bundle paths & policy anchors
+  const structuralLines: string[] = [];
+  const titleM = html.match(/<title[^>]*>([\s\S]*?)<\/title>/i);
+  if (titleM?.[1]) {
+    const cleanTitle = titleM[1].replace(/\s+/g, ' ').trim();
+    if (cleanTitle) structuralLines.push(`TITLE: ${cleanTitle}`);
+  }
+  const metaRegex = /<meta\s+[^>]*?(?:name|property)=["']([^"']+)["'][^>]*?content=["']([^"']+)["'][^>]*>/gi;
+  let m: RegExpExecArray | null;
+  while ((m = metaRegex.exec(html)) !== null && structuralLines.length < 25) {
+    structuralLines.push(`META[${m[1]}]: ${m[2].replace(/\s+/g, ' ').trim().slice(0, 180)}`);
+  }
+  const hrefRegex = /href=["']([^"']*(?:terms|privacy|legal|arbitration|policy|disclosure|sec|compliance)[^"']*)["']/gi;
+  while ((m = hrefRegex.exec(html)) !== null && structuralLines.length < 40) {
+    structuralLines.push(`LINK: ${m[1].trim()}`);
+  }
+  return Array.from(new Set(structuralLines));
 }
 
 /**
  * Wayback Stealth-Edit Diff Helper (Squad L):
- * Uses collapse=digest + id_ raw snapshot retrieval across /terms, /privacy, /security, /legal, /tos
+ * Uses collapse=digest + id_ raw snapshot retrieval across /terms, /privacy, /legal, /security, /tos, /
  * to detect silent policy clause mutations (arbitration, class action waiver, biometric, AI training, etc.).
  */
 export async function runWaybackStealthEditDiff(domain: string): Promise<StealthEditDiff[]> {
   const cleanDomain = domain.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
   if (!cleanDomain) return [];
-  const targetPaths = ['/terms', '/privacy', '/security', '/legal', '/tos'];
+  const targetPaths = ['/terms', '/privacy', '/legal', '/privacy-policy', '/terms-of-service', '/security', '/tos', '/'];
 
-  const settled = await Promise.allSettled(
-    targetPaths.map(async (path): Promise<StealthEditDiff | null> => {
-      const cdxUrl =
-        `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(`${cleanDomain}${path}`)}` +
-        `&output=json&filter=statuscode:200&collapse=digest&fl=timestamp,original,digest&limit=30`;
+  const diffs: StealthEditDiff[] = [];
+  // Process in paced batches of 2 to respect Wayback CDX rate limits cleanly
+  for (let i = 0; i < targetPaths.length && diffs.length < 4; i += 2) {
+    const batch = targetPaths.slice(i, i + 2);
+    const settled = await Promise.allSettled(
+      batch.map(async (path): Promise<StealthEditDiff | null> => {
+        const cdxUrl =
+          `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(`${cleanDomain}${path}`)}` +
+          `&output=json&filter=statuscode:200&collapse=timestamp:6&fl=timestamp,original,digest&limit=-25`;
 
-      const cdxRes = await resilientFetch(cdxUrl, {
-        headers: { 'User-Agent': UA },
-        timeoutMs: 9000,
-        maxBytes: 512_000,
-      });
-      if (!cdxRes.ok) return null;
+        const cdxRes = await resilientFetch(cdxUrl, {
+          headers: { 'User-Agent': UA },
+          timeoutMs: 14000,
+          maxBytes: 512_000,
+        });
+        if (!cdxRes.ok) return null;
 
-      const rows = JSON.parse(cdxRes.bodyText) as string[][];
-      if (!Array.isArray(rows) || rows.length < 3) return null;
+        const rows = JSON.parse(cdxRes.bodyText) as string[][];
+        if (!Array.isArray(rows) || rows.length < 3) return null;
 
-      const oldest = rows[1];
-      const newest = rows[rows.length - 1];
-      if (!oldest || !newest || oldest[2] === newest[2]) return null;
+        const newest = rows[rows.length - 1];
+        // Prefer the earliest historical snapshot in the window with a distinct digest to capture full policy drift
+        const priorDistinct =
+          rows
+            .slice(1, -1)
+            .find((r) => Boolean(r?.[2]) && r[2] !== newest?.[2]) || rows[1];
+        if (!priorDistinct || !newest || priorDistinct[2] === newest[2]) return null;
 
-      const oldestRawUrl = `https://web.archive.org/web/${oldest[0]}id_/${oldest[1]}`;
-      const newestRawUrl = `https://web.archive.org/web/${newest[0]}id_/${newest[1]}`;
+        const oldestRawUrl = `https://web.archive.org/web/${priorDistinct[0]}id_/${priorDistinct[1]}`;
+        const newestRawUrl = `https://web.archive.org/web/${newest[0]}id_/${newest[1]}`;
 
-      const [oldRes, newRes] = await Promise.all([
-        resilientFetch(oldestRawUrl, { headers: { 'User-Agent': UA }, timeoutMs: 9000, maxBytes: 768_000 }),
-        resilientFetch(newestRawUrl, { headers: { 'User-Agent': UA }, timeoutMs: 9000, maxBytes: 768_000 }),
-      ]);
-      if (!oldRes.ok || !newRes.ok) return null;
+        const [oldRes, newRes] = await Promise.all([
+          resilientFetch(oldestRawUrl, { headers: { 'User-Agent': UA }, timeoutMs: 14000, maxBytes: 768_000 }),
+          resilientFetch(newestRawUrl, { headers: { 'User-Agent': UA }, timeoutMs: 14000, maxBytes: 768_000 }),
+        ]);
+        if (!oldRes.ok || !newRes.ok) return null;
 
-      const oldHtml = oldRes.bodyText;
-      const newHtml = newRes.bodyText;
-      const oldLines = htmlToNormalizedLines(oldHtml);
-      const newLines = htmlToNormalizedLines(newHtml);
+        const oldHtml = oldRes.bodyText;
+        const newHtml = newRes.bodyText;
+        const oldestSha256 = createHash('sha256').update(oldHtml).digest('hex');
+        const newestSha256 = createHash('sha256').update(newHtml).digest('hex');
+        if (oldestSha256 === newestSha256) return null;
 
-      const oldSet = new Set(oldLines);
-      const newSet = new Set(newLines);
+        const oldLines = htmlToNormalizedLines(oldHtml);
+        const newLines = htmlToNormalizedLines(newHtml);
 
-      const added = newLines.filter((l) => !oldSet.has(l));
-      const removed = oldLines.filter((l) => !newSet.has(l));
+        const oldSet = new Set(oldLines);
+        const newSet = new Set(newLines);
 
-      const riskHits = new Set<string>();
-      for (const line of added) {
-        const matches = line.match(RISK_CLAUSE_REGEX);
-        if (matches) matches.forEach((m) => riskHits.add(m.toLowerCase()));
-      }
+        let added = newLines.filter((l) => !oldSet.has(l));
+        let removed = oldLines.filter((l) => !newSet.has(l));
 
-      return {
-        path,
-        oldestTimestamp: oldest[0],
-        newestTimestamp: newest[0],
-        oldestUrl: `https://web.archive.org/web/${oldest[0]}/${oldest[1]}`,
-        newestUrl: `https://web.archive.org/web/${newest[0]}/${newest[1]}`,
-        oldestSha256: createHash('sha256').update(oldHtml).digest('hex'),
-        newestSha256: createHash('sha256').update(newHtml).digest('hex'),
-        addedLinesCount: added.length,
-        removedLinesCount: removed.length,
-        addedSample: added.slice(0, 8),
-        removedSample: removed.slice(0, 8),
-        highRiskKeywordsAdded: Array.from(riskHits).sort(),
-      };
-    })
-  );
+        // For JS-rendered SPAs where visible DOM text changed only inside script bundles/attributes, capture script/asset deltas
+        if (added.length === 0 && removed.length === 0) {
+          const extractScripts = (h: string) =>
+            Array.from(h.matchAll(/<script[^>]+src=["']([^"']+)["']/gi)).map((m) => `SCRIPT_BUNDLE: ${m[1].trim()}`);
+          const oldScripts = extractScripts(oldHtml);
+          const newScripts = extractScripts(newHtml);
+          const oldScriptSet = new Set(oldScripts);
+          const newScriptSet = new Set(newScripts);
+          added = newScripts.filter((s) => !oldScriptSet.has(s));
+          removed = oldScripts.filter((s) => !newScriptSet.has(s));
+          if (added.length === 0 && removed.length === 0) {
+            return null;
+          }
+        }
 
-  return settled
-    .filter((s): s is PromiseFulfilledResult<StealthEditDiff | null> => s.status === 'fulfilled')
-    .map((s) => s.value)
-    .filter((v): v is StealthEditDiff => v !== null);
+        const riskHits = new Set<string>();
+        for (const line of added) {
+          const matches = line.match(RISK_CLAUSE_REGEX);
+          if (matches) matches.forEach((m) => riskHits.add(m.toLowerCase()));
+        }
+
+        return {
+          path,
+          oldestTimestamp: priorDistinct[0],
+          newestTimestamp: newest[0],
+          oldestUrl: `https://web.archive.org/web/${priorDistinct[0]}/${priorDistinct[1]}`,
+          newestUrl: `https://web.archive.org/web/${newest[0]}/${newest[1]}`,
+          oldestSha256,
+          newestSha256,
+          addedLinesCount: added.length,
+          removedLinesCount: removed.length,
+          addedSample: added.slice(0, 8),
+          removedSample: removed.slice(0, 8),
+          highRiskKeywordsAdded: Array.from(riskHits).sort(),
+        };
+      })
+    );
+    for (const s of settled) {
+      if (s.status === 'fulfilled' && s.value) diffs.push(s.value);
+    }
+  }
+  return diffs;
 }
 
 /** Master Parallel Orchestrator (5 keyless engines + Wayback Stealth-Edit Diffs) */
@@ -503,8 +584,14 @@ export async function runExtremeDorkSuite(target: string, domain: string): Promi
   ]);
 
   if (ddg.status === 'fulfilled') {
-    engineStats.duckduckgo_html = { status: 'ok', count: ddg.value.value.length, latencyMs: ddg.value.latencyMs };
-    allArtifacts.push(...ddg.value.value);
+    const ddgRes = ddg.value.value;
+    engineStats.duckduckgo_html = {
+      status: ddgRes.rateLimited && ddgRes.artifacts.length === 0 ? 'rate_limited' : 'ok',
+      count: ddgRes.artifacts.length,
+      latencyMs: ddg.value.latencyMs,
+      ...(ddgRes.errorNote ? { error: ddgRes.errorNote } : {}),
+    };
+    allArtifacts.push(...ddgRes.artifacts);
   } else {
     engineStats.duckduckgo_html = { status: 'error', count: 0, latencyMs: 0, error: String(ddg.reason) };
   }

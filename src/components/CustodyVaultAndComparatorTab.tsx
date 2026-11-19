@@ -2,29 +2,43 @@ import React, { useEffect, useMemo, useState } from 'react';
 import {
   Activity,
   ArrowRight,
+  Clock,
   Database,
+  Eye,
   GitCompare,
   Network,
+  Plus,
   RefreshCw,
+  Search,
   ShieldCheck,
   ShieldAlert,
+  Trash2,
   Link2,
 } from 'lucide-react';
 import {
+  addWatchlistTargetApi,
   fetchApexVaultGraph,
   fetchCrossEntityCorrelations,
   fetchIntegrityVaultStatus,
+  fetchVaultLongitudinalDiffApi,
+  fetchWatchlistApi,
+  removeWatchlistTargetApi,
   runContagionSpider,
   runLivingDeltaCheck,
   runStandingDorkDeletionSweep,
+  scanWatchlistTargetsApi,
+  searchGlobalVaultApi,
   type ApexVaultGraphResponse,
   type IntegrityVaultStatusResponse,
+  type VaultLongitudinalDiffResponse,
 } from '../services/liveInvestigationService';
 import type {
   CrossEntityCorrelationReport,
   LivingDeltaPatchRecord,
+  MonitoredWatchlistItem,
   PersistedInvestigationSummary,
   SilentDeletionAlertRecord,
+  VaultSearchHit,
 } from '../types/investigation';
 import { WebGpuVaultGraph } from './WebGpuVaultGraph';
 
@@ -60,18 +74,31 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
   const [loading, setLoading] = useState(true);
   const [compareA, setCompareA] = useState<string>('');
   const [compareB, setCompareB] = useState<string>('');
+  const [vaultQuery, setVaultQuery] = useState('');
+  const [vaultHits, setVaultHits] = useState<VaultSearchHit[]>([]);
+  const [vaultSearching, setVaultSearching] = useState(false);
+  const [vaultHasSearched, setVaultHasSearched] = useState(false);
+  const [watchlist, setWatchlist] = useState<MonitoredWatchlistItem[]>([]);
+  const [watchEntityInput, setWatchEntityInput] = useState('');
+  const [watchDomainInput, setWatchDomainInput] = useState('');
+  const [watchlistBusy, setWatchlistBusy] = useState(false);
+  const [diffTarget, setDiffTarget] = useState('');
+  const [diffResult, setDiffResult] = useState<VaultLongitudinalDiffResponse | null>(null);
+  const [diffLoading, setDiffLoading] = useState(false);
 
   const loadAll = async () => {
     setLoading(true);
     try {
-      const [v, c, g] = await Promise.all([
+      const [v, c, g, wl] = await Promise.all([
         fetchIntegrityVaultStatus(),
         fetchCrossEntityCorrelations(),
         fetchApexVaultGraph(),
+        fetchWatchlistApi(),
       ]);
       setVault(v);
       setCorrelation(c);
       setApexGraph(g);
+      setWatchlist(wl);
       if (v?.livingDeltas) {
         setLivingDeltas(v.livingDeltas);
       }
@@ -135,6 +162,86 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
       setDeltaFeedback(err instanceof Error ? err.message : 'Delta check failed');
     } finally {
       setDeltaRunningId(null);
+    }
+  };
+
+  const handleVaultSearch = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    const q = vaultQuery.trim();
+    if (!q) {
+      setVaultHits([]);
+      setVaultHasSearched(false);
+      return;
+    }
+    setVaultSearching(true);
+    setVaultHasSearched(true);
+    try {
+      const hits = await searchGlobalVaultApi(q, 30);
+      setVaultHits(hits);
+    } finally {
+      setVaultSearching(false);
+    }
+  };
+
+  const handleAddWatchlist = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = watchEntityInput.trim();
+    if (!name) return;
+    setWatchlistBusy(true);
+    setDeltaFeedback(null);
+    try {
+      const item = await addWatchlistTargetApi(name, watchDomainInput.trim() || undefined);
+      setWatchlist((prev) => [item, ...prev.filter((w) => w.id !== item.id)]);
+      setWatchEntityInput('');
+      setWatchDomainInput('');
+      setDeltaFeedback(`Added "${item.entityName}" to SQLite WAL Continuous Watchlist.`);
+    } catch (err) {
+      setDeltaFeedback(err instanceof Error ? err.message : 'Watchlist add failed');
+    } finally {
+      setWatchlistBusy(false);
+    }
+  };
+
+  const handleRemoveWatchlist = async (id: string) => {
+    setWatchlistBusy(true);
+    try {
+      const removed = await removeWatchlistTargetApi(id);
+      if (removed) {
+        setWatchlist((prev) => prev.filter((w) => w.id !== id));
+      }
+    } finally {
+      setWatchlistBusy(false);
+    }
+  };
+
+  const handleScanWatchlist = async () => {
+    setWatchlistBusy(true);
+    setDeltaFeedback(null);
+    try {
+      const res = await scanWatchlistTargetsApi(5);
+      setWatchlist(res.items);
+      setDeltaFeedback(
+        `Watchlist Live Delta Sweep: scanned ${res.scanned} target(s) (${res.results.map((r) => `${r.entityName}: ${r.status}`).join(' · ') || 'none'})`
+      );
+    } catch (err) {
+      setDeltaFeedback(err instanceof Error ? err.message : 'Watchlist sweep failed');
+    } finally {
+      setWatchlistBusy(false);
+    }
+  };
+
+  const handleRunLongitudinalDiff = async (explicitTarget?: string) => {
+    const targetName = (explicitTarget ?? diffTarget).trim() || entityA?.entityName || '';
+    if (!targetName) {
+      setDiffResult({ ok: false, error: 'Select or enter a target entity with 2+ archived runs.' });
+      return;
+    }
+    setDiffLoading(true);
+    try {
+      const res = await fetchVaultLongitudinalDiffApi({ target: targetName });
+      setDiffResult(res);
+    } finally {
+      setDiffLoading(false);
     }
   };
 
@@ -714,6 +821,318 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
                 </div>
               ))}
             </div>
+          </div>
+        )}
+      </div>
+
+      {/* v25.0 Global Cross-Vault Search & Continuous Target Watchlist */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+        {/* Global Cross-Vault Search */}
+        <div className="bg-[#111827] border border-slate-800 rounded-xl p-5 space-y-3">
+          <div className="flex items-center justify-between gap-2 border-b border-slate-800 pb-3">
+            <div>
+              <div className="text-[11px] font-mono text-amber-400">SQLite WAL Full-Vault Index</div>
+              <h3 className="font-['Chakra_Petch'] font-bold text-base text-slate-100 mt-0.5 flex items-center gap-2">
+                <Search className="w-4 h-4 text-amber-400" />
+                <span>Global Cross-Vault Search</span>
+              </h3>
+            </div>
+            <span className="text-[11px] font-mono text-slate-500">Entities · Counterparties · DNA · Events</span>
+          </div>
+
+          <form onSubmit={(e) => void handleVaultSearch(e)} className="flex items-center gap-2">
+            <input
+              type="text"
+              value={vaultQuery}
+              onChange={(e) => setVaultQuery(e.target.value)}
+              placeholder="Search entity, domain, LEI, favicon hash, ASN, or alert..."
+              className="flex-1 px-3 py-2 rounded-lg bg-[#0B0E17] border border-slate-800 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-amber-500"
+            />
+            <button
+              type="submit"
+              disabled={vaultSearching}
+              className="px-3.5 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-['Chakra_Petch'] font-bold text-xs uppercase tracking-wider whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              {vaultSearching ? 'Searching...' : 'Search Vault'}
+            </button>
+          </form>
+
+          {vaultHits.length > 0 ? (
+            <div className="space-y-1.5 max-h-60 overflow-y-auto font-mono text-[11px] tabular-nums">
+              {vaultHits.map((hit) => (
+                <div
+                  key={`${hit.category}-${hit.id}`}
+                  className="p-2.5 rounded bg-[#0B0E17] border border-slate-800 flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-amber-400 font-semibold shrink-0">{hit.category}</span>
+                      <span className="text-slate-100 font-semibold truncate">{hit.title}</span>
+                    </div>
+                    <div className="text-slate-400 truncate mt-0.5">{hit.subtitle}</div>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => onSelectEntityForInvestigation(hit.entityName)}
+                    className="px-2.5 py-1 rounded bg-slate-900 border border-slate-700 hover:border-amber-500/50 text-slate-200 hover:text-amber-300 shrink-0 whitespace-nowrap cursor-pointer"
+                  >
+                    Investigate
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : vaultHasSearched ? (
+            <div className="text-xs font-mono text-slate-500">
+              Zero matching records across archived investigations, counterparty edges, infra DNA, or live events.
+            </div>
+          ) : (
+            <div className="text-xs font-mono text-slate-500">
+              Query any corporate entity, discovered counterparty, silent deletion URL, or infrastructure fingerprint across your SQLite WAL vault.
+            </div>
+          )}
+        </div>
+
+        {/* Continuous Monitored Target Watchlist */}
+        <div className="bg-[#111827] border border-slate-800 rounded-xl p-5 space-y-3">
+          <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-3">
+            <div>
+              <div className="text-[11px] font-mono text-cyan-400">Automated Live Re-Probe Registry</div>
+              <h3 className="font-['Chakra_Petch'] font-bold text-base text-slate-100 mt-0.5 flex items-center gap-2">
+                <Eye className="w-4 h-4 text-cyan-400" />
+                <span>Monitored Watchlist ({watchlist.length})</span>
+              </h3>
+            </div>
+            <button
+              type="button"
+              onClick={() => void handleScanWatchlist()}
+              disabled={watchlistBusy || watchlist.length === 0}
+              className="px-3 py-1.5 rounded-lg bg-[#0B0E17] border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 font-['Chakra_Petch'] font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${watchlistBusy ? 'animate-spin' : ''}`} />
+              <span>Run Delta Sweep</span>
+            </button>
+          </div>
+
+          <form onSubmit={(e) => void handleAddWatchlist(e)} className="flex flex-wrap items-center gap-2">
+            <input
+              type="text"
+              value={watchEntityInput}
+              onChange={(e) => setWatchEntityInput(e.target.value)}
+              placeholder="Target entity (e.g. SpaceX)"
+              className="flex-1 min-w-[140px] px-3 py-2 rounded-lg bg-[#0B0E17] border border-slate-800 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+            />
+            <input
+              type="text"
+              value={watchDomainInput}
+              onChange={(e) => setWatchDomainInput(e.target.value)}
+              placeholder="Domain (optional)"
+              className="w-36 px-3 py-2 rounded-lg bg-[#0B0E17] border border-slate-800 text-xs font-mono text-slate-100 placeholder-slate-500 focus:outline-none focus:border-cyan-500"
+            />
+            <button
+              type="submit"
+              disabled={watchlistBusy || !watchEntityInput.trim()}
+              className="px-3 py-2 rounded-lg bg-cyan-500/15 border border-cyan-500/40 hover:border-cyan-400 text-cyan-200 font-['Chakra_Petch'] font-bold text-xs uppercase tracking-wider flex items-center gap-1 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <Plus className="w-3.5 h-3.5" />
+              <span>Add</span>
+            </button>
+          </form>
+
+          {watchlist.length > 0 ? (
+            <div className="space-y-1.5 max-h-60 overflow-y-auto font-mono text-[11px] tabular-nums">
+              {watchlist.map((w) => (
+                <div
+                  key={w.id}
+                  className="p-2.5 rounded bg-[#0B0E17] border border-slate-800 flex items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <div className="flex items-center gap-2">
+                      <span className="text-slate-100 font-semibold truncate">{w.entityName}</span>
+                      {w.primaryDomain && <span className="text-slate-500 truncate">{w.primaryDomain}</span>}
+                    </div>
+                    <div className="text-slate-400 truncate mt-0.5">
+                      Status:{' '}
+                      <strong
+                        className={
+                          w.lastSeverity === 'HIGH' || w.lastSeverity === 'CRITICAL'
+                            ? 'text-rose-400'
+                            : w.lastSeverity === 'MODERATE'
+                              ? 'text-amber-300'
+                              : 'text-emerald-400'
+                        }
+                      >
+                        {w.lastSeverity || 'MONITORED'}
+                      </strong>
+                      {w.lastMutationsSummary ? ` · ${w.lastMutationsSummary}` : ''}
+                    </div>
+                  </div>
+                  <div className="flex items-center gap-1.5 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => onSelectEntityForInvestigation(w.entityName)}
+                      className="px-2 py-1 rounded bg-slate-900 border border-slate-700 hover:border-amber-500/50 text-slate-200 hover:text-amber-300 cursor-pointer"
+                    >
+                      Run
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => void handleRemoveWatchlist(w.id)}
+                      disabled={watchlistBusy}
+                      aria-label={`Remove ${w.entityName} from watchlist`}
+                      className="p-1.5 rounded bg-slate-900 border border-slate-800 hover:border-rose-500/50 text-slate-400 hover:text-rose-400 cursor-pointer"
+                    >
+                      <Trash2 className="w-3.5 h-3.5" />
+                    </button>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="text-xs font-mono text-slate-500">
+              No targets pinned yet. Add an entity above to monitor live DNS, TLS/CSP, and security-header drift via SQLite WAL delta sweeps.
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* v26.0 Longitudinal Delta Timeline (T1 vs. T2 Time-Machine Surveillance) */}
+      <div className="bg-[#111827] border border-slate-800 rounded-xl p-5 sm:p-6 space-y-4">
+        <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-slate-800 pb-3">
+          <div>
+            <div className="text-[11px] font-mono text-amber-400">
+              v26.0 Time-Machine Dossier Diff Engine (T1 vs. T2 · Ed25519 Signed)
+            </div>
+            <h3 className="font-['Chakra_Petch'] font-bold text-base text-slate-100 mt-0.5 flex items-center gap-2">
+              <Clock className="w-4 h-4 text-amber-400" />
+              <span>Longitudinal Delta Timeline</span>
+            </h3>
+          </div>
+          <div className="flex flex-wrap items-center gap-2 font-mono text-xs">
+            <select
+              value={diffTarget}
+              onChange={(e) => setDiffTarget(e.target.value)}
+              className="px-2.5 py-1.5 rounded bg-[#0B0E17] border border-slate-800 text-slate-200 focus:outline-none focus:border-amber-500"
+            >
+              <option value="">
+                {entityA ? `Default (${entityA.entityName})` : 'Select archived entity...'}
+              </option>
+              {(correlation?.entities || []).map((e) => (
+                <option key={e.investigationId} value={e.entityName}>
+                  {e.entityName}
+                </option>
+              ))}
+            </select>
+            <button
+              type="button"
+              onClick={() => void handleRunLongitudinalDiff()}
+              disabled={diffLoading}
+              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-['Chakra_Petch'] font-bold text-xs uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${diffLoading ? 'animate-spin' : ''}`} />
+              <span>{diffLoading ? 'Diffing T1 vs. T2...' : 'Compute T1 vs. T2 Diff'}</span>
+            </button>
+          </div>
+        </div>
+
+        {diffResult?.ok && diffResult.diff ? (
+          <div className="space-y-3 font-mono text-xs tabular-nums">
+            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-3">
+              <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                <div className="text-[11px] text-slate-400">Surveillance Severity</div>
+                <div
+                  className={`mt-1 text-base font-bold ${
+                    diffResult.diff.highestSeverity === 'CRITICAL'
+                      ? 'text-rose-400'
+                      : diffResult.diff.highestSeverity === 'HIGH'
+                        ? 'text-amber-400'
+                        : 'text-emerald-400'
+                  }`}
+                >
+                  {diffResult.diff.highestSeverity}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                  {diffResult.diff.runACapturedAtIso.slice(0, 10)} → {diffResult.diff.runBCapturedAtIso.slice(0, 10)}
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                <div className="text-[11px] text-slate-400">Silent Deletions</div>
+                <div className="mt-1 text-base font-bold text-rose-400">
+                  {diffResult.diff.silentDeletionsCount}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Scrubbed execs · SANs · PDFs · ToS
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                <div className="text-[11px] text-slate-400">Risk Spikes</div>
+                <div className="mt-1 text-base font-bold text-amber-400">
+                  {diffResult.diff.riskSpikesCount}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5">
+                  Posterior Δ {(diffResult.diff.posteriorDelta * 100).toFixed(1)}%
+                </div>
+              </div>
+              <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                <div className="text-[11px] text-slate-400">Ed25519 Diff Seal</div>
+                <div className="mt-1 text-xs font-semibold text-cyan-300 truncate">
+                  {diffResult.diffSha256 ? `${diffResult.diffSha256.slice(0, 18)}...` : 'SEALED'}
+                </div>
+                <div className="text-[11px] text-slate-500 mt-0.5 truncate">
+                  {diffResult.diff.runAId.slice(0, 10)} → {diffResult.diff.runBId.slice(0, 10)}
+                </div>
+              </div>
+            </div>
+
+            {diffResult.diff.deltas.length > 0 ? (
+              <div className="space-y-1.5 max-h-64 overflow-y-auto text-[11px]">
+                {diffResult.diff.deltas.map((d, idx) => (
+                  <div
+                    key={`${d.code}-${idx}`}
+                    className={`p-2.5 rounded bg-[#0B0E17] border ${
+                      d.category === 'SILENT_DELETION'
+                        ? 'border-rose-500/40'
+                        : d.category === 'RISK_SPIKE'
+                          ? 'border-amber-500/40'
+                          : 'border-slate-800'
+                    }`}
+                  >
+                    <div className="flex flex-wrap items-center justify-between gap-2">
+                      <span className="font-semibold text-slate-100">
+                        [{d.category}] {d.code} — {d.summary}
+                      </span>
+                      <span
+                        className={
+                          d.severity === 'CRITICAL'
+                            ? 'text-rose-400 font-bold'
+                            : d.severity === 'HIGH'
+                              ? 'text-amber-400 font-bold'
+                              : 'text-cyan-300'
+                        }
+                      >
+                        {d.severity}
+                      </span>
+                    </div>
+                    {(d.beforeValue || d.afterValue) && (
+                      <div className="text-slate-400 mt-1">
+                        T1: {d.beforeValue || '—'} → T2: {d.afterValue || '—'}
+                      </div>
+                    )}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="p-3 rounded bg-[#0B0E17] border border-emerald-500/30 text-emerald-300">
+                Zero material silent deletions or risk spikes detected between {diffResult.diff.runAId} and {diffResult.diff.runBId}.
+              </div>
+            )}
+          </div>
+        ) : diffResult && !diffResult.ok ? (
+          <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800 font-mono text-xs text-slate-400">
+            {diffResult.error} Run the same entity twice (T1 &amp; T2) to unlock automated Silent Deletion &amp; Risk Spike delta surveillance, or run <span className="text-amber-300">node diff_dossiers.mjs dossier_T1/ dossier_T2/</span> offline on any two exported ZIPs.
+          </div>
+        ) : (
+          <div className="text-xs font-mono text-slate-500">
+            Compare any target&apos;s baseline snapshot (T1) against its latest investigation (T2) to detect scrubbed executives, dropped TLS SANs, disappeared PDFs, Bayesian posterior spikes (&gt;10%), new GLEIF parent changes, and Ed25519-sealed delta alerts.
           </div>
         )}
       </div>

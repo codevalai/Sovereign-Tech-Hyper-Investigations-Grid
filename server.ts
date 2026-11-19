@@ -21,6 +21,13 @@ async function startServer() {
   liveDaemon.startDaemon();
 
   const app = express();
+  app.disable('x-powered-by');
+  app.use((_req, res, next) => {
+    res.setHeader('X-Content-Type-Options', 'nosniff');
+    res.setHeader('Referrer-Policy', 'strict-origin-when-cross-origin');
+    res.setHeader('Permissions-Policy', 'camera=(), microphone=(), geolocation=()');
+    next();
+  });
   app.use(express.json({ limit: '2mb' }));
 
   app.get('/api/health', (_req, res) => {
@@ -67,7 +74,11 @@ async function startServer() {
         'npm / PyPI Software Supply Chain & Google OSV.dev Open-Source Vulnerability Database',
         'Wikimedia 14-Day Public Attention Velocity & Hacker News Algolia Engineering Discourse',
         'DefiLlama Live Protocol TVL & Yahoo Finance v8 Live Market Telemetry',
-        'SQLite WAL 24/7 Live Ingestion Daemon + Persistent Investigation Archive + Ring-5 Custody Watchdog',
+        'Live Direct TLS/X.509 Handshake & SAN Certificate Inspector (node:tls)',
+        'Wikimedia Revision Whitewash & Edit-War Forensics API',
+        'Multi-Hop Temporal Causal Chain Graph + Bayesian Risk Posterior + PageRank Contagion',
+        'OASIS STIX 2.1 Cyber Threat Intelligence Bundle & Printable Court Brief Export',
+        'SQLite WAL 24/7 Live Ingestion Daemon + Cross-Vault Global Search + Autonomous Watchlist',
       ],
     });
   });
@@ -259,6 +270,152 @@ async function startServer() {
     }
   });
 
+  app.get('/api/vault/search', (req, res) => {
+    const q = String(req.query.q || '').trim();
+    const rawLimit = Number(req.query.limit ?? 40);
+    const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 120) : 40;
+    try {
+      const hits = q ? liveDaemon.searchGlobalVault(q, limit) : [];
+      res.json({ query: q, count: hits.length, hits });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Global vault search failed.' });
+    }
+  });
+
+  app.get('/api/watchlist', (_req, res) => {
+    try {
+      res.json({ items: liveDaemon.getWatchlist() });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to load watchlist.' });
+    }
+  });
+
+  app.post('/api/watchlist', (req, res) => {
+    const body = (req.body || {}) as { entityName?: string; primaryDomain?: string; notes?: string };
+    const entityName = String(body.entityName || '').trim();
+    if (!entityName) {
+      res.status(400).json({ error: 'entityName is required.' });
+      return;
+    }
+    try {
+      const item = liveDaemon.upsertWatchlistItem({
+        entityName,
+        primaryDomain: body.primaryDomain,
+        notes: body.notes,
+      });
+      res.json({ ok: true, item, items: liveDaemon.getWatchlist() });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to save watchlist target.' });
+    }
+  });
+
+  app.delete('/api/watchlist/:id', (req, res) => {
+    const id = String(req.params.id || '').trim();
+    if (!id) {
+      res.status(400).json({ error: 'Watchlist id is required.' });
+      return;
+    }
+    try {
+      const deleted = liveDaemon.removeWatchlistItem(id);
+      res.json({ ok: deleted, items: liveDaemon.getWatchlist() });
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to remove watchlist target.' });
+    }
+  });
+
+  app.post('/api/watchlist/scan', async (req, res) => {
+    const body = (req.body || {}) as { maxTargets?: number };
+    const maxTargets =
+      typeof body.maxTargets === 'number' && Number.isFinite(body.maxTargets)
+        ? Math.max(1, Math.min(5, Math.floor(body.maxTargets)))
+        : 3;
+    try {
+      const all = liveDaemon.getWatchlist();
+      const targets = all.filter((w) => w.primaryDomain).slice(0, maxTargets);
+      const scanned: Array<{
+        id: string;
+        entityName: string;
+        primaryDomain: string;
+        hardeningScore: number | null;
+        openPortsCount: number;
+        severity: string;
+        summary: string;
+      }> = [];
+
+      const archived = liveDaemon.getInvestigationArchive(100);
+      for (const item of targets) {
+        const baseline = archived.find(
+          (a) =>
+            a.entityName.toLowerCase() === item.entityName.toLowerCase() ||
+            (a.primaryDomain && a.primaryDomain.toLowerCase() === item.primaryDomain.toLowerCase())
+        );
+        const reprobe = await runLightweightDeltaReprobe({
+          entityName: item.entityName,
+          primaryDomain: item.primaryDomain,
+          investigationId: baseline?.investigationId || item.id,
+        });
+        const checkedAtIso = new Date().toISOString();
+        let severity = 'NONE';
+        let summary = `HTTP=${reprobe.httpHardeningScore ?? 'N/A'}/100 · Ports=${reprobe.openPorts.length} · DNSSEC=${
+          reprobe.dnssecValidated ? 'VALIDATED' : 'UNSIGNED'
+        }`;
+
+        if (baseline) {
+          const prevSnap: LivingSnapshot = {
+            investigationId: baseline.investigationId,
+            entityName: baseline.entityName,
+            primaryDomain: baseline.primaryDomain || item.primaryDomain,
+            capturedAtIso: baseline.completedAtIso,
+            cspOrigins: baseline.cspOrigins || [],
+            openPorts: baseline.openPorts || [],
+            osvCveIds: baseline.osvCveIds || [],
+            rdapStatuses: baseline.rdapStatuses || [],
+            httpHardeningScore: baseline.httpHardeningScore,
+            dnssecValidated: baseline.dnssecValidated ?? null,
+            hstsPreloadStatus: null,
+          };
+          const patch = computeSignedDeltaPatch(prevSnap, reprobe);
+          liveDaemon.saveLivingDeltaPatch(patch);
+          severity = patch.severity;
+          if (patch.hasMutation) {
+            summary = `MUTATION (${patch.severity}): +${patch.mutations.addedPorts.length} ports, +${patch.mutations.addedCspOrigins.length} CSP, +${patch.mutations.addedCves.length} CVEs`;
+          }
+        }
+
+        liveDaemon.updateWatchlistScanResult({
+          id: item.id,
+          checkedAtIso,
+          severity,
+          hardeningScore: reprobe.httpHardeningScore,
+          openPortsCount: reprobe.openPorts.length,
+          mutationsSummary: summary,
+        });
+
+        scanned.push({
+          id: item.id,
+          entityName: item.entityName,
+          primaryDomain: item.primaryDomain,
+          hardeningScore: reprobe.httpHardeningScore,
+          openPortsCount: reprobe.openPorts.length,
+          severity,
+          summary,
+        });
+      }
+
+      res.json({
+        ok: true,
+        scannedCount: scanned.length,
+        scanned,
+        items: liveDaemon.getWatchlist(),
+      });
+    } catch (err: unknown) {
+      res.status(502).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Watchlist delta sweep failed.',
+      });
+    }
+  });
+
   app.get('/api/investigations/archive', (req, res) => {
     const rawLimit = Number(req.query.limit ?? 50);
     const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(rawLimit, 200) : 50;
@@ -307,6 +464,10 @@ async function startServer() {
         liveChangePct: typeof body.liveChangePct === 'number' ? body.liveChangePct : null,
         completedAtIso: String(body.completedAtIso || new Date().toISOString()),
       });
+      const maybeSnap = (body as { longitudinalSnapshot?: any })?.longitudinalSnapshot;
+      if (maybeSnap && typeof maybeSnap === 'object' && maybeSnap.investigationId) {
+        liveDaemon.saveLongitudinalSnapshot(maybeSnap);
+      }
       res.json({ ok: true, item: saved });
     } catch (err: unknown) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to archive investigation.' });
@@ -327,6 +488,18 @@ async function startServer() {
     res.json({
       items: liveDaemon.getLivingDeltaPatches(limit),
     });
+  });
+
+  app.get('/api/vault/diff', async (req, res) => {
+    try {
+      const target = typeof req.query.target === 'string' ? req.query.target.trim() : undefined;
+      const runA = typeof req.query.runA === 'string' ? req.query.runA.trim() : undefined;
+      const runB = typeof req.query.runB === 'string' ? req.query.runB.trim() : undefined;
+      const out = await liveDaemon.computeAndSealVaultDiff({ target, runA, runB });
+      res.json(out);
+    } catch (err: unknown) {
+      res.status(500).json({ error: err instanceof Error ? err.message : 'Vault longitudinal diff failed.' });
+    }
   });
 
   app.post('/api/vault/delta-check/:investigationId', async (req, res) => {

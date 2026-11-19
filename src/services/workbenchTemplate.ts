@@ -288,6 +288,50 @@ export function buildStix21BundleJson(
     });
   });
 
+  const tlsCert = liveIntel?.deepAttackSurface?.tlsCertificate;
+  if (tlsCert) {
+    const certId = `x509-certificate--88888888-8888-4888-8888-${slug.padEnd(12, '0').slice(0, 12)}`;
+    objects.push({
+      type: 'x509-certificate',
+      spec_version: '2.1',
+      id: certId,
+      is_self_signed: tlsCert.isSelfSigned,
+      hashes: tlsCert.fingerprintSha256
+        ? { 'SHA-256': tlsCert.fingerprintSha256.replace(/:/g, '').toLowerCase() }
+        : undefined,
+      serial_number: tlsCert.serialNumber || undefined,
+      issuer: tlsCert.issuerCn || tlsCert.issuerOrg || undefined,
+      subject: tlsCert.subjectCn || tlsCert.subjectOrg || undefined,
+      validity_not_before: tlsCert.validFrom || undefined,
+      validity_not_after: tlsCert.validTo || undefined,
+      x509_v3_extensions: tlsCert.sanDomains.length > 0
+        ? { subject_alternative_name: tlsCert.sanDomains.slice(0, 20).map((d) => `DNS:${d}`).join(', ') }
+        : undefined,
+    });
+    objects.push({
+      type: 'relationship',
+      spec_version: '2.1',
+      id: `relationship--88888888-8888-4888-9888-${slug.padEnd(12, '0').slice(0, 12)}`,
+      created: timestampIso,
+      modified: timestampIso,
+      relationship_type: 'uses',
+      source_ref: orgStixId,
+      target_ref: certId,
+    });
+    tlsCert.sanDomains
+      .filter((d) => d && !d.startsWith('*.') && d !== cyber?.primaryDomain)
+      .slice(0, 12)
+      .forEach((san, idx) => {
+        const sanHex = String(idx + 1).padStart(12, 'd');
+        objects.push({
+          type: 'domain-name',
+          spec_version: '2.1',
+          id: `domain-name--88888888-8888-4888-a888-${sanHex}`,
+          value: san,
+        });
+      });
+  }
+
   return JSON.stringify(
     {
       type: 'bundle',
@@ -1155,6 +1199,58 @@ if (fs.existsSync(tsrPath)) {
     }
   } catch (err) {
     fail('Invalid MERKLE_ROOT.tsr.status.json: ' + err.message);
+  }
+}
+
+// 5d. Verify v26.0 zkTLS Provenance Manifest / .tlsn.json Receipts, FollowTheMoney NDJSON & Phase-5 ACH Matrix
+const zktlsManifestPath = path.join(rootDir, 'evidence', 'zktls_proofs', 'zktls_provenance_manifest.json');
+if (fs.existsSync(zktlsManifestPath)) {
+  try {
+    const zktlsManifest = JSON.parse(fs.readFileSync(zktlsManifestPath, 'utf8'));
+    const status = String(zktlsManifest.zktlsProvenanceStatus || zktlsManifest.ZKTLS_PROVENANCE_STATUS || 'UNKNOWN');
+    const receipts = Array.isArray(zktlsManifest.receipts) ? zktlsManifest.receipts : [];
+    let proofFilesChecked = 0;
+    for (const r of receipts) {
+      if (r.status === 'VERIFIED_TLSN_PROOF' && r.proofFilename) {
+        const rel = 'evidence/zktls_proofs/' + r.proofFilename;
+        if (!verifiedHashesByPath.has(rel)) {
+          fail('Verified zkTLS proof file missing from SHA256SUMS: ' + rel);
+        } else {
+          proofFilesChecked++;
+        }
+      }
+    }
+    pass('v26.0 zkTLS Provenance audited (status=' + status + ', verified_tlsn_proofs=' + proofFilesChecked + '/' + receipts.length + ')');
+  } catch (err) {
+    fail('Invalid evidence/zktls_proofs/zktls_provenance_manifest.json: ' + err.message);
+  }
+}
+
+const ftmPath = path.join(rootDir, 'evidence', 'followthemoney_graph.ftm.json');
+if (fs.existsSync(ftmPath)) {
+  try {
+    const lines = fs.readFileSync(ftmPath, 'utf8').trim().split(/\\r?\\n/).filter(Boolean);
+    for (const line of lines) {
+      const obj = JSON.parse(line);
+      if (!obj.id || !obj.schema || !obj.properties) throw new Error('Missing required FtM fields (id/schema/properties)');
+    }
+    pass('Verified FollowTheMoney NDJSON export (' + lines.length + ' valid FtM entities)');
+  } catch (err) {
+    fail('Invalid FollowTheMoney NDJSON in evidence/followthemoney_graph.ftm.json: ' + err.message);
+  }
+}
+
+const achPath = path.join(rootDir, 'evidence', 'ach_red_team_matrix.json');
+if (fs.existsSync(achPath)) {
+  try {
+    const achObj = JSON.parse(fs.readFileSync(achPath, 'utf8'));
+    if (typeof achObj.preRedTeamPosterior !== 'number' || typeof achObj.postRedTeamPosterior !== 'number') {
+      fail('Phase-5 ACH matrix missing preRedTeamPosterior/postRedTeamPosterior');
+    } else {
+      pass('Verified Phase-5 Adversarial Red-Team ACH Matrix (' + (achObj.survivedCount || 0) + '/' + (achObj.totalFindingsEvaluated || 0) + ' survived · posterior ' + (achObj.preRedTeamPosterior * 100).toFixed(1) + '% -> ' + (achObj.postRedTeamPosterior * 100).toFixed(1) + '%)');
+    }
+  } catch (err) {
+    fail('Invalid evidence/ach_red_team_matrix.json: ' + err.message);
   }
 }
 

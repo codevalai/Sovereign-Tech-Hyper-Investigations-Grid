@@ -13,7 +13,9 @@ import {
   ChevronRight,
   ShieldCheck,
   Zap,
-  Globe
+  Globe,
+  Eye,
+  Code2
 } from 'lucide-react';
 import { InvestigationResult } from '../types/investigation';
 
@@ -21,6 +23,7 @@ interface DossierViewerModalProps {
   result: InvestigationResult;
   onClose: () => void;
   onDownloadZip: () => void;
+  onDownloadAuditBundle?: () => void;
   initialSelectedFilename?: string;
 }
 
@@ -28,18 +31,21 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
   result,
   onClose,
   onDownloadZip,
+  onDownloadAuditBundle,
   initialSelectedFilename
 }) => {
   const [selectedFilename, setSelectedFilename] = useState<string>(
     initialSelectedFilename || result.files[0]?.filename || '00_EXEC_SUMMARY.md'
   );
   const [copied, setCopied] = useState(false);
+  const [previewHtml, setPreviewHtml] = useState(true);
   const [fileFilter, setFileFilter] = useState('');
   const [activeFolderTab, setActiveFolderTab] = useState<
     'all' | 'dossiers' | 'forensics' | 'truth' | 'evidence' | 'provenance' | 'telemetry' | 'graph' | 'powermap' | 'raw' | 'viewer'
   >('all');
 
   const selectedFile = result.files.find((f) => f.filename === selectedFilename) || result.files[0];
+  const isHtmlArtifact = Boolean(selectedFile?.filename.endsWith('.html'));
 
   const handleCopyContent = () => {
     if (selectedFile) {
@@ -47,6 +53,26 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
       setCopied(true);
       setTimeout(() => setCopied(false), 2000);
     }
+  };
+
+  const handleDownloadSingleFile = () => {
+    if (!selectedFile) return;
+    const mime = selectedFile.filename.endsWith('.html')
+      ? 'text/html;charset=utf-8'
+      : selectedFile.filename.endsWith('.json')
+        ? 'application/json;charset=utf-8'
+        : selectedFile.filename.endsWith('.csv')
+          ? 'text/csv;charset=utf-8'
+          : 'text/plain;charset=utf-8';
+    const blob = new Blob([selectedFile.content], { type: mime });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = selectedFile.filename.split('/').pop() || selectedFile.filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
   const getFileIcon = (filename: string, type: string) => {
@@ -63,25 +89,14 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
     if (fileFilter && !f.filename.toLowerCase().includes(fileFilter.toLowerCase())) {
       return false;
     }
-    if (activeFolderTab === 'dossiers') return !f.filename.includes('/') && !f.filename.endsWith('.html') && !f.filename.endsWith('.js') && !f.filename.endsWith('.css');
+    if (activeFolderTab === 'dossiers') return (!f.filename.includes('/') && !f.filename.endsWith('.html') && !f.filename.endsWith('.js') && !f.filename.endsWith('.css')) || f.filename === 'EXECUTIVE_BRIEF_PRINTABLE.html';
     if (activeFolderTab === 'forensics') {
       return (
         f.filename.startsWith('cyber/') ||
         f.filename.startsWith('swarm/') ||
         f.filename.startsWith('sanctions/') ||
         f.filename.startsWith('finance/') ||
-        f.filename.startsWith('16_') ||
-        f.filename.startsWith('17_') ||
-        f.filename.startsWith('18_') ||
-        f.filename.startsWith('19_') ||
-        f.filename.startsWith('20_') ||
-        f.filename.startsWith('21_') ||
-        f.filename.startsWith('22_') ||
-        f.filename.startsWith('23_') ||
-        f.filename.startsWith('24_') ||
-        f.filename.startsWith('25_') ||
-        f.filename.startsWith('26_') ||
-        f.filename.startsWith('27_') ||
+        /^(?:1[6-9]|2\d|3\d)_/.test(f.filename) ||
         f.filename === 'UNVERIFIED_INTELLIGENCE_WATCHLIST.md'
       );
     }
@@ -141,15 +156,28 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
 
           <div className="flex items-center gap-2">
             <button
+              type="button"
               onClick={onDownloadZip}
-              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 text-xs font-['Chakra_Petch'] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-sm"
+              className="px-3.5 py-1.5 rounded-lg bg-amber-500 hover:bg-amber-400 text-neutral-950 text-xs font-['Chakra_Petch'] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all shadow-sm whitespace-nowrap cursor-pointer"
             >
               <Download className="w-3.5 h-3.5" />
               <span>Download ZIP</span>
             </button>
+            {onDownloadAuditBundle && (
+              <button
+                type="button"
+                onClick={onDownloadAuditBundle}
+                title="Concatenates 00_EXEC_SUMMARY.md, 38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md, 37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md, and DELTA_ALERT_REPORT.md"
+                className="px-3 py-1.5 rounded-lg bg-cyan-500/15 hover:bg-cyan-500/25 border border-cyan-500/40 text-cyan-200 hover:text-white text-xs font-['Chakra_Petch'] font-bold uppercase tracking-wider flex items-center gap-1.5 transition-all whitespace-nowrap cursor-pointer"
+              >
+                <FileText className="w-3.5 h-3.5 text-cyan-300" />
+                <span>Download Audit Bundle (.md)</span>
+              </button>
+            )}
             <button
+              type="button"
               onClick={onClose}
-              className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white transition-colors"
+              className="p-1.5 rounded-lg bg-neutral-800 hover:bg-neutral-700 text-neutral-400 hover:text-white transition-colors cursor-pointer"
             >
               <X className="w-5 h-5" />
             </button>
@@ -276,10 +304,29 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
                 </span>
               </div>
 
-              <div className="flex items-center gap-2">
+              <div className="flex items-center gap-2 shrink-0">
+                {isHtmlArtifact && (
+                  <button
+                    type="button"
+                    onClick={() => setPreviewHtml((prev) => !prev)}
+                    className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-amber-300 text-xs font-mono flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer"
+                  >
+                    {previewHtml ? <Code2 className="w-3.5 h-3.5" /> : <Eye className="w-3.5 h-3.5" />}
+                    <span>{previewHtml ? 'Raw HTML' : 'Rendered Brief'}</span>
+                  </button>
+                )}
                 <button
+                  type="button"
+                  onClick={handleDownloadSingleFile}
+                  className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-mono flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer"
+                >
+                  <Download className="w-3.5 h-3.5" />
+                  <span>Save File</span>
+                </button>
+                <button
+                  type="button"
                   onClick={handleCopyContent}
-                  className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-mono flex items-center gap-1 transition-colors"
+                  className="px-2.5 py-1 rounded bg-neutral-800 hover:bg-neutral-700 text-neutral-300 hover:text-white text-xs font-mono flex items-center gap-1 transition-colors whitespace-nowrap cursor-pointer"
                 >
                   {copied ? <Check className="w-3.5 h-3.5 text-emerald-400" /> : <Copy className="w-3.5 h-3.5" />}
                   <span>{copied ? 'Copied' : 'Copy'}</span>
@@ -288,9 +335,18 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
             </div>
 
             {/* Document Content Display */}
-            <div className="flex-1 p-4 sm:p-6 overflow-y-auto font-mono text-xs text-neutral-200 leading-relaxed bg-neutral-950/90 whitespace-pre-wrap select-text">
-              {selectedFile.content}
-            </div>
+            {isHtmlArtifact && previewHtml ? (
+              <iframe
+                title={`Preview of ${selectedFile.filename}`}
+                sandbox=""
+                srcDoc={selectedFile.content}
+                className="flex-1 w-full bg-white border-0"
+              />
+            ) : (
+              <div className="flex-1 p-4 sm:p-6 overflow-y-auto font-mono text-xs text-neutral-200 leading-relaxed bg-neutral-950/90 whitespace-pre-wrap select-text">
+                {selectedFile.content}
+              </div>
+            )}
           </div>
         </div>
       </div>

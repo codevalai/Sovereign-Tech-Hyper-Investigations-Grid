@@ -204,17 +204,43 @@ export function extractAnnualFinancialsFromGaap(
 
   const getAnnualMap = (tags: string[]): Map<number, number> => {
     const out = new Map<number, number>();
-    for (const tag of tags) {
+    const bestScore = new Map<number, { tagIdx: number; frameRank: number; filedMs: number; endMs: number }>();
+
+    const isBetter = (
+      cand: { tagIdx: number; frameRank: number; filedMs: number; endMs: number },
+      prev?: { tagIdx: number; frameRank: number; filedMs: number; endMs: number }
+    ) => {
+      if (!prev) return true;
+      if (cand.tagIdx !== prev.tagIdx) return cand.tagIdx < prev.tagIdx;
+      if (cand.frameRank !== prev.frameRank) return cand.frameRank > prev.frameRank;
+      if (cand.filedMs !== prev.filedMs) return cand.filedMs > prev.filedMs;
+      return cand.endMs > prev.endMs;
+    };
+
+    for (let tagIdx = 0; tagIdx < tags.length; tagIdx++) {
+      const tag = tags[tagIdx];
       const items = gaap[tag]?.units?.USD;
       if (!Array.isArray(items)) continue;
       for (const item of items) {
         if ((item.form === '10-K' || item.form === '20-F' || item.form === '40-F') && typeof item.val === 'number') {
           const endYear = Number(String(item.end || '').slice(0, 4)) || Number(item.fy || 0);
+          if (endYear < 2000) continue;
+          const endMs = item.end ? Date.parse(String(item.end)) || 0 : 0;
           if (item.start && item.end) {
-            const days = (Date.parse(item.end) - Date.parse(item.start)) / 86_400_000;
+            const days = (endMs - Date.parse(String(item.start))) / 86_400_000;
             if (Number.isFinite(days) && days < 250) continue;
           }
-          if (endYear >= 2000 && !out.has(endYear)) {
+          const frame = String(item.frame || '').trim().toUpperCase();
+          const frameRank =
+            frame === `CY${endYear}` || frame === `CY${endYear}I`
+              ? 3
+              : !frame || frame.startsWith(`CY${endYear}`)
+                ? 2
+                : 1;
+          const filedMs = item.filed ? Date.parse(String(item.filed)) || 0 : 0;
+          const cand = { tagIdx, frameRank, filedMs, endMs };
+          if (isBetter(cand, bestScore.get(endYear))) {
+            bestScore.set(endYear, cand);
             out.set(endYear, Number(item.val));
           }
         }

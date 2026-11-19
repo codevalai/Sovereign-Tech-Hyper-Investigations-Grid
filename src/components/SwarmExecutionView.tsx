@@ -40,6 +40,18 @@ export const SwarmExecutionView: React.FC<SwarmExecutionViewProps> = ({
     (acc, sq) => acc + sq.agents.filter((a) => a.status === 'completed').length,
     0
   );
+  const isZeroHitAgent = (a: AgentTask) =>
+    a.status === 'completed' &&
+    a.findingsCount === 0 &&
+    Boolean(a.rawMarkdownContent?.includes('ATTESTATION [ZERO_HIT]'));
+  const groundedActiveAgentsCount = squads.reduce(
+    (acc, sq) => acc + sq.agents.filter((a) => a.status === 'completed' && !isZeroHitAgent(a)).length,
+    0
+  );
+  const zeroHitAttestedCount = squads.reduce(
+    (acc, sq) => acc + sq.agents.filter((a) => isZeroHitAgent(a)).length,
+    0
+  );
 
   const okProbesCount = liveProbes.filter((p) => p.status === 'ok').length;
   const phase4ProbesCount = liveProbes.filter((p) => p.phase === 'Phase 4').length;
@@ -70,8 +82,16 @@ export const SwarmExecutionView: React.FC<SwarmExecutionViewProps> = ({
               </h3>
               <span className="text-slate-600">·</span>
               <span className="text-xs font-mono tabular-nums text-amber-400">
-                {completedAgentsCount} / {totalAgentsCount} Agents Verified
+                {completedAgentsCount} / {totalAgentsCount} Agents Executed
               </span>
+              {completedAgentsCount > 0 && (
+                <>
+                  <span className="text-slate-600">·</span>
+                  <span className="text-xs font-mono tabular-nums text-cyan-400">
+                    {groundedActiveAgentsCount} Grounded · {zeroHitAttestedCount} Attested Clean (0-Hit)
+                  </span>
+                </>
+              )}
               {liveProbes.length > 0 && (
                 <>
                   <span className="text-slate-600">·</span>
@@ -237,7 +257,6 @@ export const SwarmExecutionView: React.FC<SwarmExecutionViewProps> = ({
           </div>
           {logs.slice(-20).map((log, i) => (
             <div key={i} className="text-slate-300 leading-relaxed text-[11px]">
-              <span className="text-slate-500 mr-2">[{new Date().toISOString().slice(11, 19)}]</span>
               {log}
             </div>
           ))}
@@ -249,6 +268,7 @@ export const SwarmExecutionView: React.FC<SwarmExecutionViewProps> = ({
         {squads.map((sq) => {
           const active = sq.id === selectedSquadId;
           const completedCount = sq.agents.filter((a) => a.status === 'completed').length;
+          const groundedCount = sq.agents.filter((a) => a.status === 'completed' && !isZeroHitAgent(a)).length;
           return (
             <button
               key={sq.id}
@@ -262,7 +282,9 @@ export const SwarmExecutionView: React.FC<SwarmExecutionViewProps> = ({
             >
               <Bot className={`w-3.5 h-3.5 ${active ? 'text-amber-400' : 'text-slate-500'}`} />
               <span>{sq.name.split('–')[0].trim()}</span>
-              <span className="text-slate-500 tabular-nums">({completedCount}/10)</span>
+              <span className="text-slate-500 tabular-nums">
+                ({completedCount === 10 && zeroHitAttestedCount > 0 ? `${groundedCount}/10 hit` : `${completedCount}/10`})
+              </span>
             </button>
           );
         })}
@@ -307,8 +329,14 @@ export const SwarmExecutionView: React.FC<SwarmExecutionViewProps> = ({
 
                 {/* Status Indicator */}
                 <div className="shrink-0 text-xs font-mono">
-                  {agent.status === 'completed' ? (
-                    <span className="text-emerald-400 font-semibold">● Verified</span>
+                  {isZeroHitAgent(agent) ? (
+                    <span className="text-slate-400 font-medium" title="Fail-closed negative attestation: 0 adverse hits matched this specialist sub-probe">
+                      ○ Attested Clean (0-Hit)
+                    </span>
+                  ) : agent.status === 'completed' ? (
+                    <span className="text-emerald-400 font-semibold">
+                      ● Grounded{agent.findingsCount > 0 ? ` (${agent.findingsCount})` : ''}
+                    </span>
                   ) : agent.status === 'running' ? (
                     <span className="text-amber-400 font-semibold">▲ Auditing</span>
                   ) : (

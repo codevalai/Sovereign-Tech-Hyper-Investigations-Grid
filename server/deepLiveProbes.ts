@@ -1,8 +1,15 @@
+import tls from 'node:tls';
 import { safeForensicFetch } from './adversarialShield.ts';
 import { resilientFetch } from './httpResilience.ts';
 import { fetchWithZkTlsProvenance } from '../src/crypto/zkTlsProver.ts';
 import { AutonomousPivotQueue, type PivotEvent } from '../src/engine/recursivePivoter.ts';
 import { computeSecondDigitBenfordChiSq } from '../src/engine/unknownFraudDetector.ts';
+import {
+  classifyWikipediaDeletionIntent,
+  isValidSenateLdaRecord,
+  verifyEntityRelevance,
+  type TargetEntityProfile,
+} from '../src/engine/entityDisambiguation.ts';
 import type { LivingSnapshot } from '../src/engine/livingDossierDelta.ts';
 import type {
   CommonCrawlSnapshot,
@@ -23,6 +30,8 @@ import type {
   ShodanInternetDbHost,
   SoftwareSupplyChainAudit,
   SpamhausDropCheck,
+  TlsCertificateAudit,
+  WikipediaRevisionForensics,
   ZkTlsAttestationRecord,
 } from '../src/types/investigation.ts';
 
@@ -526,8 +535,9 @@ export async function probeCommonCrawlIndex(
   if (!domain || !domain.includes('.')) return { snapshots: [], indexId: '', latencyMs: 0 };
 
   const now = Date.now();
+  let secondaryIndex: { id: string; cdxApi: string } | null = null;
   if (!cachedCommonCrawlIndex || now - cachedCommonCrawlIndex.fetchedAt > ONE_HOUR_MS) {
-    const collRes = await safeForensicFetch('https://index.commoncrawl.org/collinfo.json', 131_072, 3500, {
+    const collRes = await safeForensicFetch('https://index.commoncrawl.org/collinfo.json', 131_072, 4500, {
       'User-Agent': PROBE_UA,
     });
     if (collRes.ok && collRes.bodyText) {
@@ -540,6 +550,9 @@ export async function probeCommonCrawlIndex(
             cdxApi: list[0]['cdx-api'],
           };
         }
+        if (list[1]?.id && list[1]['cdx-api']) {
+          secondaryIndex = { id: list[1].id, cdxApi: list[1]['cdx-api'] };
+        }
       } catch {
         // Ignore parse error
       }
@@ -548,30 +561,40 @@ export async function probeCommonCrawlIndex(
 
   if (!cachedCommonCrawlIndex) return { snapshots: [], indexId: '', latencyMs: Date.now() - t0 };
 
-  const cdxUrl = `${cachedCommonCrawlIndex.cdxApi}?url=${encodeURIComponent(`*.${domain}/*`)}&output=json&limit=8`;
-  const res = await safeForensicFetch(cdxUrl, 65_536, 4000, { 'User-Agent': PROBE_UA });
-  const snapshots: CommonCrawlSnapshot[] = [];
-  if (res.ok && res.bodyText) {
-    for (const line of res.bodyText.split('\n').slice(0, 8)) {
-      if (!line.trim().startsWith('{')) continue;
-      try {
-        const row = JSON.parse(line) as { url?: string; status?: string; mime?: string; timestamp?: string };
-        if (row.url) {
-          snapshots.push({
-            indexId: cachedCommonCrawlIndex.id,
-            url: row.url,
-            status: String(row.status || '200'),
-            mime: String(row.mime || 'text/html'),
-            timestamp: String(row.timestamp || ''),
-          });
+  const queryIndex = async (idx: { id: string; cdxApi: string }): Promise<CommonCrawlSnapshot[]> => {
+    const cdxUrl = `${idx.cdxApi}?url=${encodeURIComponent(`${domain}/*`)}&output=json&limit=8`;
+    const res = await safeForensicFetch(cdxUrl, 65_536, 6500, { 'User-Agent': PROBE_UA });
+    const out: CommonCrawlSnapshot[] = [];
+    if (res.ok && res.bodyText) {
+      for (const line of res.bodyText.split('\n').slice(0, 8)) {
+        if (!line.trim().startsWith('{')) continue;
+        try {
+          const row = JSON.parse(line) as { url?: string; status?: string; mime?: string; timestamp?: string };
+          if (row.url) {
+            out.push({
+              indexId: idx.id,
+              url: row.url,
+              status: String(row.status || '200'),
+              mime: String(row.mime || 'text/html'),
+              timestamp: String(row.timestamp || ''),
+            });
+          }
+        } catch {
+          // Ignore malformed NDJSON row
         }
-      } catch {
-        // Ignore malformed NDJSON row
       }
     }
+    return out;
+  };
+
+  let activeIndexId = cachedCommonCrawlIndex.id;
+  let snapshots = await queryIndex(cachedCommonCrawlIndex);
+  if (snapshots.length === 0 && secondaryIndex) {
+    snapshots = await queryIndex(secondaryIndex);
+    if (snapshots.length > 0) activeIndexId = secondaryIndex.id;
   }
 
-  return { snapshots, indexId: cachedCommonCrawlIndex.id, latencyMs: Date.now() - t0 };
+  return { snapshots, indexId: activeIndexId, latencyMs: Date.now() - t0 };
 }
 
 /**
@@ -580,9 +603,20 @@ export async function probeCommonCrawlIndex(
  */
 export async function probeSoftwareSupplyChainAndOsv(
   entityName: string,
-  primaryDomain: string
+  primaryDomain: string,
+  targetProfile?: Partial<TargetEntityProfile>
 ): Promise<{ audit: SoftwareSupplyChainAudit; latencyMs: number }> {
   const t0 = Date.now();
+  const resolvedProfile: TargetEntityProfile = {
+    query: targetProfile?.query || entityName,
+    entityName: targetProfile?.entityName || entityName,
+    legalName: targetProfile?.legalName || entityName,
+    industry: targetProfile?.industry || '',
+    country: targetProfile?.country || '',
+    officialWebsite: targetProfile?.officialWebsite || (primaryDomain ? `https://${primaryDomain}` : ''),
+    primaryDomain: targetProfile?.primaryDomain || primaryDomain,
+    githubOrgLogin: targetProfile?.githubOrgLogin,
+  };
   const slug = entityName
     .toLowerCase()
     .replace(/\b(inc|corp|corporation|llc|ltd|limited|holdings|group|company|co)\b/g, '')
@@ -651,14 +685,31 @@ export async function probeSoftwareSupplyChainAndOsv(
           pkgLower.startsWith(`${slug}-`) ||
           pkgLower === slug
         ) {
+          const links = (pkg.links || {}) as { npm?: string; repository?: string; homepage?: string };
+          const pub = (pkg as { publisher?: { email?: string; username?: string } }).publisher;
+          const rel = verifyEntityRelevance(
+            {
+              source: 'package_registry',
+              name: pkg.name,
+              version: pkg.version || 'latest',
+              description: pkg.description || '',
+              website: links.homepage || '',
+              repositoryUrl: links.repository || '',
+              authorOrOwner: pub?.email || pub?.username || '',
+              monthlyDownloads: Number(obj.downloads?.monthly || 0),
+            },
+            resolvedProfile
+          );
+          if (!rel.accepted) continue;
+
           npmPackages.push({
             name: pkg.name,
             version: pkg.version || 'latest',
             description: (pkg.description || '').slice(0, 160),
             weeklyDownloads: Number(obj.downloads?.weekly || 0),
             monthlyDownloads: Number(obj.downloads?.monthly || 0),
-            repositoryUrl: pkg.links?.repository || '',
-            npmUrl: pkg.links?.npm || `https://www.npmjs.com/package/${encodeURIComponent(pkg.name)}`,
+            repositoryUrl: links.repository || '',
+            npmUrl: links.npm || `https://www.npmjs.com/package/${encodeURIComponent(pkg.name)}`,
           });
         }
       }
@@ -679,17 +730,38 @@ export async function probeSoftwareSupplyChainAndOsv(
           author_email?: string;
           home_page?: string;
           package_url?: string;
+          project_urls?: Record<string, string>;
         };
       };
       if (parsed.info?.name) {
-        pypiPackage = {
-          name: parsed.info.name,
-          version: parsed.info.version || 'latest',
-          summary: (parsed.info.summary || '').slice(0, 180),
-          author: parsed.info.author || parsed.info.author_email || 'Maintainer disclosed on PyPI',
-          homePage: parsed.info.home_page || '',
-          pypiUrl: parsed.info.package_url || `https://pypi.org/project/${encodeURIComponent(parsed.info.name)}/`,
-        };
+        const repoUrl =
+          parsed.info.project_urls?.Source ||
+          parsed.info.project_urls?.Repository ||
+          parsed.info.project_urls?.Homepage ||
+          parsed.info.home_page ||
+          '';
+        const rel = verifyEntityRelevance(
+          {
+            source: 'package_registry',
+            name: parsed.info.name,
+            version: parsed.info.version || 'latest',
+            description: parsed.info.summary || '',
+            website: parsed.info.home_page || '',
+            repositoryUrl: repoUrl,
+            authorOrOwner: `${parsed.info.author || ''} ${parsed.info.author_email || ''}`.trim(),
+          },
+          resolvedProfile
+        );
+        if (rel.accepted) {
+          pypiPackage = {
+            name: parsed.info.name,
+            version: parsed.info.version || 'latest',
+            summary: (parsed.info.summary || '').slice(0, 180),
+            author: parsed.info.author || parsed.info.author_email || 'Maintainer disclosed on PyPI',
+            homePage: parsed.info.home_page || '',
+            pypiUrl: parsed.info.package_url || `https://pypi.org/project/${encodeURIComponent(parsed.info.name)}/`,
+          };
+        }
       }
     } catch {
       // Ignore malformed JSON
@@ -707,12 +779,27 @@ export async function probeSoftwareSupplyChainAndOsv(
           recent_downloads?: number;
           description?: string;
           repository?: string;
+          homepage?: string;
         }>;
       };
       for (const c of parsed.crates || []) {
         if (!c.name) continue;
         const nLower = c.name.toLowerCase();
         if (nLower === searchSlug || nLower.startsWith(`${searchSlug}-`) || nLower.startsWith(`${searchSlug}_`)) {
+          const rel = verifyEntityRelevance(
+            {
+              source: 'package_registry',
+              name: c.name,
+              version: c.max_version || '0.0.0',
+              description: c.description || '',
+              website: c.homepage || '',
+              repositoryUrl: c.repository || '',
+              monthlyDownloads: Number(c.recent_downloads || 0),
+            },
+            resolvedProfile
+          );
+          if (!rel.accepted) continue;
+
           cratesIoPackages.push({
             name: c.name,
             maxVersion: c.max_version || '0.0.0',
@@ -745,6 +832,18 @@ export async function probeSoftwareSupplyChainAndOsv(
       for (const r of parsed.results || []) {
         if (!r.name) continue;
         const ns = r.namespace || searchSlug;
+        const rel = verifyEntityRelevance(
+          {
+            source: 'package_registry',
+            name: ns,
+            description: r.description || '',
+            starsOrPulls: Number(r.star_count || 0),
+            monthlyDownloads: Number(r.pull_count || 0) > 1000 ? 500 : 0,
+          },
+          resolvedProfile
+        );
+        if (!rel.accepted) continue;
+
         dockerHubRepos.push({
           namespace: ns,
           name: r.name,
@@ -1373,11 +1472,265 @@ export async function runLightweightDeltaReprobe(params: {
 }
 
 /**
+ * Direct Zero-Key Live TLS / X.509 Certificate & SAN Prober (Node.js node:tls):
+ * Connects directly to TCP/443 on the target domain to extract live TLS protocol, cipher suite,
+ * X.509 Subject/Issuer, SHA-256 fingerprint, expiry window, and Subject Alternative Names (SANs).
+ */
+export async function probeLiveTlsCertificate(
+  domain: string,
+  timeoutMs = 5500
+): Promise<{ audit: TlsCertificateAudit | null; latencyMs: number }> {
+  const t0 = Date.now();
+  const host = normalizeHostname(domain);
+  if (!host || !host.includes('.')) return { audit: null, latencyMs: 0 };
+
+  const attemptConnect = (targetHost: string): Promise<TlsCertificateAudit | null> =>
+    new Promise((resolve) => {
+      let settled = false;
+      const done = (val: TlsCertificateAudit | null) => {
+        if (settled) return;
+        settled = true;
+        try {
+          socket.destroy();
+        } catch {
+          // ignore
+        }
+        resolve(val);
+      };
+
+      const socket = tls.connect(
+        {
+          host: targetHost,
+          port: 443,
+          servername: targetHost,
+          rejectUnauthorized: false,
+        },
+        () => {
+          try {
+            const cert = socket.getPeerCertificate(false);
+            if (!cert || !Object.keys(cert).length) {
+              done(null);
+              return;
+            }
+            const protocol = socket.getProtocol() || 'UNKNOWN';
+            const cipher = socket.getCipher();
+            const subject = (cert.subject || {}) as Record<string, string | string[] | undefined>;
+            const issuer = (cert.issuer || {}) as Record<string, string | string[] | undefined>;
+            const pickField = (obj: Record<string, string | string[] | undefined>, key: string) => {
+              const v = obj[key];
+              return Array.isArray(v) ? String(v[0] || '') : String(v || '');
+            };
+            const subjectCn = pickField(subject, 'CN');
+            const subjectOrg = pickField(subject, 'O');
+            const subjectCountry = pickField(subject, 'C');
+            const issuerCn = pickField(issuer, 'CN');
+            const issuerOrg = pickField(issuer, 'O');
+
+            const validFromMs = Date.parse(cert.valid_from || '');
+            const validToMs = Date.parse(cert.valid_to || '');
+            const daysUntilExpiry = Number.isFinite(validToMs)
+              ? Math.round((validToMs - Date.now()) / 86_400_000)
+              : 0;
+            const isExpired = Number.isFinite(validToMs) ? validToMs < Date.now() : false;
+            const isSelfSigned =
+              Boolean(subjectCn) &&
+              subjectCn.toLowerCase() === issuerCn.toLowerCase() &&
+              subjectOrg.toLowerCase() === issuerOrg.toLowerCase();
+
+            const rawAlt = String(cert.subjectaltname || '');
+            const sanDomains = Array.from(
+              new Set(
+                rawAlt
+                  .split(',')
+                  .map((s) => s.trim())
+                  .filter((s) => /^DNS:/i.test(s))
+                  .map((s) => s.replace(/^DNS:/i, '').trim().toLowerCase())
+                  .filter((s) => s.includes('.'))
+              )
+            ).slice(0, 40);
+
+            done({
+              host: targetHost,
+              port: 443,
+              protocol,
+              cipherName: cipher?.name || 'UNKNOWN',
+              subjectCn: subjectCn || targetHost,
+              subjectOrg,
+              subjectCountry,
+              issuerCn,
+              issuerOrg,
+              validFrom: Number.isFinite(validFromMs) ? new Date(validFromMs).toISOString() : String(cert.valid_from || ''),
+              validTo: Number.isFinite(validToMs) ? new Date(validToMs).toISOString() : String(cert.valid_to || ''),
+              daysUntilExpiry,
+              isExpired,
+              isSelfSigned,
+              serialNumber: String(cert.serialNumber || ''),
+              fingerprintSha256: String(cert.fingerprint256 || '').replace(/:/g, '').toLowerCase(),
+              sanDomains,
+              checkedAtIso: new Date().toISOString(),
+            });
+          } catch {
+            done(null);
+          }
+        }
+      );
+
+      socket.setTimeout(timeoutMs, () => done(null));
+      socket.on('error', () => done(null));
+    });
+
+  let audit = await attemptConnect(host);
+  if (!audit && !host.startsWith('www.')) {
+    audit = await attemptConnect(`www.${host}`);
+  }
+  return { audit, latencyMs: Date.now() - t0 };
+}
+
+/**
+ * Zero-Key Wikimedia Revision History Forensics (Squad H & Temporal Causality):
+ * Inspects the last 50 live Wikipedia edits to detect anonymous IP corporate whitewashing,
+ * large negative byte deletions (<= -1,500 bytes), and edit-war revert cycles.
+ */
+export async function probeWikipediaRevisionForensics(
+  wikiTitle: string
+): Promise<{ forensics: WikipediaRevisionForensics | null; latencyMs: number }> {
+  const t0 = Date.now();
+  const cleanTitle = String(wikiTitle || '').trim();
+  if (!cleanTitle) return { forensics: null, latencyMs: 0 };
+
+  const apiUrl =
+    `https://en.wikipedia.org/w/api.php?action=query&prop=revisions&titles=${encodeURIComponent(cleanTitle)}` +
+    `&rvprop=ids|timestamp|user|size|comment|flags|tags&rvlimit=50&format=json&formatversion=2&redirects=1`;
+
+  const res = await resilientFetch(apiUrl, {
+    timeoutMs: 6500,
+    maxBytes: 512_000,
+    headers: { 'User-Agent': PROBE_UA, Accept: 'application/json' },
+  });
+  if (!res.ok || !res.bodyText) return { forensics: null, latencyMs: Date.now() - t0 };
+
+  try {
+    const parsed = JSON.parse(res.bodyText) as {
+      query?: {
+        pages?: Array<{
+          title?: string;
+          missing?: boolean;
+          revisions?: Array<{
+            revid?: number;
+            parentid?: number;
+            timestamp?: string;
+            user?: string;
+            anon?: boolean;
+            size?: number;
+            comment?: string;
+            tags?: string[];
+          }>;
+        }>;
+      };
+    };
+    const page = parsed?.query?.pages?.[0];
+    if (!page || page.missing || !Array.isArray(page.revisions) || page.revisions.length < 2) {
+      return { forensics: null, latencyMs: Date.now() - t0 };
+    }
+
+    const revs = page.revisions;
+    const resolvedTitle = page.title || cleanTitle;
+    const slug = encodeURIComponent(resolvedTitle.replace(/\s+/g, '_'));
+    const articleUrl = `https://en.wikipedia.org/wiki/${slug}`;
+
+    const editors = new Set<string>();
+    let anonymousIpEdits = 0;
+    let revertOrUndoEdits = 0;
+    const largeDeletions: WikipediaRevisionForensics['largeDeletions'] = [];
+
+    for (let i = 0; i < revs.length; i++) {
+      const r = revs[i];
+      const user = String(r.user || 'Unknown');
+      editors.add(user);
+      const isAnon = Boolean(r.anon) || /^\d{1,3}(?:\.\d{1,3}){3}$/.test(user) || /^[0-9a-f:]{10,}$/i.test(user);
+      if (isAnon) anonymousIpEdits += 1;
+
+      const comment = String(r.comment || '');
+      const tagsStr = Array.isArray(r.tags) ? r.tags.join(' ') : '';
+      if (/\b(revert|reverted|undo|undid|rv|rvv|vandalism|rollback)\b/i.test(`${comment} ${tagsStr}`)) {
+        revertOrUndoEdits += 1;
+      }
+
+      if (i + 1 < revs.length && typeof r.size === 'number' && typeof revs[i + 1].size === 'number') {
+        const deltaBytes = r.size - (revs[i + 1].size as number);
+        if (deltaBytes <= -1500 && r.revid && r.timestamp) {
+          const intentClassification = classifyWikipediaDeletionIntent(comment);
+          largeDeletions.push({
+            revId: r.revid,
+            timestamp: r.timestamp,
+            user,
+            isAnonymousIp: isAnon,
+            deltaBytes,
+            comment: comment.slice(0, 180) || '(No edit summary)',
+            diffUrl: `https://en.wikipedia.org/w/index.php?title=${slug}&diff=${r.revid}&oldid=prev`,
+            intentClassification,
+          });
+        }
+      }
+    }
+
+    const newestMs = Date.parse(revs[0].timestamp || '');
+    const oldestMs = Date.parse(revs[revs.length - 1].timestamp || '');
+    const spanWeeks = Number.isFinite(newestMs) && Number.isFinite(oldestMs)
+      ? Math.max(0.15, (newestMs - oldestMs) / (7 * 86_400_000))
+      : 1;
+    const editsPerWeek = Number((revs.length / spanWeeks).toFixed(2));
+    const anonymousIpRatio = Number((anonymousIpEdits / revs.length).toFixed(3));
+
+    const suspiciousDeletions = largeDeletions.filter(
+      (d) => d.intentClassification !== 'BENIGN_SOURCING_CLEANUP'
+    );
+    const benignCleanupDeletionsCount = largeDeletions.length - suspiciousDeletions.length;
+
+    let verdict: WikipediaRevisionForensics['verdict'] = 'STABLE';
+    if (
+      suspiciousDeletions.some((d) => d.deltaBytes <= -4000 || d.isAnonymousIp) ||
+      suspiciousDeletions.length >= 3
+    ) {
+      verdict = 'WHITEWASH_RISK';
+    } else if (revertOrUndoEdits >= 6 || (revertOrUndoEdits >= 3 && editsPerWeek >= 8)) {
+      verdict = 'ACTIVE_EDIT_WAR';
+    } else if (editsPerWeek >= 10 || suspiciousDeletions.length >= 1) {
+      verdict = 'ELEVATED_CHURN';
+    }
+
+    return {
+      forensics: {
+        articleTitle: resolvedTitle,
+        articleUrl,
+        revisionsAnalyzed: revs.length,
+        uniqueEditors: editors.size,
+        anonymousIpEdits,
+        anonymousIpRatio,
+        revertOrUndoEdits,
+        editsPerWeek,
+        largeDeletions: largeDeletions.slice(0, 8),
+        benignCleanupDeletionsCount,
+        verdict,
+        checkedAtIso: new Date().toISOString(),
+      },
+      latencyMs: Date.now() - t0,
+    };
+  } catch {
+    return { forensics: null, latencyMs: Date.now() - t0 };
+  }
+}
+
+/**
  * Orchestrates all Phase-3 Deep Attack-Surface, Supply-Chain, Attention & Live Market Probes in parallel,
  * followed by FIRST EPSS CVE enrichment and optional Phase 4 Autonomous Recursive Pivoting.
  */
 export async function runDeepLiveProbes(params: {
   entityName: string;
+  legalName?: string;
+  industry?: string;
+  country?: string;
+  githubOrgLogin?: string;
   wikiTitle: string;
   websiteUrl: string;
   resolvedIps: string[];
@@ -1400,186 +1753,240 @@ export async function runDeepLiveProbes(params: {
   const domain = normalizeHostname(params.websiteUrl);
   const marketStart = Date.now();
 
-  const [shodanOut, httpOut, rdapOut, hstsObsOut, spamhausOut, ccOut, supplyOut, attentionOut, marketQuote] =
-    await Promise.all([
-      probeShodanInternetDb(params.resolvedIps).then((out) => {
-        const totalPorts = out.hosts.reduce((s, h) => s + h.ports.length, 0);
-        const totalVulns = out.hosts.reduce((s, h) => s + h.vulns.length, 0);
+  const [
+    shodanOut,
+    httpOut,
+    rdapOut,
+    tlsOut,
+    wikiRevOut,
+    hstsObsOut,
+    spamhausOut,
+    ccOut,
+    supplyOut,
+    attentionOut,
+    marketQuote,
+  ] = await Promise.all([
+    probeShodanInternetDb(params.resolvedIps).then((out) => {
+      const totalPorts = out.hosts.reduce((s, h) => s + h.ports.length, 0);
+      const totalVulns = out.hosts.reduce((s, h) => s + h.vulns.length, 0);
+      emit({
+        probeId: 'shodan_internetdb',
+        sourceName: 'Shodan InternetDB (Ports, CPEs & IP CVEs)',
+        phase: 'Phase 3',
+        squads: ['G', 'L'],
+        status: out.hosts.length > 0 ? 'ok' : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound: out.hosts.length,
+        summary:
+          out.hosts.length > 0
+            ? `${out.hosts.length} IP(s) fingerprinted · ${totalPorts} open port(s) · ${totalVulns} IP CVE(s)`
+            : 'No public IPv4 hosts resolved for InternetDB lookup',
+        url: out.hosts[0]?.sourceUrl,
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    probeHttpSecurityAndCspIntel(params.websiteUrl).then((out) => {
+      emit({
+        probeId: 'http_csp_audit',
+        sourceName: 'Live HTTP Security & CSP Origin Extractor',
+        phase: 'Phase 3',
+        squads: ['C', 'G', 'L'],
+        status: out.audit ? 'ok' : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound: out.audit ? out.audit.cspDiscoveredOrigins.length + 1 : 0,
+        summary: out.audit
+          ? `HTTP ${out.audit.httpStatus} · Hardening ${out.audit.hardeningScore}/100 · WAF/CDN: ${out.audit.cdnOrWafDetected} · ${out.audit.cspDiscoveredOrigins.length} CSP origin(s)`
+          : 'Official site unreachable or omitted for HTTP header audit',
+        url: out.audit?.checkedUrl,
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    probeRdapAndDnssec(domain).then((out) => {
+      emit({
+        probeId: 'rdap_dnssec',
+        sourceName: 'Authoritative RDAP & Google DoH DNSSEC',
+        phase: 'Phase 3',
+        squads: ['G', 'L'],
+        status: out.record ? 'ok' : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound: out.record ? out.record.nameservers.length + out.record.dsRecordsCount : 0,
+        summary: out.record
+          ? `Registrar: ${out.record.registrar} · Reg: ${out.record.registeredDate} · DNSSEC=${out.record.dnssecValidated ? 'VALIDATED' : 'UNSIGNED'}`
+          : 'No RDAP/DNSSEC record available for domain',
+        url: out.record?.rdapServer.startsWith('http') ? out.record.rdapServer : undefined,
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    probeLiveTlsCertificate(domain).then((out) => {
+      emit({
+        probeId: 'live_tls_x509',
+        sourceName: 'Live TLS Handshake & X.509 SAN Inspector',
+        phase: 'Phase 3',
+        squads: ['C', 'G', 'L'],
+        status: out.audit ? 'ok' : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound: out.audit ? out.audit.sanDomains.length + 1 : 0,
+        summary: out.audit
+          ? `${out.audit.protocol} (${out.audit.cipherName}) · Issuer: ${out.audit.issuerOrg || out.audit.issuerCn || 'CA'} · ${out.audit.sanDomains.length} SAN(s) · Expires in ${out.audit.daysUntilExpiry}d`
+          : 'TLS port 443 certificate handshake unavailable',
+        url: out.audit ? `https://${out.audit.host}` : undefined,
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    probeWikipediaRevisionForensics(params.wikiTitle).then((out) => {
+      emit({
+        probeId: 'wikipedia_revision_forensics',
+        sourceName: 'Wikimedia Revision Whitewash & Edit-War Detector',
+        phase: 'Phase 3',
+        squads: ['A', 'H'],
+        status: out.forensics ? 'ok' : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound: out.forensics ? out.forensics.revisionsAnalyzed : 0,
+        summary: out.forensics
+          ? `${out.forensics.verdict} · ${out.forensics.revisionsAnalyzed} revs (${out.forensics.uniqueEditors} editors, ${out.forensics.revertOrUndoEdits} reverts, ${out.forensics.largeDeletions.length} large deletion(s))`
+          : 'No Wikipedia revision log available',
+        url: out.forensics?.articleUrl,
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    probeHstsPreloadAndObservatory(domain).then((out) => {
+      emit({
+        probeId: 'hsts_mozilla_observatory',
+        sourceName: 'HSTS Preload & Mozilla MDN HTTP Observatory',
+        phase: 'Phase 3',
+        squads: ['C', 'G', 'L'],
+        status: out.hstsPreload || out.observatory ? 'ok' : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound: (out.hstsPreload ? 1 : 0) + (out.observatory ? 1 : 0),
+        summary:
+          out.observatory || out.hstsPreload
+            ? `Observatory Grade: ${out.observatory?.grade ?? 'N/A'} (${out.observatory?.score ?? 0}/100) · HSTS Preload: ${out.hstsPreload?.status ?? 'N/A'}`
+            : 'No domain available for Observatory/HSTS audit',
+        url: out.observatory?.detailsUrl || out.hstsPreload?.sourceUrl,
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    probeSpamhausDropAndSslbl(params.resolvedIps).then((out) => {
+      emit({
+        probeId: 'spamhaus_drop_sslbl',
+        sourceName: 'Spamhaus DROP & Abuse.ch SSLBL Netblock Audit',
+        phase: 'Phase 3',
+        squads: ['G', 'L'],
+        status: out.check ? 'ok' : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound: out.check ? out.check.listEntriesCount : 0,
+        summary: out.check
+          ? `${out.check.clean ? 'CLEAN' : `${out.check.matchedCidrs.length} DROP MATCH(ES)`} across ${out.check.listEntriesCount} DROP CIDRs & ${out.check.sslblEntriesCount.toLocaleString('en-US')} SSLBL fingerprints`
+          : 'Threat netblock list unavailable',
+        url: 'https://www.spamhaus.org/drop/drop.txt',
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    probeCommonCrawlIndex(domain).then((out) => {
+      emit({
+        probeId: 'common_crawl_index',
+        sourceName: 'Common Crawl Historical Index',
+        phase: 'Phase 3',
+        squads: ['A', 'L'],
+        status: out.snapshots.length > 0 ? 'ok' : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound: out.snapshots.length,
+        summary:
+          out.snapshots.length > 0
+            ? `${out.snapshots.length} crawled endpoint(s) in ${out.indexId}`
+            : `No Common Crawl snapshots indexed (${out.indexId || 'index'})`,
+        url: out.snapshots[0]?.url,
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    probeSoftwareSupplyChainAndOsv(params.entityName, domain, {
+      query: params.entityName,
+      entityName: params.entityName,
+      legalName: params.legalName || params.entityName,
+      industry: params.industry || '',
+      country: params.country || '',
+      officialWebsite: params.websiteUrl,
+      primaryDomain: domain,
+      githubOrgLogin: params.githubOrgLogin,
+    }).then((out) => {
+      const pkgsCount =
+        out.audit.npmPackages.length +
+        (out.audit.pypiPackage ? 1 : 0) +
+        (out.audit.cratesIoPackages?.length || 0) +
+        (out.audit.dockerHubRepos?.length || 0);
+      emit({
+        probeId: 'supply_chain_osv',
+        sourceName: 'npm / PyPI / Crates.io / Docker Hub + OSV.dev CVEs',
+        phase: 'Phase 3',
+        squads: ['C', 'G', 'N'],
+        status: pkgsCount > 0 ? 'ok' : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound: pkgsCount + out.audit.osvVulnerabilities.length,
+        summary:
+          pkgsCount > 0
+            ? `${out.audit.npmPackages.length} npm · ${out.audit.pypiPackage ? 1 : 0} PyPI · ${out.audit.cratesIoPackages?.length || 0} Rust · ${out.audit.dockerHubRepos?.length || 0} Docker · ${out.audit.osvVulnerabilities.length} OSV advisory(s)`
+            : 'No public npm/PyPI/Crates/Docker packages matched exact org namespace',
+        url:
+          out.audit.npmPackages[0]?.npmUrl ||
+          out.audit.dockerHubRepos?.[0]?.hubUrl ||
+          out.audit.cratesIoPackages?.[0]?.cratesUrl ||
+          out.audit.pypiPackage?.pypiUrl,
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    probeAttentionAndDiscourse(params.wikiTitle, params.entityName).then((out) => {
+      emit({
+        probeId: 'attention_discourse',
+        sourceName: 'Wikimedia 14d + HN Algolia + DefiLlama/GeckoTerminal',
+        phase: 'Phase 3',
+        squads: ['A', 'H', 'O'],
+        status:
+          out.telemetry.dailyViews.length > 0 || out.telemetry.hackerNewsThreads.length > 0
+            ? 'ok'
+            : 'empty',
+        latencyMs: out.latencyMs,
+        recordsFound:
+          out.telemetry.dailyViews.length +
+          out.telemetry.hackerNewsThreads.length +
+          (out.telemetry.defiLlamaTvlUsd ? 1 : 0) +
+          (out.telemetry.geckoTerminalPools?.length || 0),
+        summary: `Wiki 14d: ${out.telemetry.totalViews14d.toLocaleString('en-US')} views (peak Z=${out.telemetry.spikeZScore}) · ${out.telemetry.hackerNewsThreads.length} HN thread(s)${
+          out.telemetry.defiLlamaTvlUsd ? ` · TVL $${Math.round(out.telemetry.defiLlamaTvlUsd / 1e6)}M` : ''
+        }${out.telemetry.geckoTerminalPools?.length ? ` · ${out.telemetry.geckoTerminalPools.length} DEX pool(s)` : ''}`,
+        url: out.telemetry.hackerNewsThreads[0]?.url,
+        timestampIso: new Date().toISOString(),
+      });
+      return out;
+    }),
+    (params.tickerSymbol ? fetchSingleLiveMarketQuote(params.tickerSymbol) : Promise.resolve(null)).then((q) => {
+      if (params.tickerSymbol) {
         emit({
-          probeId: 'shodan_internetdb',
-          sourceName: 'Shodan InternetDB (Ports, CPEs & IP CVEs)',
+          probeId: 'yahoo_market_quote',
+          sourceName: `Yahoo Finance Live Quote (${params.tickerSymbol})`,
           phase: 'Phase 3',
-          squads: ['G', 'L'],
-          status: out.hosts.length > 0 ? 'ok' : 'empty',
-          latencyMs: out.latencyMs,
-          recordsFound: out.hosts.length,
-          summary:
-            out.hosts.length > 0
-              ? `${out.hosts.length} IP(s) fingerprinted · ${totalPorts} open port(s) · ${totalVulns} IP CVE(s)`
-              : 'No public IPv4 hosts resolved for InternetDB lookup',
-          url: out.hosts[0]?.sourceUrl,
+          squads: ['F', 'J', 'O'],
+          status: q ? 'ok' : 'empty',
+          latencyMs: Date.now() - marketStart,
+          recordsFound: q ? q.fiveDayCloseSeries.length : 0,
+          summary: q
+            ? `${q.symbol} ${q.currency} ${q.price} (${q.changePercent >= 0 ? '+' : ''}${q.changePercent}%) on ${q.exchange}`
+            : `No active market quote returned for ${params.tickerSymbol}`,
+          url: q?.sourceUrl,
           timestampIso: new Date().toISOString(),
         });
-        return out;
-      }),
-      probeHttpSecurityAndCspIntel(params.websiteUrl).then((out) => {
-        emit({
-          probeId: 'http_csp_audit',
-          sourceName: 'Live HTTP Security & CSP Origin Extractor',
-          phase: 'Phase 3',
-          squads: ['C', 'G', 'L'],
-          status: out.audit ? 'ok' : 'empty',
-          latencyMs: out.latencyMs,
-          recordsFound: out.audit ? out.audit.cspDiscoveredOrigins.length + 1 : 0,
-          summary: out.audit
-            ? `HTTP ${out.audit.httpStatus} · Hardening ${out.audit.hardeningScore}/100 · WAF/CDN: ${out.audit.cdnOrWafDetected} · ${out.audit.cspDiscoveredOrigins.length} CSP origin(s)`
-            : 'Official site unreachable or omitted for HTTP header audit',
-          url: out.audit?.checkedUrl,
-          timestampIso: new Date().toISOString(),
-        });
-        return out;
-      }),
-      probeRdapAndDnssec(domain).then((out) => {
-        emit({
-          probeId: 'rdap_dnssec',
-          sourceName: 'Authoritative RDAP & Google DoH DNSSEC',
-          phase: 'Phase 3',
-          squads: ['G', 'L'],
-          status: out.record ? 'ok' : 'empty',
-          latencyMs: out.latencyMs,
-          recordsFound: out.record ? out.record.nameservers.length + out.record.dsRecordsCount : 0,
-          summary: out.record
-            ? `Registrar: ${out.record.registrar} · Reg: ${out.record.registeredDate} · DNSSEC=${out.record.dnssecValidated ? 'VALIDATED' : 'UNSIGNED'}`
-            : 'No RDAP/DNSSEC record available for domain',
-          url: out.record?.rdapServer.startsWith('http') ? out.record.rdapServer : undefined,
-          timestampIso: new Date().toISOString(),
-        });
-        return out;
-      }),
-      probeHstsPreloadAndObservatory(domain).then((out) => {
-        emit({
-          probeId: 'hsts_mozilla_observatory',
-          sourceName: 'HSTS Preload & Mozilla MDN HTTP Observatory',
-          phase: 'Phase 3',
-          squads: ['C', 'G', 'L'],
-          status: out.hstsPreload || out.observatory ? 'ok' : 'empty',
-          latencyMs: out.latencyMs,
-          recordsFound: (out.hstsPreload ? 1 : 0) + (out.observatory ? 1 : 0),
-          summary:
-            out.observatory || out.hstsPreload
-              ? `Observatory Grade: ${out.observatory?.grade ?? 'N/A'} (${out.observatory?.score ?? 0}/100) · HSTS Preload: ${out.hstsPreload?.status ?? 'N/A'}`
-              : 'No domain available for Observatory/HSTS audit',
-          url: out.observatory?.detailsUrl || out.hstsPreload?.sourceUrl,
-          timestampIso: new Date().toISOString(),
-        });
-        return out;
-      }),
-      probeSpamhausDropAndSslbl(params.resolvedIps).then((out) => {
-        emit({
-          probeId: 'spamhaus_drop_sslbl',
-          sourceName: 'Spamhaus DROP & Abuse.ch SSLBL Netblock Audit',
-          phase: 'Phase 3',
-          squads: ['G', 'L'],
-          status: out.check ? 'ok' : 'empty',
-          latencyMs: out.latencyMs,
-          recordsFound: out.check ? out.check.listEntriesCount : 0,
-          summary: out.check
-            ? `${out.check.clean ? 'CLEAN' : `${out.check.matchedCidrs.length} DROP MATCH(ES)`} across ${out.check.listEntriesCount} DROP CIDRs & ${out.check.sslblEntriesCount.toLocaleString('en-US')} SSLBL fingerprints`
-            : 'Threat netblock list unavailable',
-          url: 'https://www.spamhaus.org/drop/drop.txt',
-          timestampIso: new Date().toISOString(),
-        });
-        return out;
-      }),
-      probeCommonCrawlIndex(domain).then((out) => {
-        emit({
-          probeId: 'common_crawl_index',
-          sourceName: 'Common Crawl Historical Index',
-          phase: 'Phase 3',
-          squads: ['A', 'L'],
-          status: out.snapshots.length > 0 ? 'ok' : 'empty',
-          latencyMs: out.latencyMs,
-          recordsFound: out.snapshots.length,
-          summary:
-            out.snapshots.length > 0
-              ? `${out.snapshots.length} crawled endpoint(s) in ${out.indexId}`
-              : `No Common Crawl snapshots indexed (${out.indexId || 'index'})`,
-          url: out.snapshots[0]?.url,
-          timestampIso: new Date().toISOString(),
-        });
-        return out;
-      }),
-      probeSoftwareSupplyChainAndOsv(params.entityName, domain).then((out) => {
-        const pkgsCount =
-          out.audit.npmPackages.length +
-          (out.audit.pypiPackage ? 1 : 0) +
-          (out.audit.cratesIoPackages?.length || 0) +
-          (out.audit.dockerHubRepos?.length || 0);
-        emit({
-          probeId: 'supply_chain_osv',
-          sourceName: 'npm / PyPI / Crates.io / Docker Hub + OSV.dev CVEs',
-          phase: 'Phase 3',
-          squads: ['C', 'G', 'N'],
-          status: pkgsCount > 0 ? 'ok' : 'empty',
-          latencyMs: out.latencyMs,
-          recordsFound: pkgsCount + out.audit.osvVulnerabilities.length,
-          summary:
-            pkgsCount > 0
-              ? `${out.audit.npmPackages.length} npm · ${out.audit.pypiPackage ? 1 : 0} PyPI · ${out.audit.cratesIoPackages?.length || 0} Rust · ${out.audit.dockerHubRepos?.length || 0} Docker · ${out.audit.osvVulnerabilities.length} OSV advisory(s)`
-              : 'No public npm/PyPI/Crates/Docker packages matched exact org namespace',
-          url:
-            out.audit.npmPackages[0]?.npmUrl ||
-            out.audit.dockerHubRepos?.[0]?.hubUrl ||
-            out.audit.cratesIoPackages?.[0]?.cratesUrl ||
-            out.audit.pypiPackage?.pypiUrl,
-          timestampIso: new Date().toISOString(),
-        });
-        return out;
-      }),
-      probeAttentionAndDiscourse(params.wikiTitle, params.entityName).then((out) => {
-        emit({
-          probeId: 'attention_discourse',
-          sourceName: 'Wikimedia 14d + HN Algolia + DefiLlama/GeckoTerminal',
-          phase: 'Phase 3',
-          squads: ['A', 'H', 'O'],
-          status:
-            out.telemetry.dailyViews.length > 0 || out.telemetry.hackerNewsThreads.length > 0
-              ? 'ok'
-              : 'empty',
-          latencyMs: out.latencyMs,
-          recordsFound:
-            out.telemetry.dailyViews.length +
-            out.telemetry.hackerNewsThreads.length +
-            (out.telemetry.defiLlamaTvlUsd ? 1 : 0) +
-            (out.telemetry.geckoTerminalPools?.length || 0),
-          summary: `Wiki 14d: ${out.telemetry.totalViews14d.toLocaleString('en-US')} views (peak Z=${out.telemetry.spikeZScore}) · ${out.telemetry.hackerNewsThreads.length} HN thread(s)${
-            out.telemetry.defiLlamaTvlUsd ? ` · TVL $${Math.round(out.telemetry.defiLlamaTvlUsd / 1e6)}M` : ''
-          }${out.telemetry.geckoTerminalPools?.length ? ` · ${out.telemetry.geckoTerminalPools.length} DEX pool(s)` : ''}`,
-          url: out.telemetry.hackerNewsThreads[0]?.url,
-          timestampIso: new Date().toISOString(),
-        });
-        return out;
-      }),
-      (params.tickerSymbol ? fetchSingleLiveMarketQuote(params.tickerSymbol) : Promise.resolve(null)).then((q) => {
-        if (params.tickerSymbol) {
-          emit({
-            probeId: 'yahoo_market_quote',
-            sourceName: `Yahoo Finance Live Quote (${params.tickerSymbol})`,
-            phase: 'Phase 3',
-            squads: ['F', 'J', 'O'],
-            status: q ? 'ok' : 'empty',
-            latencyMs: Date.now() - marketStart,
-            recordsFound: q ? q.fiveDayCloseSeries.length : 0,
-            summary: q
-              ? `${q.symbol} ${q.currency} ${q.price} (${q.changePercent >= 0 ? '+' : ''}${q.changePercent}%) on ${q.exchange}`
-              : `No active market quote returned for ${params.tickerSymbol}`,
-            url: q?.sourceUrl,
-            timestampIso: new Date().toISOString(),
-          });
-        }
-        return q;
-      }),
-    ]);
+      }
+      return q;
+    }),
+  ]);
 
   // Enrich all discovered CVEs (Shodan + OSV aliases + CISA/NVD existingCves) with live FIRST EPSS 30-day exploit probabilities
   const discoveredCves = Array.from(
@@ -1589,6 +1996,12 @@ export async function runDeepLiveProbes(params: {
       ...supplyOut.audit.osvVulnerabilities.flatMap((v) => [v.id, ...v.aliases]),
     ])
   ).filter((c) => /^CVE-\d{4}-\d{4,}$/i.test(c));
+
+  // Feed non-wildcard TLS SAN domains directly into the Phase-4 pivot seed list
+  const sanPivotDomains = (tlsOut.audit?.sanDomains || [])
+    .map((s) => s.replace(/^\*\./, '').trim().toLowerCase())
+    .filter((s) => s && s !== domain && s !== `www.${domain}` && s.includes('.'))
+    .slice(0, 6);
 
   const [epssOut, phase4Out] = await Promise.all([
     discoveredCves.length > 0
@@ -1614,7 +2027,7 @@ export async function runDeepLiveProbes(params: {
     runAutonomousPhase4Pivots({
       primaryDomain: domain,
       cspOrigins: httpOut.audit?.cspDiscoveredOrigins || [],
-      ctSubdomains: params.ctSubdomains || [],
+      ctSubdomains: Array.from(new Set([...(params.ctSubdomains || []), ...sanPivotDomains])),
       subsidiaryPivotDomains: params.subsidiaryPivotDomains || [],
       maxDepth: 2,
       maxProbes: 12,
@@ -1632,11 +2045,15 @@ export async function runDeepLiveProbes(params: {
 
   const totalOpenPorts = shodanOut.hosts.reduce((s, h) => s + h.ports.length, 0);
   const totalIpCves = shodanOut.hosts.reduce((s, h) => s + h.vulns.length, 0);
-  const attackSurfaceVerdict = `DEEP_SURFACE_AUDITED: Shodan=${shodanOut.hosts.length} host(s) (${totalOpenPorts} ports, ${totalIpCves} CVEs) · HTTP=${
+  const attackSurfaceVerdict = `DEEP_SURFACE_AUDITED: Shodan=${shodanOut.hosts.length} host(s) (${totalOpenPorts} ports, ${totalIpCves} CVEs) · TLS=${
+    tlsOut.audit ? `${tlsOut.audit.protocol} (${tlsOut.audit.sanDomains.length} SANs, ${tlsOut.audit.daysUntilExpiry}d)` : 'N/A'
+  } · HTTP=${
     httpOut.audit ? `${httpOut.audit.hardeningScore}/100` : 'N/A'
   } · Observatory=${hstsObsOut.observatory?.grade ?? 'N/A'} · HSTS=${
     hstsObsOut.hstsPreload?.status ?? 'N/A'
-  } · DNSSEC=${rdapOut.record?.dnssecValidated ? 'VALIDATED' : 'UNSIGNED'} · EPSS=${
+  } · DNSSEC=${rdapOut.record?.dnssecValidated ? 'VALIDATED' : 'UNSIGNED'} · WikiRev=${
+    wikiRevOut.forensics?.verdict ?? 'N/A'
+  } · EPSS=${
     epssOut.scores.length
   } CVE(s) · Phase-4 Pivots=${phase4Out.discoveries.length} (${
     phase4Out.discoveries.filter((d) => d.status === 'HIT').length
@@ -1647,6 +2064,8 @@ export async function runDeepLiveProbes(params: {
       shodanHosts: shodanOut.hosts,
       httpSecurityAudit: httpOut.audit,
       rdapAndDnssec: rdapOut.record,
+      tlsCertificate: tlsOut.audit,
+      wikipediaRevisionForensics: wikiRevOut.forensics,
       hstsPreload: hstsObsOut.hstsPreload,
       mozillaObservatory: hstsObsOut.observatory,
       epssScores: epssOut.scores,
@@ -1751,7 +2170,6 @@ export async function probeSenateLdaDetailedLobbying(
 
     const expensesNum = Number(r.expenses ?? r.income ?? 0);
     const amountUsd = Number.isFinite(expensesNum) && expensesNum > 0 ? expensesNum : 0;
-    totalSpendUsd += amountUsd;
 
     const agencies = new Set<string>();
     const issueCodes = new Set<string>();
@@ -1791,13 +2209,14 @@ export async function probeSenateLdaDetailedLobbying(
       }
     }
 
-    const filingUuid = String(r.filing_uuid || '');
-    filings.push({
+    const filingUuid = String(r.filing_uuid || '').trim();
+    const registrantName = String(regObj.name || '').trim();
+    const candidateRecord = {
       filingUuid,
       filingYear: Number(r.filing_year || 0),
       filingPeriod: String(r.filing_period_display || r.filing_period || r.filing_type_display || 'LD-2'),
       dtPosted: String(r.dt_posted || '').slice(0, 10),
-      registrantName: String(regObj.name || 'Registered Lobbying Firm'),
+      registrantName,
       clientName,
       amountUsd,
       governmentEntities: Array.from(agencies).slice(0, 10),
@@ -1810,7 +2229,10 @@ export async function probeSenateLdaDetailedLobbying(
             ? `https://lda.senate.gov/filings/public/filing/${filingUuid}/print/`
             : 'https://lda.senate.gov/filings/public/filing/search/')
       ),
-    });
+    };
+    if (!isValidSenateLdaRecord(candidateRecord)) continue;
+    totalSpendUsd += amountUsd;
+    filings.push(candidateRecord);
   }
 
   return {
@@ -1859,7 +2281,17 @@ async function resolveSecCompanyCik(entityName: string): Promise<{ cik: string; 
   }
 
   if (!cachedSecTickersMap || cachedSecTickersMap.length === 0) return null;
-  const norm = entityName
+
+  // Match explicit ticker inside parentheses e.g. "AST SpaceMobile, Inc. (ASTS, ASTSW)"
+  const parenTickers = entityName.match(/\(([A-Z]{1,5})(?:,|\s|\))/);
+  if (parenTickers?.[1]) {
+    const tickerUpper = parenTickers[1].toUpperCase();
+    const tickerHit = cachedSecTickersMap.find((r) => r.ticker === tickerUpper);
+    if (tickerHit) return tickerHit;
+  }
+
+  const cleanEntityName = entityName.replace(/\([^)]*\)/g, ' ');
+  const norm = cleanEntityName
     .toLowerCase()
     .replace(/[^a-z0-9\s]/g, ' ')
     .replace(/\b(inc|incorporated|corp|corporation|llc|ltd|limited|co|company|holdings|group|plc|sa)\b/g, ' ')

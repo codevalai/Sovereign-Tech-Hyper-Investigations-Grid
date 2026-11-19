@@ -3,9 +3,17 @@ import type {
   SenateLdaDetailedRecord,
   SilentDeletionAlertRecord,
   StealthEditDiffRecord,
+  TemporalBurstSummary,
+  TemporalCausalChain,
   TemporalCausalCluster,
   TemporalCausalEvent,
+  TlsCertificateAudit,
+  WikipediaRevisionForensics,
 } from '../src/types/investigation.ts';
+import {
+  classifyWikipediaDeletionIntent,
+  isValidSenateLdaRecord,
+} from '../src/engine/entityDisambiguation.ts';
 
 export interface TemporalCausalityInput {
   targetEntity: string;
@@ -69,6 +77,8 @@ export interface TemporalCausalityInput {
     detectedAtIso: string;
     studyUrl: string;
   }>;
+  wikipediaDeletions?: WikipediaRevisionForensics['largeDeletions'];
+  tlsCertificate?: TlsCertificateAudit | null;
   windowDays?: number;
 }
 
@@ -78,6 +88,8 @@ export interface TemporalCausalityAnalysis {
   totalNormalizedEvents: number;
   eventsByStream: Record<string, number>;
   clusters: TemporalCausalCluster[];
+  causalChains: TemporalCausalChain[];
+  burstSummary: TemporalBurstSummary;
   events: TemporalCausalEvent[];
   highestSeverity: 'NONE' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   verdict: string;
@@ -208,6 +220,25 @@ function classifyPairCausality(
     };
   }
 
+  // Pattern 6: Wikipedia large content deletion synchronized with lawsuit, SEC filing, or Federal Register notice
+  if (
+    streams.has('WIKIPEDIA_LARGE_DELETION') &&
+    (streams.has('COURTLISTENER_DOCKET') ||
+      streams.has('FEDERAL_REGISTER') ||
+      streams.has('SEC_FILING') ||
+      streams.has('SEC_FORM_D') ||
+      streams.has('EPA_ECHO'))
+  ) {
+    const wikiEv = first.stream === 'WIKIPEDIA_LARGE_DELETION' ? first : second;
+    const otherEv = wikiEv === first ? second : first;
+    return {
+      typology: 'WIKIPEDIA_WHITEWASH_AROUND_DISCLOSURE',
+      severity: deltaDays <= 5 ? 'CRITICAL' : 'HIGH',
+      score: Math.min(97, 82 + Math.max(0, 14 - deltaDays)),
+      narrative: `Wikipedia large deletion ("${wikiEv.title}") occurred within ${deltaDays}d of ${otherEv.stream.replace(/_/g, ' ')} ("${otherEv.title}").`,
+    };
+  }
+
   // Generic cross-stream regulatory/legal synchrony within <= 7 days
   if (deltaDays <= 7) {
     return {
@@ -308,6 +339,7 @@ export function analyzeCrossStreamTemporalCausality(
   }
 
   for (const lda of input.detailedLdaFilings || []) {
+    if (!isValidSenateLdaRecord(lda)) continue;
     pushEvent(
       'SENATE_LDA_LOBBYING',
       lda.dtPosted,
@@ -319,6 +351,9 @@ export function analyzeCrossStreamTemporalCausality(
   }
 
   for (const lf of input.lobbyingFilings || []) {
+    if (!isValidSenateLdaRecord({ ...lf, filingUuid: (lf as { filingUuid?: string }).filingUuid || 'VALID-LDA-LEGACY', clientName: input.targetEntity })) {
+      continue;
+    }
     pushEvent(
       'SENATE_LDA_LOBBYING',
       lf.dtPosted,
@@ -384,16 +419,75 @@ export function analyzeCrossStreamTemporalCausality(
     }
   }
 
+  for (const wd of input.wikipediaDeletions || []) {
+    const intent = wd.intentClassification || classifyWikipediaDeletionIntent(wd.comment || '');
+    if (intent === 'BENIGN_SOURCING_CLEANUP') continue;
+    pushEvent(
+      'WIKIPEDIA_LARGE_DELETION',
+      wd.timestamp,
+      `Wikipedia Deletion (${wd.deltaBytes} B) by ${wd.isAnonymousIp ? 'IP ' : ''}${wd.user}`,
+      wd.comment || `Revision ${wd.revId} deleted ${Math.abs(wd.deltaBytes)} bytes`,
+      wd.diffUrl
+    );
+  }
+
+  if (input.tlsCertificate?.validFrom) {
+    pushEvent(
+      'TLS_CERT_MUTATION',
+      input.tlsCertificate.validFrom,
+      `TLS X.509 Cert Issued (${input.tlsCertificate.issuerOrg || input.tlsCertificate.issuerCn || 'CA'})`,
+      `Host ${input.tlsCertificate.host} · ${input.tlsCertificate.sanDomains.length} SAN(s) · Expires ${input.tlsCertificate.validTo.slice(0, 10)}`,
+      `https://${input.tlsCertificate.host}`
+    );
+  }
+
   events.sort((a, b) => a.timestampMs - b.timestampMs);
 
   const eventsByStream: Record<string, number> = {};
+  const monthlyCounts = new Map<string, number>();
   for (const e of events) {
     eventsByStream[e.stream] = (eventsByStream[e.stream] || 0) + 1;
+    const monthKey = e.isoDate.slice(0, 7);
+    monthlyCounts.set(monthKey, (monthlyCounts.get(monthKey) || 0) + 1);
   }
+
+  // Monthly Temporal Burst Z-Score calculation
+  const monthEntries = Array.from(monthlyCounts.entries());
+  const monthsObserved = monthEntries.length;
+  let meanMonthlyEvents = 0;
+  let stdDevMonthlyEvents = 0;
+  let peakMonth: string | null = null;
+  let peakMonthCount = 0;
+  let peakBurstZScore = 0;
+
+  if (monthsObserved > 0) {
+    const counts = monthEntries.map(([, c]) => c);
+    meanMonthlyEvents = counts.reduce((s, c) => s + c, 0) / monthsObserved;
+    const variance = counts.reduce((s, c) => s + Math.pow(c - meanMonthlyEvents, 2), 0) / monthsObserved;
+    stdDevMonthlyEvents = Math.sqrt(variance);
+    for (const [m, c] of monthEntries) {
+      if (c > peakMonthCount) {
+        peakMonthCount = c;
+        peakMonth = m;
+      }
+    }
+    peakBurstZScore = stdDevMonthlyEvents > 0 ? (peakMonthCount - meanMonthlyEvents) / stdDevMonthlyEvents : 0;
+  }
+
+  const burstSummary: TemporalBurstSummary = {
+    monthsObserved,
+    meanMonthlyEvents: Number(meanMonthlyEvents.toFixed(2)),
+    stdDevMonthlyEvents: Number(stdDevMonthlyEvents.toFixed(2)),
+    peakMonth,
+    peakMonthCount,
+    peakBurstZScore: Number(peakBurstZScore.toFixed(2)),
+    burstDetected: monthsObserved >= 3 && peakMonthCount >= 3 && peakBurstZScore >= 1.8,
+  };
 
   // Sliding-window pairwise synchrony detector (Δt <= windowDays)
   const clusters: TemporalCausalCluster[] = [];
   const seenClusterKey = new Set<string>();
+  const adjacency = new Map<string, Array<{ next: TemporalCausalEvent; deltaDays: number; edgeScore: number }>>();
 
   for (let i = 0; i < events.length; i++) {
     for (let j = i + 1; j < events.length; j++) {
@@ -420,25 +514,100 @@ export function analyzeCrossStreamTemporalCausality(
         narrative: match.narrative,
         events: [events[i], events[j]],
       });
+
+      const list = adjacency.get(events[i].id) || [];
+      list.push({ next: events[j], deltaDays, edgeScore: match.score });
+      adjacency.set(events[i].id, list);
     }
   }
 
-  clusters.sort((a, b) => b.causalityScore - a.causalityScore || a.deltaDays - b.deltaDays);
-  const topClusters = clusters.slice(0, 25);
+  // Multi-Hop Directed Causal Chain Detector (length 3-4 across distinct streams, Δt <= windowDays per hop)
+  const causalChains: TemporalCausalChain[] = [];
+  const seenChainSig = new Set<string>();
 
-  const highestSeverity: TemporalCausalityAnalysis['highestSeverity'] = topClusters.some(
-    (c) => c.severity === 'CRITICAL'
-  )
-    ? 'CRITICAL'
-    : topClusters.some((c) => c.severity === 'HIGH')
-    ? 'HIGH'
-    : topClusters.length > 0
-    ? 'MEDIUM'
-    : 'NONE';
+  for (const startEv of events) {
+    const hop1 = adjacency.get(startEv.id);
+    if (!hop1) continue;
+    for (const e1 of hop1.slice(0, 8)) {
+      const hop2 = adjacency.get(e1.next.id);
+      if (!hop2) continue;
+      for (const e2 of hop2.slice(0, 8)) {
+        if (e2.next.stream === startEv.stream || e2.next.stream === e1.next.stream) continue;
+        const chainEvents: TemporalCausalEvent[] = [startEv, e1.next, e2.next];
+        let avgEdgeScore = (e1.edgeScore + e2.edgeScore) / 2;
+
+        // Try extending to 4th distinct-stream hop if available
+        const hop3 = adjacency.get(e2.next.id);
+        const e3 = hop3?.find(
+          (cand) =>
+            cand.next.stream !== startEv.stream &&
+            cand.next.stream !== e1.next.stream &&
+            cand.next.stream !== e2.next.stream
+        );
+        if (e3) {
+          chainEvents.push(e3.next);
+          avgEdgeScore = (e1.edgeScore + e2.edgeScore + e3.edgeScore) / 3;
+        }
+
+        const sig = chainEvents.map((ev) => ev.id).join('->');
+        if (seenChainSig.has(sig)) continue;
+        seenChainSig.add(sig);
+
+        const totalSpanDays = Math.round(
+          (chainEvents[chainEvents.length - 1].timestampMs - chainEvents[0].timestampMs) / MS_PER_DAY
+        );
+        const streamSeq = chainEvents.map((ev) => ev.stream);
+        const hasCriticalStream = streamSeq.some(
+          (s) =>
+            s === 'WAYBACK_STEALTH_EDIT' ||
+            s === 'SILENT_DELETION_ALERT' ||
+            s === 'CLINICAL_TRIAL_MUTATION' ||
+            s === 'WIKIPEDIA_LARGE_DELETION'
+        );
+        const chainScore = Math.min(99, Math.round(avgEdgeScore + (chainEvents.length - 2) * 5));
+        const severity: TemporalCausalChain['severity'] =
+          hasCriticalStream || chainScore >= 88 ? 'CRITICAL' : chainScore >= 76 ? 'HIGH' : 'MEDIUM';
+
+        causalChains.push({
+          chainId: `tcc-${crypto.createHash('sha256').update(sig).digest('hex').slice(0, 12)}`,
+          hopCount: chainEvents.length,
+          totalSpanDays,
+          severity,
+          chainScore,
+          streamSequence: streamSeq,
+          startDate: chainEvents[0].isoDate,
+          endDate: chainEvents[chainEvents.length - 1].isoDate,
+          narrative: `${chainEvents.length}-hop causal sequence across ${totalSpanDays}d: ${streamSeq.join(' -> ')} (${chainEvents
+            .map((ev) => ev.title.slice(0, 42))
+            .join(' => ')}).`,
+          events: chainEvents,
+        });
+        if (causalChains.length >= 24) break;
+      }
+      if (causalChains.length >= 24) break;
+    }
+    if (causalChains.length >= 24) break;
+  }
+
+  clusters.sort((a, b) => b.causalityScore - a.causalityScore || a.deltaDays - b.deltaDays);
+  causalChains.sort((a, b) => b.chainScore - a.chainScore || b.hopCount - a.hopCount || a.totalSpanDays - b.totalSpanDays);
+  const topClusters = clusters.slice(0, 25);
+  const topChains = causalChains.slice(0, 10);
+
+  const highestSeverity: TemporalCausalityAnalysis['highestSeverity'] =
+    topClusters.some((c) => c.severity === 'CRITICAL') || topChains.some((c) => c.severity === 'CRITICAL')
+      ? 'CRITICAL'
+      : topClusters.some((c) => c.severity === 'HIGH') || topChains.some((c) => c.severity === 'HIGH')
+      ? 'HIGH'
+      : topClusters.length > 0 || topChains.length > 0
+      ? 'MEDIUM'
+      : 'NONE';
 
   const verdict =
-    topClusters.length > 0
-      ? `Detected ${topClusters.length} synchronized cross-stream causal cluster(s) within Δt <= ${windowDays}d across ${events.length} dated forensic records (peak severity: ${highestSeverity}).`
+    topClusters.length > 0 || topChains.length > 0
+      ? `Detected ${topClusters.length} pairwise causal cluster(s) and ${topChains.length} multi-hop causal chain(s) within Δt <= ${windowDays}d across ${events.length} dated records (peak severity: ${highestSeverity}${
+          burstSummary.burstDetected ? `, burst Z=${burstSummary.peakBurstZScore} in ${burstSummary.peakMonth}` : ''
+        }).`
       : `Normalized ${events.length} dated forensic records across ${Object.keys(eventsByStream).length} stream(s); zero cross-stream causal synchronies triggered within Δt <= ${windowDays}d.`;
 
   return {
@@ -447,6 +616,8 @@ export function analyzeCrossStreamTemporalCausality(
     totalNormalizedEvents: events.length,
     eventsByStream,
     clusters: topClusters,
+    causalChains: topChains,
+    burstSummary,
     events: events.slice(-80),
     highestSeverity,
     verdict,

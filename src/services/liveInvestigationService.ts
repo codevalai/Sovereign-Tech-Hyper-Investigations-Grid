@@ -8,9 +8,13 @@ import type {
   LiveFeedEvent,
   LiveMarketQuote,
   LivingDeltaPatchRecord,
+  LongitudinalDiffReport,
+  LongitudinalSnapshot,
+  MonitoredWatchlistItem,
   PersistedInvestigationSummary,
   ProbeExecutionRecord,
   SilentDeletionAlertRecord,
+  VaultSearchHit,
 } from '../types/investigation';
 
 export interface LiveInvestigationRequest {
@@ -150,13 +154,52 @@ export async function fetchArchivedInvestigations(limit = 50): Promise<Persisted
 }
 
 export async function persistInvestigationArchive(
-  summary: PersistedInvestigationSummary
+  summary: PersistedInvestigationSummary,
+  longitudinalSnapshot?: LongitudinalSnapshot | null
 ): Promise<void> {
   await fetch('/api/investigations/archive', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(summary),
+    body: JSON.stringify(
+      longitudinalSnapshot ? { ...summary, longitudinalSnapshot } : summary
+    ),
   }).catch(() => undefined);
+}
+
+export interface VaultLongitudinalDiffResponse {
+  ok: boolean;
+  diff?: LongitudinalDiffReport;
+  diffSha256?: string;
+  ed25519SignatureBase64?: string;
+  ed25519PublicKeyHex?: string;
+  availableRuns?: Array<{
+    investigationId: string;
+    entityName: string;
+    completedAtIso: string;
+    hasSnapshot: boolean;
+  }>;
+  error?: string;
+}
+
+export async function fetchVaultLongitudinalDiffApi(params: {
+  target?: string;
+  runA?: string;
+  runB?: string;
+}): Promise<VaultLongitudinalDiffResponse> {
+  const qs = new URLSearchParams();
+  if (params.target) qs.set('target', params.target);
+  if (params.runA) qs.set('runA', params.runA);
+  if (params.runB) qs.set('runB', params.runB);
+  const res = await fetch(`/api/vault/diff?${qs.toString()}`);
+  const data = (await res.json().catch(() => ({}))) as VaultLongitudinalDiffResponse;
+  if (!res.ok) {
+    return {
+      ok: false,
+      error: data.error || `Longitudinal diff failed (${res.status})`,
+      availableRuns: data.availableRuns,
+    };
+  }
+  return data;
 }
 
 export async function fetchCrossEntityCorrelations(): Promise<CrossEntityCorrelationReport | null> {
@@ -314,3 +357,73 @@ export async function runContagionSpider(
   }
   return data;
 }
+
+export async function searchGlobalVaultApi(query: string, limit = 30): Promise<VaultSearchHit[]> {
+  const q = query.trim();
+  if (!q) return [];
+  const res = await fetch(`/api/vault/search?q=${encodeURIComponent(q)}&limit=${limit}`);
+  if (!res.ok) return [];
+  const data = (await res.json()) as { hits?: VaultSearchHit[] };
+  return Array.isArray(data.hits) ? data.hits : [];
+}
+
+export async function fetchWatchlistApi(): Promise<MonitoredWatchlistItem[]> {
+  const res = await fetch('/api/watchlist');
+  if (!res.ok) return [];
+  const data = (await res.json()) as { items?: MonitoredWatchlistItem[] };
+  return Array.isArray(data.items) ? data.items : [];
+}
+
+export async function addWatchlistTargetApi(
+  entityName: string,
+  primaryDomain?: string,
+  notes?: string
+): Promise<MonitoredWatchlistItem> {
+  const res = await fetch('/api/watchlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ entityName, primaryDomain, notes }),
+  });
+  const data = (await res.json().catch(() => ({}))) as {
+    ok?: boolean;
+    item?: MonitoredWatchlistItem;
+    error?: string;
+  };
+  if (!res.ok || !data.item) {
+    throw new Error(data.error || `Watchlist save failed (${res.status})`);
+  }
+  return data.item;
+}
+
+export async function removeWatchlistTargetApi(id: string): Promise<boolean> {
+  const res = await fetch(`/api/watchlist/${encodeURIComponent(id)}`, { method: 'DELETE' });
+  return res.ok;
+}
+
+export interface WatchlistScanResponse {
+  ok: boolean;
+  scanned: number;
+  results: Array<{
+    id: string;
+    entityName: string;
+    status: string;
+    summary: string;
+    severity?: string;
+  }>;
+  items: MonitoredWatchlistItem[];
+  error?: string;
+}
+
+export async function scanWatchlistTargetsApi(maxTargets = 5): Promise<WatchlistScanResponse> {
+  const res = await fetch('/api/watchlist/scan', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ maxTargets }),
+  });
+  const data = (await res.json().catch(() => ({}))) as WatchlistScanResponse;
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || `Watchlist live scan failed (${res.status})`);
+  }
+  return data;
+}
+

@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import React, { Suspense, lazy, useEffect, useState } from 'react';
 import { Header } from './components/Header';
 import { InvestigationLauncher } from './components/InvestigationLauncher';
 import { SwarmExecutionView } from './components/SwarmExecutionView';
@@ -6,13 +6,26 @@ import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { NewsFeedPanel } from './components/NewsFeedPanel';
 import { CivilizationalOrgansPanel } from './components/CivilizationalOrgansPanel';
 import { GlobalNewBusinessesAndMAPanel } from './components/GlobalNewBusinessesAndMAPanel';
-import { DossierViewerModal } from './components/DossierViewerModal';
-import { PowerMapModal } from './components/PowerMapModal';
-import { ShockwaveSimulatorModal } from './components/ShockwaveSimulatorModal';
-import { DossierZipReaderTab } from './components/DossierZipReaderTab';
-import { LiveForensicTelemetryPanel } from './components/LiveForensicTelemetryPanel';
-import { CustodyVaultAndComparatorTab } from './components/CustodyVaultAndComparatorTab';
 import { INITIAL_TECH_ENTITIES } from './data/entitiesDatabase';
+
+const DossierViewerModal = lazy(() =>
+  import('./components/DossierViewerModal').then((m) => ({ default: m.DossierViewerModal }))
+);
+const PowerMapModal = lazy(() =>
+  import('./components/PowerMapModal').then((m) => ({ default: m.PowerMapModal }))
+);
+const ShockwaveSimulatorModal = lazy(() =>
+  import('./components/ShockwaveSimulatorModal').then((m) => ({ default: m.ShockwaveSimulatorModal }))
+);
+const DossierZipReaderTab = lazy(() =>
+  import('./components/DossierZipReaderTab').then((m) => ({ default: m.DossierZipReaderTab }))
+);
+const LiveForensicTelemetryPanel = lazy(() =>
+  import('./components/LiveForensicTelemetryPanel').then((m) => ({ default: m.LiveForensicTelemetryPanel }))
+);
+const CustodyVaultAndComparatorTab = lazy(() =>
+  import('./components/CustodyVaultAndComparatorTab').then((m) => ({ default: m.CustodyVaultAndComparatorTab }))
+);
 import { INITIAL_NEWS_FEED } from './data/newsFeedDatabase';
 import { getAllUniqueCatalogEntities } from './data/sectorTop20Database';
 import { resolveInvestigationTarget } from './data/forensicDossierKnowledge';
@@ -23,7 +36,7 @@ import {
   streamLiveBusinessIntelligence,
   syncLiveMarketTelemetry,
 } from './services/liveInvestigationService';
-import { packageInvestigationZip, downloadBlob } from './services/zipService';
+import { packageInvestigationZip, buildAuditBundleMarkdown, downloadBlob } from './services/zipService';
 import {
   AgentTask,
   InvestigationResult,
@@ -83,10 +96,11 @@ export default function App() {
   const [currentStage, setCurrentStage] = useState('Idle · Waiting for target prompt');
   const [stageProgress, setStageProgress] = useState(0);
   const [squads, setSquads] = useState(() => create160AgentSwarm('SpaceX'));
-  const [logs, setLogs] = useState<string[]>([
-    'Sovereign Hyper-Investigations Grid initialized (160-Agent / 16-Squad Matrix).',
-    'Civilization Frontier Stack: Space, Neurotech, Bioscience, Finance, Semiconductors, EPA, Patent/Grants, Dark-Pool & CourtListener indexed.',
-    '24/7 SQLite WAL Daemon & 5-Ring Sovereign Defense Watchdog online.'
+  const formatLogLine = (msg: string) => `[${new Date().toISOString().slice(11, 19)}] ${msg}`;
+  const [logs, setLogs] = useState<string[]>(() => [
+    formatLogLine('Sovereign Hyper-Investigations Grid initialized (160-Agent / 16-Squad Matrix).'),
+    formatLogLine('Civilization Frontier Stack: Space, Neurotech, Bioscience, Finance, Semiconductors, EPA, Patent/Grants, Dark-Pool & CourtListener indexed.'),
+    formatLogLine('24/7 SQLite WAL Daemon & 5-Ring Sovereign Defense Watchdog online.'),
   ]);
   const [lastResult, setLastResult] = useState<InvestigationResult | null>(null);
   const [savedHistory, setSavedHistory] = useState<InvestigationResult[]>([]);
@@ -232,7 +246,7 @@ export default function App() {
       resolvedTarget.targetMode === 'industry' || resolvedTarget.targetMode === 'jurisdiction';
 
     const addLog = (msg: string) => {
-      setLogs((prev) => [...prev, msg]);
+      setLogs((prev) => [...prev, formatLogLine(msg)]);
     };
 
     addLog(`[IMMUTABILITY] Read-only isolated scratchpad active · 0 mutations to existing ledgers, asset indexes, or schemas.`);
@@ -287,7 +301,7 @@ export default function App() {
                 const probeSquadSet = new Set(probe.squads.map((s) => s.toUpperCase()));
                 setSquads((prev) =>
                   prev.map((sq) => {
-                    const letter = sq.code.replace(/^SQUAD\s*/i, '').trim().toUpperCase();
+                    const letter = sq.code.replace(/^SQUAD[\s-]*/i, '').trim().toUpperCase();
                     if (!probeSquadSet.has(letter) && !probeSquadSet.has(sq.code.toUpperCase())) {
                       return sq;
                     }
@@ -343,217 +357,253 @@ export default function App() {
       setCurrentStage('Stage 2: Sector / Jurisdiction Cohort Resolution');
     }
 
-    // Synchronize all 16 squads (160 agents) directly from grounded live telemetry (zero fake timers)
-    for (const sq of activeSquads) {
-      sq.status = 'completed';
-      sq.agents.forEach((a) => {
-        a.status = 'completed';
-        a.progress = 100;
-        a.findingsCount = Math.max(1, (a.rawMarkdownContent || '').split('\n- ').length - 1);
-      });
-    }
-    setSquads([...activeSquads]);
+    try {
+      // Synchronize all 16 squads (160 agents) initial completion state before dossier generation
+      for (const sq of activeSquads) {
+        sq.status = 'completed';
+        sq.agents.forEach((a) => {
+          a.status = 'completed';
+          a.progress = 100;
+        });
+      }
 
-    setStageProgress(94);
-    setCurrentStage('Stage 5: Adjudicator Synthesis, IPFS CIDv1, Bitcoin/RFC 3161 & Ed25519 + Merkle Sealing');
-    addLog(`[ADJUDICATOR] Assembling master Markdown dossiers + 28_DEEP_ATTACK_SURFACE_CSP_RDAP_AND_OSV_AUDIT.md + raw_payloads evidence locker + RFC 8032 Ed25519 + Binary Merkle + IPFS CIDv1 + verify_dossier.mjs...`);
+      setStageProgress(92);
+      setCurrentStage('Stage 5: Adjudicator Synthesis, IPFS CIDv1, Bitcoin/RFC 3161 & Ed25519 + Merkle Sealing');
+      addLog(`[ADJUDICATOR] Assembling master Markdown dossiers + 28_DEEP_ATTACK_SURFACE_CSP_RDAP_AND_OSV_AUDIT.md + raw_payloads evidence locker + RFC 8032 Ed25519 + Binary Merkle + IPFS CIDv1 + verify_dossier.mjs...`);
 
-    const elapsedSeconds = Number(((Date.now() - startedAt) / 1000).toFixed(1));
-    const result = generateInvestigationDossier(enrichedScope, activeSquads, elapsedSeconds);
-    setLastResult(result);
-    setSavedHistory((prev) => [result, ...prev.filter((r) => r.scope.entity !== result.scope.entity)].slice(0, 8));
+      const elapsedSeconds = Number(((Date.now() - startedAt) / 1000).toFixed(1));
+      const result = generateInvestigationDossier(enrichedScope, activeSquads, elapsedSeconds);
+      const finalSquads = result.squads || activeSquads;
+      setSquads([...finalSquads]);
 
-    // Persist Ring-2 RFC 3161 TSA + OpenTimestamps BTC Calendar + Sigstore Rekor + Ring-5 SQLite Custody Hash Chain
-    const ledgerFile = result.files.find((f) => f.filename === 'LEDGER_ENTRY.json');
-    let parsedLedger: {
-      investigation_id?: string;
-      target_entity?: string;
-      merkle_root?: string;
-      ed25519_signature?: string;
-      ed25519_public_key_hex?: string;
-      ed25519_public_key_pem?: string;
-      ipfs_cidv1?: string;
-      bitcoin_anchor?: { bitcoinBlockHash?: string | null; bitcoinBlockHeight?: number | null } | null;
-    } | null = null;
+      let finalResult: InvestigationResult = result;
+      setLastResult(finalResult);
+      setSavedHistory((prev) => [finalResult, ...prev.filter((r) => r.scope.entity !== finalResult.scope.entity)].slice(0, 8));
 
-    if (ledgerFile) {
-      try {
-        parsedLedger = JSON.parse(ledgerFile.content);
-        if (parsedLedger?.merkle_root && parsedLedger.ed25519_signature && parsedLedger.ed25519_public_key_hex) {
-          void fetch('/api/anchor/finalize', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({
-              investigationId: parsedLedger.investigation_id || result.investigationId,
-              entityName: parsedLedger.target_entity || scope.entity,
-              merkleRoot: parsedLedger.merkle_root,
-              ed25519Signature: parsedLedger.ed25519_signature,
-              ed25519PublicKeyHex: parsedLedger.ed25519_public_key_hex,
-              ed25519PublicKeyPem: parsedLedger.ed25519_public_key_pem || '',
-              ipfsCidV1: parsedLedger.ipfs_cidv1 || '',
-              existingBitcoinHash: parsedLedger.bitcoin_anchor?.bitcoinBlockHash ?? null,
-              existingBitcoinHeight: parsedLedger.bitcoin_anchor?.bitcoinBlockHeight ?? null,
-            }),
-          })
-            .then((r) => (r.ok ? r.json() : null))
-            .then(
-              (
-                anchorPayload: {
-                  watchdog?: WatchdogStatusState;
+      // Persist Ring-2 RFC 3161 TSA + OpenTimestamps BTC Calendar + Sigstore Rekor + Ring-5 SQLite Custody Hash Chain
+      const ledgerFile = finalResult.files.find((f) => f.filename === 'LEDGER_ENTRY.json');
+      let parsedLedger: {
+        investigation_id?: string;
+        target_entity?: string;
+        merkle_root?: string;
+        ed25519_signature?: string;
+        ed25519_public_key_hex?: string;
+        ed25519_public_key_pem?: string;
+        ipfs_cidv1?: string;
+        bitcoin_anchor?: { bitcoinBlockHash?: string | null; bitcoinBlockHeight?: number | null } | null;
+      } | null = null;
+
+      if (ledgerFile) {
+        try {
+          parsedLedger = JSON.parse(ledgerFile.content);
+          if (parsedLedger?.merkle_root && parsedLedger.ed25519_signature && parsedLedger.ed25519_public_key_hex) {
+            setStageProgress(96);
+            setCurrentStage('Stage 5B: Sealing RFC 3161 TSA, OpenTimestamps & Sigstore Rekor Anchors');
+            const anchorController = new AbortController();
+            const anchorTimeout = window.setTimeout(() => anchorController.abort(), 18_000);
+            try {
+              const resp = await fetch('/api/anchor/finalize', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                signal: anchorController.signal,
+                body: JSON.stringify({
+                  investigationId: parsedLedger.investigation_id || finalResult.investigationId,
+                  entityName: parsedLedger.target_entity || scope.entity,
+                  merkleRoot: parsedLedger.merkle_root,
+                  ed25519Signature: parsedLedger.ed25519_signature,
+                  ed25519PublicKeyHex: parsedLedger.ed25519_public_key_hex,
+                  ed25519PublicKeyPem: parsedLedger.ed25519_public_key_pem || '',
+                  ipfsCidV1: parsedLedger.ipfs_cidv1 || '',
+                  existingBitcoinHash: parsedLedger.bitcoin_anchor?.bitcoinBlockHash ?? null,
+                  existingBitcoinHeight: parsedLedger.bitcoin_anchor?.bitcoinBlockHeight ?? null,
+                }),
+              });
+              const anchorPayload = (resp.ok ? await resp.json() : null) as {
+                watchdog?: WatchdogStatusState;
+                rfc3161?: {
+                  status?: string;
+                  tsaProvider?: string;
+                  rfc3161TokenSha256?: string | null;
+                  rfc3161TokenBase64?: string | null;
+                  errorNote?: string;
+                  attempts?: import('./types/investigation').Rfc3161AttemptDiagnostic[];
+                };
+                externalAnchor?: {
+                  opentimestamps?: { status: string; calendarUrl?: string | null; otsBytesLength?: number };
+                  sigstoreRekor?: { status: string; logIndex?: number | null };
                   rfc3161?: {
-                    status?: string;
-                    tsaProvider?: string;
-                    rfc3161TokenSha256?: string | null;
-                    rfc3161TokenBase64?: string | null;
+                    tsaProvider: string;
+                    status: string;
+                    tokenBase64: string | null;
+                    tokenSha256: string | null;
+                    bytesLength: number;
                     errorNote?: string;
                     attempts?: import('./types/investigation').Rfc3161AttemptDiagnostic[];
                   };
-                  externalAnchor?: {
-                    opentimestamps?: { status: string; calendarUrl?: string | null; otsBytesLength?: number };
-                    sigstoreRekor?: { status: string; logIndex?: number | null };
-                    rfc3161?: {
-                      tsaProvider: string;
-                      status: string;
-                      tokenBase64: string | null;
-                      tokenSha256: string | null;
-                      bytesLength: number;
-                      errorNote?: string;
-                      attempts?: import('./types/investigation').Rfc3161AttemptDiagnostic[];
-                    };
-                  };
-                } | null
-              ) => {
-                if (anchorPayload?.watchdog) {
-                  setCustodyStatus(anchorPayload.watchdog);
-                }
-                const tsaTokenBase64 =
-                  anchorPayload?.externalAnchor?.rfc3161?.tokenBase64 ||
-                  anchorPayload?.rfc3161?.rfc3161TokenBase64 ||
-                  null;
-                const tsaTokenSha256 =
-                  anchorPayload?.externalAnchor?.rfc3161?.tokenSha256 ||
-                  anchorPayload?.rfc3161?.rfc3161TokenSha256 ||
-                  null;
-                const tsaProvider =
-                  anchorPayload?.externalAnchor?.rfc3161?.tsaProvider ||
-                  anchorPayload?.rfc3161?.tsaProvider ||
-                  'https://freetsa.org/tsr';
-                const tsaStatus: 'ANCHORED_RFC3161' | 'UNREACHABLE_OFFLINE' =
-                  tsaTokenBase64 && tsaTokenSha256 ? 'ANCHORED_RFC3161' : 'UNREACHABLE_OFFLINE';
-                const tsaAttempts =
-                  anchorPayload?.externalAnchor?.rfc3161?.attempts ||
-                  anchorPayload?.rfc3161?.attempts ||
-                  [];
-                const tsaErrorNote =
-                  anchorPayload?.externalAnchor?.rfc3161?.errorNote ||
-                  anchorPayload?.rfc3161?.errorNote ||
-                  null;
+                };
+              } | null;
 
-                if (anchorPayload?.externalAnchor || anchorPayload?.rfc3161 || tsaTokenBase64) {
-                  const ots = anchorPayload?.externalAnchor?.opentimestamps;
-                  const rekor = anchorPayload?.externalAnchor?.sigstoreRekor;
-                  addLog(
-                    `[EXTERNAL-ANCHOR] OpenTimestamps=${ots?.status || 'UNAVAILABLE'}${ots?.otsBytesLength ? ` (${ots.otsBytesLength}B .ots)` : ''} · Sigstore Rekor=${rekor?.status || 'UNAVAILABLE'}${rekor?.logIndex != null ? ` (#${rekor.logIndex})` : ''} · RFC3161-TSA=${tsaStatus}${tsaTokenSha256 ? ` (MERKLE_ROOT.tsr SHA256:${tsaTokenSha256.slice(0, 12)})` : ` (${tsaAttempts.length} TSA tier(s) attempted)`}`
-                  );
-                }
-
-                const patchAnchorFields = (item: InvestigationResult): InvestigationResult => ({
-                  ...item,
-                  rfc3161Status: tsaStatus,
-                  rfc3161TokenBase64: tsaTokenBase64,
-                  rfc3161TsaProvider: tsaProvider,
-                  rfc3161TokenSha256: tsaTokenSha256,
-                  rfc3161Attempts: tsaAttempts,
-                  rfc3161ErrorNote: tsaErrorNote,
-                  signalDensityMetrics: item.signalDensityMetrics
-                    ? { ...item.signalDensityMetrics, tsa_anchor_status: tsaStatus }
-                    : item.signalDensityMetrics,
-                });
-
-                setLastResult((prev) =>
-                  prev && prev.investigationId === result.investigationId
-                    ? patchAnchorFields(prev)
-                    : prev
-                );
-                setSavedHistory((prev) =>
-                  prev.map((item) =>
-                    item.investigationId === result.investigationId
-                      ? patchAnchorFields(item)
-                      : item
-                  )
-                );
-                setVaultRefreshCounter((c) => c + 1);
+              if (anchorPayload?.watchdog) {
+                setCustodyStatus(anchorPayload.watchdog);
               }
-            )
-            .catch(() => undefined);
+              const tsaTokenBase64 =
+                anchorPayload?.externalAnchor?.rfc3161?.tokenBase64 ||
+                anchorPayload?.rfc3161?.rfc3161TokenBase64 ||
+                null;
+              const tsaTokenSha256 =
+                anchorPayload?.externalAnchor?.rfc3161?.tokenSha256 ||
+                anchorPayload?.rfc3161?.rfc3161TokenSha256 ||
+                null;
+              const tsaProvider =
+                anchorPayload?.externalAnchor?.rfc3161?.tsaProvider ||
+                anchorPayload?.rfc3161?.tsaProvider ||
+                'https://freetsa.org/tsr';
+              const tsaStatus: 'ANCHORED_RFC3161' | 'UNREACHABLE_OFFLINE' =
+                tsaTokenBase64 && tsaTokenSha256 ? 'ANCHORED_RFC3161' : 'UNREACHABLE_OFFLINE';
+              const tsaAttempts =
+                anchorPayload?.externalAnchor?.rfc3161?.attempts ||
+                anchorPayload?.rfc3161?.attempts ||
+                [];
+              const tsaErrorNote =
+                anchorPayload?.externalAnchor?.rfc3161?.errorNote ||
+                anchorPayload?.rfc3161?.errorNote ||
+                null;
+
+              if (anchorPayload?.externalAnchor || anchorPayload?.rfc3161 || tsaTokenBase64) {
+                const ots = anchorPayload?.externalAnchor?.opentimestamps;
+                const rekor = anchorPayload?.externalAnchor?.sigstoreRekor;
+                addLog(
+                  `[EXTERNAL-ANCHOR] OpenTimestamps=${ots?.status || 'UNAVAILABLE'}${ots?.otsBytesLength ? ` (${ots.otsBytesLength}B .ots)` : ''} · Sigstore Rekor=${rekor?.status || 'UNAVAILABLE'}${rekor?.logIndex != null ? ` (#${rekor.logIndex})` : ''} · RFC3161-TSA=${tsaStatus}${tsaTokenSha256 ? ` (MERKLE_ROOT.tsr SHA256:${tsaTokenSha256.slice(0, 12)})` : ` (${tsaAttempts.length} TSA tier(s) attempted)`}`
+                );
+              }
+
+              finalResult = {
+                ...finalResult,
+                rfc3161Status: tsaStatus,
+                rfc3161TokenBase64: tsaTokenBase64,
+                rfc3161TsaProvider: tsaProvider,
+                rfc3161TokenSha256: tsaTokenSha256,
+                rfc3161Attempts: tsaAttempts,
+                rfc3161ErrorNote: tsaErrorNote,
+                signalDensityMetrics: finalResult.signalDensityMetrics
+                  ? { ...finalResult.signalDensityMetrics, tsa_anchor_status: tsaStatus }
+                  : finalResult.signalDensityMetrics,
+              };
+
+              setLastResult(finalResult);
+              setSavedHistory((prev) =>
+                prev.map((item) =>
+                  item.investigationId === finalResult.investigationId ? finalResult : item
+                )
+              );
+              setVaultRefreshCounter((c) => c + 1);
+            } catch {
+              finalResult = {
+                ...finalResult,
+                rfc3161Status: 'UNREACHABLE_OFFLINE',
+                rfc3161ErrorNote: 'RFC 3161 anchor finalization timed out or failed offline.',
+                signalDensityMetrics: finalResult.signalDensityMetrics
+                  ? { ...finalResult.signalDensityMetrics, tsa_anchor_status: 'UNREACHABLE_OFFLINE' }
+                  : finalResult.signalDensityMetrics,
+              };
+              setLastResult(finalResult);
+              setSavedHistory((prev) =>
+                prev.map((item) =>
+                  item.investigationId === finalResult.investigationId ? finalResult : item
+                )
+              );
+            } finally {
+              window.clearTimeout(anchorTimeout);
+            }
+          }
+        } catch {
+          // Non-fatal ledger parse guard
         }
-      } catch {
-        // Non-fatal
       }
+
+      if (liveIntel) {
+        const deep = liveIntel.deepAttackSurface;
+        const openPorts = Array.from(
+          new Set((deep?.shodanHosts || []).flatMap((h) => h.ports))
+        ).sort((a, b) => a - b);
+        const osvCveIds = Array.from(
+          new Set((deep?.softwareSupplyChain?.osvVulnerabilities || []).map((v) => v.id))
+        );
+        const shodanPortsCount = (deep?.shodanHosts || []).reduce((acc, h) => acc + h.ports.length, 0);
+        const regulatorsAndCourts = Array.from(
+          new Set([
+            ...(liveIntel.regulatoryAndLegalDockets || []).map((r) => r.forum).filter(Boolean),
+            ...(liveIntel.legalSlappBankruptcy?.courtDockets || []).map((d) => d.court).filter(Boolean),
+          ])
+        ).slice(0, 40);
+
+        const archiveSummary: PersistedInvestigationSummary = {
+          investigationId: finalResult.investigationId,
+          query: scope.entity,
+          entityName: liveIntel.entityName,
+          legalName: liveIntel.legalName,
+          industry: liveIntel.industry,
+          country: liveIntel.country,
+          primaryDomain: liveIntel.cyberTelemetry?.primaryDomain || liveIntel.officialWebsite || '',
+          fri: finalResult.fri,
+          mai: finalResult.mai,
+          sourcesCount: finalResult.sourcesCount,
+          filesCount: finalResult.files.length,
+          merkleRoot: parsedLedger?.merkle_root ?? null,
+          ed25519Signature: parsedLedger?.ed25519_signature ?? null,
+          ipfsCidV1: parsedLedger?.ipfs_cidv1 ?? null,
+          bitcoinBlockHeight: parsedLedger?.bitcoin_anchor?.bitcoinBlockHeight ?? null,
+          httpHardeningScore: deep?.httpSecurityAudit?.hardeningScore ?? null,
+          shodanOpenPortsCount: shodanPortsCount,
+          osvVulnsCount: deep?.softwareSupplyChain?.osvVulnerabilities?.length ?? 0,
+          openPorts,
+          osvCveIds,
+          rdapStatuses: deep?.rdapAndDnssec?.eppStatuses || [],
+          dnssecValidated: deep?.rdapAndDnssec?.dnssecValidated ?? null,
+          hstsPreloadStatus: deep?.hstsPreload?.status ?? null,
+          asns: (liveIntel.cyberTelemetry?.asnInfo || []).map((b) => b.asn).filter(Boolean),
+          cspOrigins: deep?.httpSecurityAudit?.cspDiscoveredOrigins || [],
+          regulatorsAndCourts,
+          lobbyingFirms: (liveIntel.shadowFinance?.lobbyingFilings || [])
+            .map((l) => l.registrantName)
+            .filter(Boolean),
+          subsidiaries: liveIntel.subsidiaries || [],
+          livePriceUsd: deep?.liveMarketQuote?.price ?? null,
+          liveChangePct: deep?.liveMarketQuote?.changePercent ?? null,
+          completedAtIso: new Date().toISOString(),
+        };
+
+        let longitudinalSnapshot: import('./types/investigation').LongitudinalSnapshot | null = null;
+        const bayesAnalyticsFile = finalResult.files.find(
+          (f) => f.filename === 'evidence/bayesian_and_graph_analytics.json'
+        );
+        if (bayesAnalyticsFile) {
+          try {
+            const parsedAnalytics = JSON.parse(bayesAnalyticsFile.content) as {
+              longitudinal_snapshot?: import('./types/investigation').LongitudinalSnapshot;
+            };
+            if (parsedAnalytics.longitudinal_snapshot) {
+              longitudinalSnapshot = parsedAnalytics.longitudinal_snapshot;
+            }
+          } catch {
+            // Non-fatal snapshot parse guard
+          }
+        }
+
+        try {
+          await persistInvestigationArchive(archiveSummary, longitudinalSnapshot);
+          setVaultRefreshCounter((c) => c + 1);
+        } catch {
+          // Non-fatal archive persistence guard
+        }
+      }
+
+      setStageProgress(100);
+      setCurrentStage('Stage 6: Sealed Cryptographic Dossier Ready');
+      addLog(`[COMPLETE] Sovereign 160-agent dossier complete (${finalResult.sourcesCount} live sources · ${finalResult.files.length} artifacts · ${elapsedSeconds}s). SHA256SUMS, IPFS CIDv1, Bitcoin/RFC 3161 anchor & offline HTML viewer verified.`);
+    } finally {
+      setIsRunning(false);
     }
-
-    if (liveIntel) {
-      const deep = liveIntel.deepAttackSurface;
-      const openPorts = Array.from(
-        new Set((deep?.shodanHosts || []).flatMap((h) => h.ports))
-      ).sort((a, b) => a - b);
-      const osvCveIds = Array.from(
-        new Set((deep?.softwareSupplyChain?.osvVulnerabilities || []).map((v) => v.id))
-      );
-      const shodanPortsCount = (deep?.shodanHosts || []).reduce((acc, h) => acc + h.ports.length, 0);
-      const regulatorsAndCourts = Array.from(
-        new Set([
-          ...(liveIntel.regulatoryAndLegalDockets || []).map((r) => r.forum).filter(Boolean),
-          ...(liveIntel.legalSlappBankruptcy?.courtDockets || []).map((d) => d.court).filter(Boolean),
-        ])
-      ).slice(0, 40);
-
-      const archiveSummary: PersistedInvestigationSummary = {
-        investigationId: result.investigationId,
-        query: scope.entity,
-        entityName: liveIntel.entityName,
-        legalName: liveIntel.legalName,
-        industry: liveIntel.industry,
-        country: liveIntel.country,
-        primaryDomain: liveIntel.cyberTelemetry?.primaryDomain || liveIntel.officialWebsite || '',
-        fri: result.fri,
-        mai: result.mai,
-        sourcesCount: result.sourcesCount,
-        filesCount: result.files.length,
-        merkleRoot: parsedLedger?.merkle_root ?? null,
-        ed25519Signature: parsedLedger?.ed25519_signature ?? null,
-        ipfsCidV1: parsedLedger?.ipfs_cidv1 ?? null,
-        bitcoinBlockHeight: parsedLedger?.bitcoin_anchor?.bitcoinBlockHeight ?? null,
-        httpHardeningScore: deep?.httpSecurityAudit?.hardeningScore ?? null,
-        shodanOpenPortsCount: shodanPortsCount,
-        osvVulnsCount: deep?.softwareSupplyChain?.osvVulnerabilities?.length ?? 0,
-        openPorts,
-        osvCveIds,
-        rdapStatuses: deep?.rdapAndDnssec?.eppStatuses || [],
-        dnssecValidated: deep?.rdapAndDnssec?.dnssecValidated ?? null,
-        hstsPreloadStatus: deep?.hstsPreload?.status ?? null,
-        asns: (liveIntel.cyberTelemetry?.asnInfo || []).map((b) => b.asn).filter(Boolean),
-        cspOrigins: deep?.httpSecurityAudit?.cspDiscoveredOrigins || [],
-        regulatorsAndCourts,
-        lobbyingFirms: (liveIntel.shadowFinance?.lobbyingFilings || [])
-          .map((l) => l.registrantName)
-          .filter(Boolean),
-        subsidiaries: liveIntel.subsidiaries || [],
-        livePriceUsd: deep?.liveMarketQuote?.price ?? null,
-        liveChangePct: deep?.liveMarketQuote?.changePercent ?? null,
-        completedAtIso: new Date().toISOString(),
-      };
-
-      void persistInvestigationArchive(archiveSummary).then(() => {
-        setVaultRefreshCounter((c) => c + 1);
-      });
-    }
-
-    setStageProgress(100);
-    setCurrentStage('Stage 6: Sealed Cryptographic Dossier Ready');
-    addLog(`[COMPLETE] Sovereign 160-agent dossier complete (${result.sourcesCount} live sources · ${result.files.length} artifacts · ${elapsedSeconds}s). SHA256SUMS, IPFS CIDv1, Bitcoin/RFC 3161 anchor & offline HTML viewer verified.`);
-
-    setIsRunning(false);
   };
 
   const handleDownloadZip = async () => {
@@ -563,6 +613,16 @@ export default function App() {
       downloadBlob(blob, filename);
     } catch (err) {
       console.error('ZIP generation failed', err);
+    }
+  };
+
+  const handleDownloadAuditBundle = () => {
+    if (!lastResult) return;
+    try {
+      const { blob, filename } = buildAuditBundleMarkdown(lastResult);
+      downloadBlob(blob, filename);
+    } catch (err) {
+      console.error('Audit bundle Markdown export failed', err);
     }
   };
 
@@ -646,17 +706,19 @@ export default function App() {
       )[0];
       setLogs((prev) => [
         ...prev,
-        `[LIVE-MARKET-SYNC] Synced ${syncData.quotes.length} live Yahoo Finance quotes + ${syncData.daemonAdded} new SEC/CISA/Antitrust daemon records.${
-          topMover
-            ? ` Top intraday mover: ${topMover.entityName} (${topMover.quote.symbol} $${topMover.quote.price.toFixed(2)}, ${
-                topMover.quote.changePercent >= 0 ? '+' : ''
-              }${topMover.quote.changePercent.toFixed(2)}%).`
-            : ''
-        }`,
+        formatLogLine(
+          `[LIVE-MARKET-SYNC] Synced ${syncData.quotes.length} live Yahoo Finance quotes + ${syncData.daemonAdded} new SEC/CISA/Antitrust daemon records.${
+            topMover
+              ? ` Top intraday mover: ${topMover.entityName} (${topMover.quote.symbol} $${topMover.quote.price.toFixed(2)}, ${
+                  topMover.quote.changePercent >= 0 ? '+' : ''
+                }${topMover.quote.changePercent.toFixed(2)}%).`
+              : ''
+          }`
+        ),
       ]);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Live market sync failed';
-      setLogs((prev) => [...prev, `[LIVE-MARKET-SYNC-ERROR] ${msg}`]);
+      setLogs((prev) => [...prev, formatLogLine(`[LIVE-MARKET-SYNC-ERROR] ${msg}`)]);
     } finally {
       setIsSyncingMarket(false);
     }
@@ -706,7 +768,7 @@ export default function App() {
 
     setLogs((prev) => [
       ...prev,
-      `[SHOCKWAVE-CASCADE] Applied scenario "${scenario.title}" across ${scenario.effects.length} civilizational sovereigns.`
+      formatLogLine(`[SHOCKWAVE-CASCADE] Applied scenario "${scenario.title}" across ${scenario.effects.length} civilizational sovereigns.`),
     ]);
   };
 
@@ -786,14 +848,18 @@ export default function App() {
 
         {workspaceTab === 'zip_reader' ? (
           <section>
-            <DossierZipReaderTab currentResult={lastResult} />
+            <Suspense fallback={<div className="p-6 text-xs font-mono text-slate-400">Loading ZIP Forensic Reader...</div>}>
+              <DossierZipReaderTab currentResult={lastResult} />
+            </Suspense>
           </section>
         ) : workspaceTab === 'vault' ? (
           <section>
-            <CustodyVaultAndComparatorTab
-              onSelectEntityForInvestigation={handleSelectEntityForInvestigation}
-              refreshTrigger={vaultRefreshCounter}
-            />
+            <Suspense fallback={<div className="p-6 text-xs font-mono text-slate-400">Loading Custody Vault & Graph...</div>}>
+              <CustodyVaultAndComparatorTab
+                onSelectEntityForInvestigation={handleSelectEntityForInvestigation}
+                refreshTrigger={vaultRefreshCounter}
+              />
+            </Suspense>
           </section>
         ) : (
           <>
@@ -806,10 +872,11 @@ export default function App() {
                 savedHistory={savedHistory}
                 onSelectHistoryResult={(res) => {
                   setLastResult(res);
-                  setSquads(create160AgentSwarm(res.scope.entity, res.scope.liveIntel));
+                  setSquads(res.squads ?? create160AgentSwarm(res.scope.entity, res.scope.liveIntel));
                   setLiveProbes(res.scope.liveIntel?.probeTelemetry ?? []);
                 }}
                 onDownloadZip={handleDownloadZip}
+                onDownloadAuditBundle={handleDownloadAuditBundle}
                 onOpenDossierViewer={() => {
                   setSelectedFilenameForViewer('00_EXEC_SUMMARY.md');
                   setIsDossierViewerOpen(true);
@@ -838,10 +905,12 @@ export default function App() {
             {/* Section 2B: Interactive Live Forensic Telemetry & Entity Knowledge Graph */}
             {lastResult?.scope.liveIntel && (
               <section>
-                <LiveForensicTelemetryPanel
-                  result={lastResult}
-                  onInvestigateRelated={handleSelectEntityForInvestigation}
-                />
+                <Suspense fallback={<div className="p-6 text-xs font-mono text-slate-400">Loading Live Forensic Telemetry...</div>}>
+                  <LiveForensicTelemetryPanel
+                    result={lastResult}
+                    onInvestigateRelated={handleSelectEntityForInvestigation}
+                  />
+                </Suspense>
               </section>
             )}
 
@@ -904,31 +973,38 @@ export default function App() {
 
       {/* Modal: Full Dossier Viewer Workspace */}
       {isDossierViewerOpen && lastResult && (
-        <DossierViewerModal
-          result={lastResult}
-          onClose={() => setIsDossierViewerOpen(false)}
-          onDownloadZip={handleDownloadZip}
-          initialSelectedFilename={selectedFilenameForViewer}
-        />
+        <Suspense fallback={null}>
+          <DossierViewerModal
+            result={lastResult}
+            onClose={() => setIsDossierViewerOpen(false)}
+            onDownloadZip={handleDownloadZip}
+            onDownloadAuditBundle={handleDownloadAuditBundle}
+            initialSelectedFilename={selectedFilenameForViewer}
+          />
+        </Suspense>
       )}
 
       {/* Modal: Global Power Map & Consolidation Heatmaps */}
       {isPowerMapOpen && (
-        <PowerMapModal
-          onClose={() => setIsPowerMapOpen(false)}
-          onInvestigateTarget={(entityName) => {
-            handleSelectEntityForInvestigation(entityName);
-          }}
-        />
+        <Suspense fallback={null}>
+          <PowerMapModal
+            onClose={() => setIsPowerMapOpen(false)}
+            onInvestigateTarget={(entityName) => {
+              handleSelectEntityForInvestigation(entityName);
+            }}
+          />
+        </Suspense>
       )}
 
       {/* Modal: Deterministic Planetary Interdependency Cascade Model */}
       {isShockwaveModalOpen && (
-        <ShockwaveSimulatorModal
-          onClose={() => setIsShockwaveModalOpen(false)}
-          onApplyShockwaveToLeaderboard={handleApplyShockwaveToLeaderboard}
-          liveDaemonEvents={realtimeFeedEvents}
-        />
+        <Suspense fallback={null}>
+          <ShockwaveSimulatorModal
+            onClose={() => setIsShockwaveModalOpen(false)}
+            onApplyShockwaveToLeaderboard={handleApplyShockwaveToLeaderboard}
+            liveDaemonEvents={realtimeFeedEvents}
+          />
+        </Suspense>
       )}
 
       {/* Modal: Single Agent Raw Output Inspector */}

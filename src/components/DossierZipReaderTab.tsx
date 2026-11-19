@@ -182,7 +182,19 @@ export const DossierZipReaderTab: React.FC<DossierZipReaderTabProps> = ({ curren
     const excludedFromMerkle = new Set<string>(
       Array.isArray(ledger?.merkle_excluded_files)
         ? ledger.merkle_excluded_files
-        : ['LEDGER_ENTRY.json', 'artifact-index.json', 'SHA256SUMS', 'verify_dossier.mjs']
+        : [
+            'LEDGER_ENTRY.json',
+            'PUBLIC_KEY.pem',
+            'MERKLE_ROOT.tsr',
+            'MERKLE_ROOT.tsr.status.json',
+            'verify_dossier.mjs',
+            'artifact-index.json',
+            'SHA256SUMS',
+            'workbench_data.js',
+            'index.html',
+            'viewer.css',
+            'viewer.js',
+          ]
     );
     const merkleScope = String(ledger?.merkle_scope || 'all_dossier_artifacts');
 
@@ -262,7 +274,8 @@ export const DossierZipReaderTab: React.FC<DossierZipReaderTabProps> = ({ curren
       'Offline / Unanchored';
 
     const rfc3161Status = String(
-      ledger?.bitcoin_anchor?.rfc3161Status ||
+      ledger?.rfc3161_tsa_anchor?.status ||
+        ledger?.bitcoin_anchor?.rfc3161Status ||
         ledger?.rfc3161?.status ||
         'Local Merkle Sealed'
     );

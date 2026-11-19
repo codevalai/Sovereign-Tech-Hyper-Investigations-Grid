@@ -1,14 +1,22 @@
 import type {
   AgentTask,
+  BayesianEvidenceContribution,
+  BayesianRiskPosterior,
   BftCorroborationSummary,
   ClaimCitation,
+  GraphPageRankNode,
   LiveBusinessIntelligence,
   PropertyGraphEdge,
   PropertyGraphNode,
   PropertyGraphNodeType,
+  ShannonEntropyReport,
   SquadId,
   TechEntity,
 } from '../types/investigation';
+import {
+  classifyWikipediaDeletionIntent,
+  isValidSenateLdaRecord,
+} from '../engine/entityDisambiguation';
 
 // =============================================================================
 // 1. REAL FIPS 180-4 SHA-256 & BINARY MERKLE TREE
@@ -28,8 +36,7 @@ function rotr(x: number, n: number): number {
   return (x >>> n) | (x << (32 - n));
 }
 
-export function sha256Hex(input: string): string {
-  const bytes = new TextEncoder().encode(input);
+export function sha256HexBytes(bytes: Uint8Array): string {
   const bitLen = bytes.length * 8;
   const paddedLen = Math.ceil((bytes.length + 9) / 64) * 64;
   const padded = new Uint8Array(paddedLen);
@@ -103,6 +110,10 @@ export function sha256Hex(input: string): string {
   return [h0, h1, h2, h3, h4, h5, h6, h7]
     .map((v) => v.toString(16).padStart(8, '0'))
     .join('');
+}
+
+export function sha256Hex(input: string): string {
+  return sha256HexBytes(new TextEncoder().encode(input));
 }
 
 export interface MerkleProofStep {
@@ -623,32 +634,39 @@ export function buildForensicPropertyGraph(
     addEdge(pid, rootId, 'CONTROLS_OR_LEADS', 'ownership', 0.9);
   });
 
-  (liveIntel?.shadowFinance?.lobbyingFilings || []).slice(0, 6).forEach((lf, fIdx) => {
-    const did = `lda:${fIdx}`;
-    upsertNode(
-      did,
-      `LDA Lobbying ${lf.filingYear}: ${lf.registrantName} ($${Math.round(lf.amount).toLocaleString('en-US')})`,
-      'Contract/Docket',
-      'revolving_door',
-      { amount: lf.amount, year: lf.filingYear, registrant: lf.registrantName }
-    );
-    addEdge(rootId, did, 'RETAINS_LOBBYIST', 'revolving_door', 0.9, lf.url);
+  (liveIntel?.shadowFinance?.lobbyingFilings || [])
+    .filter(
+      (lf) =>
+        isValidSenateLdaRecord(lf) &&
+        (Number(lf.amount) > 0 || (lf.revolvingDoorOfficials?.length ?? 0) > 0)
+    )
+    .slice(0, 6)
+    .forEach((lf, fIdx) => {
+      const did = `lda:${fIdx}`;
+      upsertNode(
+        did,
+        `LDA Lobbying ${lf.filingYear}: ${lf.registrantName} ($${Math.round(lf.amount).toLocaleString('en-US')})`,
+        'Contract/Docket',
+        'revolving_door',
+        { amount: lf.amount, year: lf.filingYear, registrant: lf.registrantName }
+      );
+      addEdge(rootId, did, 'RETAINS_LOBBYIST', 'revolving_door', 0.9, lf.url);
 
-    lf.agencies.slice(0, 3).forEach((ag, aIdx) => {
-      const agId = `agency:${ag.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24) || aIdx}`;
-      upsertNode(agId, `Regulator/Agency: ${ag}`, 'Entity', 'revolving_door', { sector: 'Government Oversight' });
-      addEdge(did, agId, 'LOBBIES_AGENCY', 'revolving_door', 0.85, lf.url);
+      lf.agencies.slice(0, 3).forEach((ag, aIdx) => {
+        const agId = `agency:${ag.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24) || aIdx}`;
+        upsertNode(agId, `Regulator/Agency: ${ag}`, 'Entity', 'revolving_door', { sector: 'Government Oversight' });
+        addEdge(did, agId, 'LOBBIES_AGENCY', 'revolving_door', 0.85, lf.url);
 
-      lf.revolvingDoorOfficials.slice(0, 2).forEach((off, oIdx) => {
-        const oid = `person:rev:${fIdx}:${oIdx}`;
-        upsertNode(oid, off.lobbyistName, 'Person', 'revolving_door', {
-          coveredPosition: off.coveredPosition || 'Former Federal Official',
+        lf.revolvingDoorOfficials.slice(0, 2).forEach((off, oIdx) => {
+          const oid = `person:rev:${fIdx}:${oIdx}`;
+          upsertNode(oid, off.lobbyistName, 'Person', 'revolving_door', {
+            coveredPosition: off.coveredPosition || 'Former Federal Official',
+          });
+          addEdge(oid, did, 'REGISTERED_LOBBYIST', 'revolving_door', 0.93, lf.url);
+          addEdge(oid, agId, 'REVOLVING_DOOR_ALUMNUS', 'revolving_door', 0.82, lf.url);
         });
-        addEdge(oid, did, 'REGISTERED_LOBBYIST', 'revolving_door', 0.93, lf.url);
-        addEdge(oid, agId, 'REVOLVING_DOOR_ALUMNUS', 'revolving_door', 0.82, lf.url);
       });
     });
-  });
 
   // Government Awards & Legal Dockets -> Contract/Docket
   (liveIntel?.governmentSubsidiesAndGrants || []).slice(0, 5).forEach((g, idx) => {
@@ -1718,4 +1736,360 @@ export function buildClaimCitationsForAgent(
     },
   ];
 }
+
+// =============================================================================
+// 11. v25.0 BAYESIAN FRAUD RISK POSTERIOR, PAGERANK CONTAGION & SHANNON ENTROPY
+// =============================================================================
+
+/**
+ * Computes a formally auditable Bayesian Fraud Risk Posterior via sequential log-odds updates
+ * over verified live signals (accounting, cyber, sanctions, adversarial, regulatory, causal).
+ */
+export const CALIBRATED_ENTERPRISE_BAYESIAN_PRIOR = 0.2;
+
+export function computeBayesianFraudRiskPosterior(
+  _priorFri: number,
+  liveIntel?: LiveBusinessIntelligence,
+  benford?: BenfordAnalysisResult
+): BayesianRiskPosterior {
+  // v26.1 Calibrated Enterprise Base Rate (20.0%): decoupled from FRI to prevent double-counting
+  // so verified live evidence likelihood ratios drive the posterior probability cleanly.
+  const clampedPrior = CALIBRATED_ENTERPRISE_BAYESIAN_PRIOR;
+  const priorOdds = clampedPrior / (1 - clampedPrior);
+  let logOdds = Math.log(priorOdds);
+  const contributions: BayesianEvidenceContribution[] = [];
+
+  const applyEvidence = (
+    signalId: string,
+    label: string,
+    category: BayesianEvidenceContribution['category'],
+    observedValue: string,
+    likelihoodRatio: number
+  ) => {
+    const lr = Math.max(0.25, Math.min(6.0, likelihoodRatio));
+    const delta = Math.log(lr);
+    logOdds += delta;
+    contributions.push({
+      signalId,
+      label,
+      category,
+      observedValue,
+      likelihoodRatio: Number(lr.toFixed(3)),
+      logOddsDelta: Number(delta.toFixed(3)),
+      direction: lr > 1.03 ? 'RISK_INCREASING' : lr < 0.97 ? 'RISK_DECREASING' : 'NEUTRAL',
+    });
+  };
+
+  if (liveIntel) {
+    // 1. Accounting Forensics (Beneish M-Score, Altman Z, Benford D1 & D2)
+    const acc = liveIntel.accountingForensics;
+    if (acc?.beneishMScore != null) {
+      if (acc.beneishMScore > -1.78) {
+        applyEvidence('BENEISH_M', 'Beneish M-Score Above -1.78 Threshold', 'ACCOUNTING', `M=${acc.beneishMScore.toFixed(3)}`, 2.65);
+      } else {
+        applyEvidence('BENEISH_M', 'Beneish M-Score Below Manipulation Threshold', 'ACCOUNTING', `M=${acc.beneishMScore.toFixed(3)}`, 0.78);
+      }
+    }
+    if (acc?.altmanZScore != null) {
+      if (acc.altmanZone === 'DISTRESS') {
+        applyEvidence('ALTMAN_Z', 'Altman Z-Score Financial Distress Zone', 'ACCOUNTING', `Z=${acc.altmanZScore.toFixed(2)}`, 1.85);
+      } else if (acc.altmanZone === 'SAFE') {
+        applyEvidence('ALTMAN_Z', 'Altman Z-Score Safe Solvency Zone', 'ACCOUNTING', `Z=${acc.altmanZScore.toFixed(2)}`, 0.85);
+      }
+    }
+    if (acc?.secondDigitBenford && acc.secondDigitBenford.sampleSize >= 50) {
+      if (acc.secondDigitBenford.roundingAnomalyDetected) {
+        applyEvidence('BENFORD_D2', 'Second-Digit Benford Rounding Anomaly', 'ACCOUNTING', `Chi2=${acc.secondDigitBenford.chiSquare} (N=${acc.secondDigitBenford.sampleSize})`, 1.95);
+      } else {
+        applyEvidence('BENFORD_D2', 'Second-Digit Benford Conformity', 'ACCOUNTING', `Chi2=${acc.secondDigitBenford.chiSquare} (N=${acc.secondDigitBenford.sampleSize})`, 0.88);
+      }
+    } else if (benford?.sufficientForInference) {
+      if (benford.mad >= 0.015) {
+        applyEvidence('BENFORD_D1', 'First-Digit Benford Nonconformity', 'ACCOUNTING', `MAD=${benford.mad} (N=${benford.sampleSize})`, 1.65);
+      } else {
+        applyEvidence('BENFORD_D1', 'First-Digit Benford Conformity', 'ACCOUNTING', `MAD=${benford.mad} (N=${benford.sampleSize})`, 0.9);
+      }
+    }
+
+    // 2. Sanctions & Trade Screening
+    const ofacCount = liveIntel.sanctionsTrade?.ofacBisNotices?.length ?? 0;
+    const pepCount = liveIntel.sanctionsTrade?.pepAndOffshoreHits?.length ?? 0;
+    if (ofacCount > 0) {
+      applyEvidence('OFAC_BIS', 'OFAC / BIS Federal Enforcement Notices', 'SANCTIONS', `${ofacCount} notice(s)`, Math.min(3.5, 1.6 + ofacCount * 0.35));
+    } else if ((liveIntel.sanctionsTrade?.screenedNamesCount ?? 0) > 0) {
+      applyEvidence('OFAC_CLEAN', 'Clean OFAC/BIS Screening', 'SANCTIONS', `${liveIntel.sanctionsTrade?.screenedNamesCount} screened / 0 hits`, 0.9);
+    }
+    if (pepCount > 0) {
+      applyEvidence('PEP_OFFSHORE', 'PEP / Offshore Registry Overlap', 'SANCTIONS', `${pepCount} hit(s)`, 1.55);
+    }
+
+    // 3. Adversarial & Cyber Posture
+    const highRiskDiffs = (liveIntel.extremeDorkingAndDna?.stealthEditDiffs || []).filter(
+      (d) => d.highRiskKeywordsAdded.length > 0
+    );
+    if (highRiskDiffs.length > 0) {
+      applyEvidence('WAYBACK_STEALTH', 'High-Risk Legal Policy Stealth Edit', 'ADVERSARIAL', `${highRiskDiffs.length} path(s): ${highRiskDiffs[0].highRiskKeywordsAdded.slice(0, 3).join(', ')}`, 2.1);
+    }
+    const silentDels = liveIntel.extremeDorkingAndDna?.silentDeletionAlerts?.length ?? 0;
+    if (silentDels > 0) {
+      applyEvidence('SILENT_DEL', 'Verified Silent Public URL Deletion', 'ADVERSARIAL', `${silentDels} deletion alert(s)`, 2.25);
+    }
+    const kevCount = liveIntel.adversarialInfra?.cisaKevMatches?.length ?? 0;
+    const abuseCount = liveIntel.adversarialInfra?.abuseChIndicators?.length ?? 0;
+    if (kevCount > 0 || abuseCount > 0) {
+      applyEvidence('CYBER_THREAT', 'Active CISA KEV / Abuse.ch Threat Signals', 'CYBER', `KEV=${kevCount}, Abuse.ch=${abuseCount}`, 1.85);
+    }
+    const httpScore = liveIntel.deepAttackSurface?.httpSecurityAudit?.hardeningScore;
+    if (typeof httpScore === 'number') {
+      if (httpScore < 45) {
+        applyEvidence('HTTP_HARDENING', 'Low HTTP Security Hardening Score', 'CYBER', `${httpScore}/100`, 1.28);
+      } else if (httpScore >= 80) {
+        applyEvidence('HTTP_HARDENING', 'Strong HTTP Security Hardening Posture', 'CYBER', `${httpScore}/100`, 0.9);
+      }
+    }
+    const tls = liveIntel.deepAttackSurface?.tlsCertificate;
+    if (tls && (tls.isExpired || tls.isSelfSigned)) {
+      applyEvidence('TLS_DEFECT', 'TLS Certificate Expired or Self-Signed', 'CYBER', `${tls.host} (exp=${tls.isExpired}, selfSigned=${tls.isSelfSigned})`, 1.75);
+    }
+    const wikiRev = liveIntel.deepAttackSurface?.wikipediaRevisionForensics;
+    const suspiciousWikiDeletions = (wikiRev?.largeDeletions || []).filter(
+      (d) => (d.intentClassification || classifyWikipediaDeletionIntent(d.comment)) !== 'BENIGN_SOURCING_CLEANUP'
+    );
+    if (wikiRev?.verdict === 'WHITEWASH_RISK' && suspiciousWikiDeletions.length > 0) {
+      applyEvidence(
+        'WIKI_WHITEWASH',
+        'Wikipedia Large Deletion / Whitewash Signal',
+        'ADVERSARIAL',
+        `${suspiciousWikiDeletions.length} suspicious deletion(s), ${Math.round(wikiRev.anonymousIpRatio * 100)}% anon IP`,
+        1.45
+      );
+    }
+
+    // 4. Regulatory, Environmental & Cross-Stream Causality
+    const epaPenalties = (liveIntel.environmentalEpa?.facilities || []).reduce((s, f) => s + (f.penaltiesUsd || 0), 0);
+    if (epaPenalties >= 100_000) {
+      applyEvidence('EPA_PENALTIES', 'EPA ECHO Statutory Environmental Penalties', 'REGULATORY', `$${Math.round(epaPenalties).toLocaleString('en-US')}`, 1.55);
+    }
+    const critClusters = (liveIntel.temporalCausalityAndLobbying?.clusters || []).filter((c) => c.severity === 'CRITICAL').length;
+    const chainsCount = liveIntel.temporalCausalityAndLobbying?.causalChains?.length ?? 0;
+    if (critClusters > 0 || chainsCount > 0) {
+      applyEvidence('TEMPORAL_CAUSAL', 'Synchronized Cross-Stream Causal Evidence', 'CAUSAL', `${critClusters} critical cluster(s), ${chainsCount} multi-hop chain(s)`, Math.min(2.6, 1.35 + critClusters * 0.25 + chainsCount * 0.12));
+    }
+
+    // 5. Deep Binary Metadata Author-to-Entity Pivot Overlaps (v26.0)
+    const highMetaPivots = liveIntel.metadataPivots?.highSignalPivotsCount ?? 0;
+    if (highMetaPivots > 0) {
+      applyEvidence(
+        'HIGH_SIGNAL_METADATA_PIVOT',
+        'Cross-Registry Binary Document Authorship Overlap',
+        'METADATA_PIVOT',
+        `${highMetaPivots} high-signal PDF/Office author pivot(s) matched across registries`,
+        Math.min(2.8, 1.55 + highMetaPivots * 0.3)
+      );
+    }
+  }
+
+  const posteriorOdds = Math.exp(logOdds);
+  const posteriorProbability = Math.max(0.01, Math.min(0.99, posteriorOdds / (1 + posteriorOdds)));
+  const combinedBayesFactor = posteriorOdds / priorOdds;
+
+  // Approximate 95% credible half-width narrowing as independent evidence signals accumulate
+  const nSignals = Math.max(1, contributions.length);
+  const halfWidth = Math.min(0.22, 0.24 / Math.sqrt(nSignals + 1));
+  const ciLow = Math.max(0.01, Number((posteriorProbability - halfWidth).toFixed(3)));
+  const ciHigh = Math.min(0.99, Number((posteriorProbability + halfWidth).toFixed(3)));
+
+  const riskTier: BayesianRiskPosterior['riskTier'] =
+    posteriorProbability >= 0.72
+      ? 'CRITICAL'
+      : posteriorProbability >= 0.52
+      ? 'ELEVATED'
+      : posteriorProbability >= 0.3
+      ? 'MODERATE'
+      : 'LOW';
+
+  const verdict = `Bayesian Posterior=${(posteriorProbability * 100).toFixed(1)}% [95% CI ${(ciLow * 100).toFixed(1)}%–${(ciHigh * 100).toFixed(1)}%] from prior ${(clampedPrior * 100).toFixed(1)}% (Combined Bayes Factor=${combinedBayesFactor.toFixed(2)}x across ${contributions.length} independent signal(s) · Tier: ${riskTier}).`;
+
+  return {
+    priorProbability: Number(clampedPrior.toFixed(4)),
+    posteriorProbability: Number(posteriorProbability.toFixed(4)),
+    priorOdds: Number(priorOdds.toFixed(4)),
+    posteriorOdds: Number(posteriorOdds.toFixed(4)),
+    combinedBayesFactor: Number(combinedBayesFactor.toFixed(3)),
+    confidenceInterval95: [ciLow, ciHigh],
+    riskTier,
+    evidenceContributions: contributions,
+    verdict,
+  };
+}
+
+/**
+ * Computes iterative power-method PageRank (d=0.85) and Risk Contagion Diffusion
+ * over the Forensic Property Graph to identify systemic chokepoints.
+ */
+export function computeGraphPageRankAndContagion(
+  nodes: PropertyGraphNode[],
+  edges: PropertyGraphEdge[],
+  damping = 0.85,
+  iterations = 30
+): GraphPageRankNode[] {
+  const n = nodes.length;
+  if (n === 0) return [];
+
+  const idxById = new Map<string, number>();
+  nodes.forEach((node, i) => idxById.set(node.id, i));
+
+  const outNeighbors: Array<Array<{ to: number; weight: number }>> = Array.from({ length: n }, () => []);
+  const outWeightSum = new Float64Array(n);
+
+  for (const e of edges) {
+    const u = idxById.get(e.source);
+    const v = idxById.get(e.target);
+    if (u === undefined || v === undefined || u === v) continue;
+    const w = Math.max(0.1, Number(e.weight) || 1);
+    outNeighbors[u].push({ to: v, weight: w });
+    outWeightSum[u] += w;
+    // Undirected contagion reciprocity at 0.5x weight so systemic hubs propagate bidirectionally
+    outNeighbors[v].push({ to: u, weight: w * 0.5 });
+    outWeightSum[v] += w * 0.5;
+  }
+
+  let pr = new Float64Array(n).fill(1 / n);
+  for (let it = 0; it < iterations; it++) {
+    const next = new Float64Array(n).fill((1 - damping) / n);
+    let danglingMass = 0;
+    for (let i = 0; i < n; i++) {
+      if (outWeightSum[i] === 0) {
+        danglingMass += pr[i];
+      } else {
+        for (const nb of outNeighbors[i]) {
+          next[nb.to] += damping * pr[i] * (nb.weight / outWeightSum[i]);
+        }
+      }
+    }
+    if (danglingMass > 0) {
+      const share = (damping * danglingMass) / n;
+      for (let i = 0; i < n; i++) next[i] += share;
+    }
+    pr = next;
+  }
+
+  // Risk contagion diffusion: R(t+1) = (1 - alpha) * R0 + alpha * W_norm * R(t)
+  const r0 = new Float64Array(n);
+  for (let i = 0; i < n; i++) {
+    const node = nodes[i];
+    const base =
+      node.layer === 'sanctions_trade' || node.layer === 'adversarial' || node.layer === 'judicial_slapp'
+        ? 0.9
+        : node.layer === 'accounting_insider' || node.layer === 'revolving_door'
+        ? 0.72
+        : node.nodeType === 'Entity'
+        ? 0.65
+        : 0.45;
+    r0[i] = base;
+  }
+  let risk = Float64Array.from(r0);
+  const alpha = 0.55;
+  for (let it = 0; it < 15; it++) {
+    const nextRisk = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      let diffused = 0;
+      if (outWeightSum[i] > 0) {
+        for (const nb of outNeighbors[i]) {
+          diffused += (nb.weight / outWeightSum[i]) * risk[nb.to];
+        }
+      } else {
+        diffused = r0[i];
+      }
+      nextRisk[i] = (1 - alpha) * r0[i] + alpha * diffused;
+    }
+    risk = nextRisk;
+  }
+
+  return nodes
+    .map((node, i) => ({
+      id: node.id,
+      label: node.label,
+      nodeType: node.nodeType,
+      layer: node.layer,
+      pageRank: Number(pr[i].toFixed(5)),
+      contagionRisk: Number(Math.min(1, Math.max(0, risk[i])).toFixed(3)),
+      degree: node.degree,
+      betweennessCentrality: node.betweennessCentrality,
+    }))
+    .sort((a, b) => b.pageRank - a.pageRank || b.contagionRisk - a.contagionRisk);
+}
+
+/**
+ * Computes Shannon Entropy (bits + normalized [0,1]) and Herfindahl-Hirschman concentration index
+ * across any categorical forensic distribution (CSP vendors, regulatory agencies, jurisdictions).
+ */
+export function computeShannonEntropyMetrics(
+  dimension: string,
+  values: string[]
+): ShannonEntropyReport {
+  const counts = new Map<string, number>();
+  for (const raw of values) {
+    const clean = String(raw || '').trim();
+    if (!clean) continue;
+    counts.set(clean, (counts.get(clean) || 0) + 1);
+  }
+  const totalSamples = Array.from(counts.values()).reduce((s, c) => s + c, 0);
+  const uniqueCategories = counts.size;
+
+  if (totalSamples === 0 || uniqueCategories === 0) {
+    return {
+      dimension,
+      uniqueCategories: 0,
+      totalSamples: 0,
+      shannonEntropyBits: 0,
+      normalizedEntropy: 0,
+      herfindahlIndex: 0,
+      concentrationVerdict: 'MONOPOLIZED_SINGLE_POINT',
+      topShareLabel: 'None',
+      topSharePct: 0,
+    };
+  }
+
+  let entropy = 0;
+  let hhi = 0;
+  let topShareLabel = '';
+  let topCount = 0;
+
+  for (const [label, count] of counts.entries()) {
+    const p = count / totalSamples;
+    entropy -= p * Math.log2(p);
+    hhi += p * p;
+    if (count > topCount) {
+      topCount = count;
+      topShareLabel = label;
+    }
+  }
+
+  const maxEntropy = uniqueCategories > 1 ? Math.log2(uniqueCategories) : 1;
+  const normalizedEntropy = uniqueCategories > 1 ? entropy / maxEntropy : 0;
+  const topSharePct = Number(((topCount / totalSamples) * 100).toFixed(1));
+
+  const concentrationVerdict: ShannonEntropyReport['concentrationVerdict'] =
+    uniqueCategories <= 1 || hhi >= 0.65
+      ? 'MONOPOLIZED_SINGLE_POINT'
+      : hhi >= 0.35
+      ? 'CONCENTRATED'
+      : normalizedEntropy >= 0.78
+      ? 'HIGHLY_DIVERSIFIED'
+      : 'MODERATELY_DISPERSED';
+
+  return {
+    dimension,
+    uniqueCategories,
+    totalSamples,
+    shannonEntropyBits: Number(entropy.toFixed(3)),
+    normalizedEntropy: Number(normalizedEntropy.toFixed(3)),
+    herfindahlIndex: Number(hhi.toFixed(3)),
+    concentrationVerdict,
+    topShareLabel,
+    topSharePct,
+  };
+}
+
 

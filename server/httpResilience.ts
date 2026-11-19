@@ -22,6 +22,8 @@ export interface ResilientFetchOptions {
   softTtlMs?: number;
   /** Disable cache read/write for non-idempotent or explicitly uncached requests. */
   bypassCache?: boolean;
+  /** Skip writing response to persistent http_cache while still allowing reads if applicable. */
+  bypassCacheWrite?: boolean;
 }
 
 export interface ResilientFetchResult {
@@ -85,6 +87,7 @@ function getCacheDb(): DatabaseSync | null {
     fs.mkdirSync(targetDir, { recursive: true });
     const db = new DatabaseSync(targetPath);
     db.exec(`
+      PRAGMA busy_timeout = 5000;
       PRAGMA journal_mode = WAL;
       PRAGMA synchronous = NORMAL;
       CREATE TABLE IF NOT EXISTS http_cache (
@@ -131,7 +134,8 @@ async function paceHostRequest(url: string): Promise<void> {
 
   if (bucket.nextAllowedAtMs > now) {
     const waitMs = Math.min(2000, bucket.nextAllowedAtMs - now);
-    bucket.nextAllowedAtMs = bucket.nextAllowedAtMs + minIntervalMs;
+    // Clamp lookahead so concurrent bursts cannot push future timestamps minutes ahead
+    bucket.nextAllowedAtMs = Math.min(now + 4000, bucket.nextAllowedAtMs + minIntervalMs);
     hostBuckets.set(hostname, bucket);
     stats.rateLimitedWaits++;
     await new Promise((resolve) => setTimeout(resolve, waitMs));
@@ -181,8 +185,9 @@ function writeCachedEntry(input: {
 }): void {
   const db = getCacheDb();
   if (!db) return;
-  // Cap individual cached bodies at 512 KB to keep SQLite WAL crisp & fast
+  // Cap individual cached bodies at 512 KB and skip cache-busted (_cb=) polling URLs
   if (Buffer.byteLength(input.body, 'utf8') > 512 * 1024) return;
+  if (/[?&]_cb=\d+/i.test(input.url)) return;
   try {
     const sha256 = crypto.createHash('sha256').update(input.body, 'utf8').digest('hex');
     db.prepare(
@@ -199,6 +204,16 @@ function writeCachedEntry(input: {
       sha256,
       Date.now()
     );
+    // Prune stale cache-busted / oldest entries above 2,000 rows to bound SQLite WAL size
+    if (stats.networkFetches % 40 === 0) {
+      db.exec(`
+        DELETE FROM http_cache
+        WHERE url LIKE '%_cb=%'
+           OR rowid NOT IN (
+             SELECT rowid FROM http_cache ORDER BY fetched_at DESC LIMIT 2000
+           );
+      `);
+    }
   } catch {
     // Non-fatal cache write guard
   }
@@ -245,7 +260,9 @@ export async function resilientFetch(
   stats.totalRequests++;
 
   const method = (options.method || 'GET').toUpperCase();
-  const isCacheableGet = method === 'GET' && !options.bypassCache;
+  const isCacheBustedUrl = /[?&]_cb=\d+/i.test(url);
+  const isCacheableGet = method === 'GET' && !options.bypassCache && !isCacheBustedUrl;
+  const shouldWriteCache = isCacheableGet && !options.bypassCacheWrite;
   const softTtlMs = options.softTtlMs ?? 90_000;
   const maxBytes = options.maxBytes ?? 512 * 1024;
   const timeoutMs = options.timeoutMs ?? 8000;
@@ -352,7 +369,7 @@ export async function resilientFetch(
     const rawBuffer = Buffer.concat(chunks);
     const bodyText = rawBuffer.toString('utf8');
 
-    if (isCacheableGet && res.ok && !truncated && bodyText.length > 0) {
+    if (shouldWriteCache && res.ok && !truncated && bodyText.length > 0) {
       const contentType = res.headers.get('content-type') || 'text/plain';
       if (/json|text|xml|html|javascript|csv/i.test(contentType)) {
         writeCachedEntry({

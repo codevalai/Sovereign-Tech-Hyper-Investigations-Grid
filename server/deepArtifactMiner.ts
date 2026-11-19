@@ -18,6 +18,8 @@ export interface MinedArtifactMetadata {
   embeddedUrls: string[];
   extractedEntities: string[];
   extractedDomains: string[];
+  internalFilePaths?: string[];
+  internalUsernames?: string[];
   viaWaybackId?: boolean;
 }
 
@@ -94,13 +96,85 @@ function extractPdfField(latin1: string, key: string): string | undefined {
 }
 
 /**
- * Zero-dependency ZIP local-file scanner for DOCX/PPTX/XLSX `docProps/core.xml` and `docProps/app.xml`
- * using native Node 22 `node:zlib.inflateRawSync`.
+ * Zero-dependency ZIP Central Directory + local-header parser for DOCX/PPTX/XLSX
+ * `docProps/core.xml` and `docProps/app.xml` using native Node 22 `node:zlib.inflateRawSync`.
+ * Parsing the Central Directory (0x02014b50 via EOCD 0x06054b50) ensures reliable extraction
+ * even when ZIP writers set bit-3 data descriptors (local compressedSize === 0).
  */
 function extractOfficeCoreXmlFromZip(buf: Buffer): string {
   const parts: string[] = [];
+  const targetEntries = new Set(['docProps/core.xml', 'docProps/app.xml']);
+
+  const readEntryFromLocalHeader = (
+    localHeaderOffset: number,
+    fallbackMethod: number,
+    fallbackCompressedSize: number
+  ): string | null => {
+    if (localHeaderOffset < 0 || localHeaderOffset + 30 > buf.length) return null;
+    if (buf.readUInt32LE(localHeaderOffset) !== 0x04034b50) return null;
+    const localMethod = buf.readUInt16LE(localHeaderOffset + 8);
+    const localCompressedSize = buf.readUInt32LE(localHeaderOffset + 18);
+    const localFileNameLen = buf.readUInt16LE(localHeaderOffset + 26);
+    const localExtraLen = buf.readUInt16LE(localHeaderOffset + 28);
+    const dataStart = localHeaderOffset + 30 + localFileNameLen + localExtraLen;
+    const compressedSize = fallbackCompressedSize > 0 ? fallbackCompressedSize : localCompressedSize;
+    const method = fallbackCompressedSize > 0 ? fallbackMethod : localMethod;
+    const dataEnd = dataStart + compressedSize;
+    if (compressedSize <= 0 || dataEnd > buf.length) return null;
+    const rawEntry = buf.subarray(dataStart, dataEnd);
+    try {
+      if (method === 8) return inflateRawSync(rawEntry).toString('utf8');
+      if (method === 0) return rawEntry.toString('utf8');
+    } catch {
+      return null;
+    }
+    return null;
+  };
+
+  // 1. Locate End of Central Directory (EOCD = 0x06054b50) scanning backwards (max 64 KB comment)
+  let eocdOffset = -1;
+  const minScanOffset = Math.max(0, buf.length - 65_557);
+  for (let i = buf.length - 22; i >= minScanOffset; i--) {
+    if (buf.readUInt32LE(i) === 0x06054b50) {
+      eocdOffset = i;
+      break;
+    }
+  }
+
+  if (eocdOffset !== -1 && eocdOffset + 22 <= buf.length) {
+    const totalEntries = buf.readUInt16LE(eocdOffset + 10);
+    const cdSize = buf.readUInt32LE(eocdOffset + 12);
+    const cdOffset = buf.readUInt32LE(eocdOffset + 16);
+    const cdEnd = Math.min(buf.length, cdOffset + cdSize);
+    let cursor = cdOffset;
+    let parsedEntries = 0;
+
+    while (cursor + 46 <= cdEnd && parsedEntries < totalEntries && parts.length < 2) {
+      if (buf.readUInt32LE(cursor) !== 0x02014b50) break;
+      const compressionMethod = buf.readUInt16LE(cursor + 10);
+      const compressedSize = buf.readUInt32LE(cursor + 20);
+      const fileNameLen = buf.readUInt16LE(cursor + 28);
+      const extraLen = buf.readUInt16LE(cursor + 30);
+      const commentLen = buf.readUInt16LE(cursor + 32);
+      const localHeaderOffset = buf.readUInt32LE(cursor + 42);
+      const nameStart = cursor + 46;
+      const nameEnd = nameStart + fileNameLen;
+      if (nameEnd > buf.length) break;
+      const fileName = buf.subarray(nameStart, nameEnd).toString('utf8');
+
+      if (targetEntries.has(fileName)) {
+        const xml = readEntryFromLocalHeader(localHeaderOffset, compressionMethod, compressedSize);
+        if (xml) parts.push(xml);
+      }
+
+      cursor = nameEnd + extraLen + commentLen;
+      parsedEntries++;
+    }
+    if (parts.length > 0) return parts.join('\n');
+  }
+
+  // 2. Fallback linear local-file header scan for streamed/truncated ZIPs without EOCD
   let offset = 0;
-  // ZIP local file header signature = 0x04034b50 ("PK\x03\x04")
   while (offset + 30 < buf.length && parts.length < 2) {
     const sig = buf.readUInt32LE(offset);
     if (sig !== 0x04034b50) break;
@@ -116,19 +190,9 @@ function extractOfficeCoreXmlFromZip(buf: Buffer): string {
     const dataEnd = dataStart + compressedSize;
     if (compressedSize === 0 || dataEnd > buf.length) break;
 
-    if (fileName === 'docProps/core.xml' || fileName === 'docProps/app.xml') {
-      try {
-        const rawEntry = buf.subarray(dataStart, dataEnd);
-        const xml =
-          compressionMethod === 8
-            ? inflateRawSync(rawEntry).toString('utf8')
-            : compressionMethod === 0
-            ? rawEntry.toString('utf8')
-            : '';
-        if (xml) parts.push(xml);
-      } catch {
-        // Skip corrupt compressed stream
-      }
+    if (targetEntries.has(fileName)) {
+      const xml = readEntryFromLocalHeader(offset, compressionMethod, compressedSize);
+      if (xml) parts.push(xml);
     }
     offset = dataEnd;
   }
@@ -225,6 +289,25 @@ export function parsePublicDocumentBuffer(
     )
   ).slice(0, 25);
 
+  // Extract internal workstation file paths & usernames (Windows C:\Users\..., macOS /Users/..., Linux /home/..., UNC \\host\share)
+  const rawPaths = [
+    ...(scanCorpus.match(/[A-Za-z]:\\(?:Users|Documents and Settings)\\[A-Za-z0-9._ -]{2,40}(?:\\[^\x00-\x1f<>:"|?*]{1,80})?/g) || []),
+    ...(scanCorpus.match(/\/(?:Users|home)\/[A-Za-z0-9._-]{2,32}(?:\/[^\x00-\x1f\s<>:"'|?*]{1,80})?/g) || []),
+    ...(scanCorpus.match(/\\\\[A-Za-z0-9._-]{2,40}\\[A-Za-z0-9._ $-]{2,40}/g) || []),
+  ];
+  const internalFilePaths = Array.from(
+    new Set(rawPaths.map((p) => sanitizeDorkSnippet(p, 120).clean).filter((p) => p.length >= 6))
+  ).slice(0, 15);
+
+  const internalUsernamesSet = new Set<string>();
+  for (const p of internalFilePaths) {
+    const winUser = p.match(/(?:Users|Documents and Settings)\\([A-Za-z0-9._ -]{2,32})/i);
+    if (winUser?.[1]) internalUsernamesSet.add(winUser[1].trim());
+    const unixUser = p.match(/\/(?:Users|home)\/([A-Za-z0-9._-]{2,32})/i);
+    if (unixUser?.[1]) internalUsernamesSet.add(unixUser[1].trim());
+  }
+  const internalUsernames = Array.from(internalUsernamesSet).slice(0, 15);
+
   return {
     sourceUrl,
     contentType,
@@ -240,6 +323,8 @@ export function parsePublicDocumentBuffer(
     embeddedUrls,
     extractedEntities,
     extractedDomains,
+    internalFilePaths,
+    internalUsernames,
     viaWaybackId: isWaybackRawIdUrl(sourceUrl),
   };
 }
@@ -261,16 +346,16 @@ export async function discoverWaybackArchivedDocumentUrls(
   if (!cleanDomain || !cleanDomain.includes('.')) return [];
 
   const cdxUrl =
-    `https://web.archive.org/cdx/search/cdx?url=*.${encodeURIComponent(cleanDomain)}/*` +
-    `&output=json&fl=timestamp,original,mimetype,statuscode` +
+    `https://web.archive.org/cdx/search/cdx?url=${encodeURIComponent(`${cleanDomain}/`)}` +
+    `&matchType=prefix&output=json&fl=timestamp,original,mimetype,statuscode` +
     `&filter=statuscode:200` +
-    `&filter=mimetype:(application/pdf|application/vnd\\.openxmlformats-officedocument\\..*)` +
+    `&filter=original:.*\\.(pdf|docx|pptx|xlsx)$` +
     `&collapse=urlkey&limit=${Math.max(maxResults * 2, 10)}`;
 
   try {
     const res = await resilientFetch(cdxUrl, {
       headers: { 'User-Agent': UA, Accept: 'application/json' },
-      timeoutMs: 11_000,
+      timeoutMs: 12_000,
       maxBytes: 256 * 1024,
       softTtlMs: 300_000,
     });

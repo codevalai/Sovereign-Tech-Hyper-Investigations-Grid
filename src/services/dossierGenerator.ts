@@ -21,10 +21,13 @@ import {
   buildClaimCitationsForAgent,
   buildForensicPropertyGraph,
   buildMerkleTreeRoot,
+  computeBayesianFraudRiskPosterior,
   computeBenfordAnalysis,
   computeBftCorroborationSummary,
+  computeGraphPageRankAndContagion,
   computeHawkesAnalysis,
   computeIpfsCidV1,
+  computeShannonEntropyMetrics,
   computeStylometricFingerprint,
   generateMerkleInclusionProof,
   runAdversarialTribunal,
@@ -39,6 +42,15 @@ import {
   renderSquadCompilerFile,
   type SpecialistFindingSummary,
 } from '../engine/sparseSquadCompressor';
+import { buildFollowTheMoneyNdjson } from '../engine/followTheMoneyExporter';
+import { runAdversarialRedTeamAchPass } from '../engine/adversarialAchEngine';
+import { runAuthorToEntityMetadataPivots } from '../engine/metadataPivotEngine';
+import {
+  buildDeltaAlertMarkdown,
+  buildStandaloneDiffDossiersMjs,
+  computeLongitudinalDossierDiff,
+  extractLongitudinalSnapshot,
+} from '../engine/longitudinalDiffEngine';
 import {
   buildAccountingAuditMarkdown,
   buildAdversarialAuditMarkdown,
@@ -113,6 +125,24 @@ export function generateInvestigationDossier(
     liveIntel,
     hawkes
   );
+  const metadataPivots =
+    liveIntel?.metadataPivots ||
+    runAuthorToEntityMetadataPivots({
+      targetEntity: matchedEntity.name,
+      primaryDomain: liveIntel?.extremeDorkingAndDna?.domain || liveIntel?.officialWebsite || undefined,
+      documents: liveIntel?.extremeDorkingAndDna?.minedDocuments || [],
+      liveIntel,
+    });
+  const liveIntelWithPivots = liveIntel
+    ? { ...liveIntel, metadataPivots }
+    : undefined;
+  const preRedTeamBayesian = computeBayesianFraudRiskPosterior(fri, liveIntelWithPivots, benford);
+  const { achReport, postRedTeamBayesian: bayesianPosterior } = runAdversarialRedTeamAchPass({
+    targetEntity: matchedEntity.name,
+    preRedTeamBayesian,
+    liveIntel: liveIntelWithPivots,
+    metadataPivots,
+  });
 
   // 1. 00_EXEC_SUMMARY.md
   const file00 = {
@@ -126,13 +156,14 @@ ${liveIntel.dbaNames.length > 0 ? `**DBA / Trade Names:** ${liveIntel.dbaNames.j
 **Industry / Sector:** ${liveIntel.industry} · **NAICS/SIC:** ${liveIntel.naicsOrSicCode}
 **Business Scale:** ${liveIntel.businessScale} · **Founded:** ${liveIntel.foundedDateExact}
 **Headquarters / Location:** ${liveIntel.headquarters} (${liveIntel.country})
-**Stock Ticker / Registry ID:** ${liveIntel.stockTickerOrRegistryId} · **GLEIF LEI:** ${liveIntel.leiCode}
+**Stock Ticker / Registry ID:** ${liveIntel.stockTickerOrRegistryId} · **GLEIF LEI:** ${liveIntel.canonicalLei || liveIntel.leiCode}
 **Official Website:** ${liveIntel.officialWebsite}
 **Employees:** ${liveIntel.employeeCount} · **Revenue / Valuation:** ${liveIntel.revenueOrValuation}
 **Data Provenance:** 100% LIVE GROUNDED (${liveIntel.liveRegistriesQueried.join(' + ')}) · **Verified Sources:** ${liveIntel.groundingSources.length}
 **Execution Guarantee:** STRICTLY READ-ONLY ISOLATED SCRATCHPAD · ZERO MUTATIONS TO EXISTING LEDGERS OR SCHEMAS
 **Investigation ID:** ${investigationId} · **Synthesized:** ${new Date().toUTCString()}
 **Fraud/Compliance Risk Index (FRI):** ${fri} / 1.00 (${fri > 0.6 ? 'ELEVATED' : fri > 0.3 ? 'MODERATE' : 'LOW'})
+**Bayesian Fraud Risk Posterior:** ${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}% [${bayesianPosterior.riskTier}] (Prior ${(bayesianPosterior.priorProbability * 100).toFixed(1)}% · BF=${bayesianPosterior.combinedBayesFactor}x · 95% CI ${(bayesianPosterior.confidenceInterval95[0] * 100).toFixed(1)}%–${(bayesianPosterior.confidenceInterval95[1] * 100).toFixed(1)}%)
 **Market Concentration Index (MAI):** ${mai} / 1.00 (${mai > 0.6 ? 'HIGH' : mai > 0.3 ? 'CONCERNING' : 'LOW'})
 
 ---
@@ -148,7 +179,7 @@ ${scope.uploadedFileName ? `- **Attached Lead Document:** ${scope.uploadedFileNa
 
 ## 2. VERIFIED OWNERSHIP, LEADERSHIP & OPERATIONS
 - **Founders:** ${liveIntel.founders.length > 0 ? liveIntel.founders.join(', ') : 'Not publicly disclosed'}
-- **Key Executives / Owners:** ${liveIntel.keyExecutives.length > 0 ? liveIntel.keyExecutives.join(', ') : 'Not publicly disclosed'}
+- **Key Executives / Owners:** ${liveIntel.keyExecutives.length > 0 ? liveIntel.keyExecutives.join(', ') : 'Not publicly disclosed'}${(liveIntel.externalSpvInvestors || liveIntel.sovereignRegistries?.externalSpvInvestors || []).length > 0 ? `\n- **External SPV / Fund Investors (SEC Form D · Isolated from Executives):** ${(liveIntel.externalSpvInvestors || liveIntel.sovereignRegistries?.externalSpvInvestors || []).slice(0, 8).map((inv) => `${inv.name} [${inv.role} via ${inv.spvIssuerName}]`).join(', ')}` : ''}
 - **Ownership / UBO Chain:** ${liveIntel.ownershipAndUboChain.length > 0 ? liveIntel.ownershipAndUboChain.join(' -> ') : liveIntel.legalName}
 - **Products & Services:** ${liveIntel.productsAndServices.join(' · ') || liveIntel.industry}
 - **Business Model & Market Position:** ${liveIntel.primaryMarketMechanism}
@@ -177,6 +208,8 @@ ${liveIntel.regulatoryAndLegalDockets.length > 0 ? liveIntel.regulatoryAndLegalD
 - **Squad N Patent Warfare, PTAB/SEP & Bayh-Dole Academic Grant Capture:** \`25_PATENT_TROLLS_AND_ACADEMIC_GRANT_LAUNDERING.md\`
 - **Squad O Dark-Pool Derivatives (13F/NPORT-P) & Bitcoin Mempool Anchoring:** \`26_DARK_POOL_DERIVATIVES_AND_CRYPTO_TREASURY.md\`
 - **Squad P Legal SLAPP Warfare, Forced Arbitration & Judge Shopping:** \`27_LEGAL_SLAPP_JUDGE_SHOPPING_AND_ARBITRATION.md\`
+- **Bayesian Risk Posterior, Multi-Hop Causal Chains & Live TLS X.509 Audit:** \`37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md\` + \`evidence/bayesian_and_graph_analytics.json\`
+- **Court-Ready Printable Executive Brief (Print-to-PDF):** \`EXECUTIVE_BRIEF_PRINTABLE.html\`
 - **Ring-1 BFT Corroboration & Stream Security Ledger:** \`truth/bft_corroboration_ledger.json\`
 - **Bayesian Tribunal Watchlist & Falsified Hypotheses:** \`UNVERIFIED_INTELLIGENCE_WATCHLIST.md\` + \`truth/rejected_hypotheses.json\`
 - **Standalone Cryptographic Offline Verifier:** Run \`node verify_dossier.mjs\` (verifies SHA-256, Merkle Root, Inclusion Proofs, IPFS CIDv1, Bitcoin/RFC3161 anchors, \`PUBLIC_KEY.pem\` Ed25519 signature & zero orphaned claims)
@@ -1558,6 +1591,39 @@ Every structural mechanism used to legally bypass statutory fraud, antitrust, or
     });
   }
 
+  for (const pivot of metadataPivots.pivots) {
+    const pivotNodeId = `meta_pivot_${pivot.pivotId.toLowerCase().replace(/[^a-z0-9_]/g, '_')}`;
+    if (!existingNodeIds.has(pivotNodeId)) {
+      existingNodeIds.add(pivotNodeId);
+      graphNodes.push({
+        id: pivotNodeId,
+        label: `${pivot.matchedEntityOrPerson} (${pivot.extractedAuthorOrUsername})`,
+        nodeType: 'Person',
+        layer: 'revolving_door',
+        betweennessCentrality: Number((0.12 + pivot.matchConfidence * 0.1).toFixed(4)),
+        degree: 2,
+        communityId: 1,
+        kCore: 2,
+        metadata: {
+          signalTag: pivot.signalTag,
+          extractedAuthorOrUsername: pivot.extractedAuthorOrUsername,
+          documentUrl: pivot.documentUrl,
+          documentDomain: pivot.documentDomain,
+          matchedReferenceSource: pivot.matchedReferenceSource,
+          matchConfidence: pivot.matchConfidence,
+        },
+      });
+    }
+    graphEdges.push({
+      source: rootEntityNodeId,
+      target: pivotNodeId,
+      relationship: `HIGH_SIGNAL_METADATA_PIVOT (${pivot.matchedReferenceSource})`,
+      layer: 'revolving_door',
+      weight: Number(Math.max(0.75, pivot.matchConfidence).toFixed(2)),
+      verifiedSource: pivot.documentUrl,
+    });
+  }
+
   const fileGraphNodes = {
     filename: 'graph/nodes.json',
     description: 'Heterogeneous 7-Type Property Graph Nodes with Brandes Betweenness Centrality, Louvain Community & k-Core',
@@ -1572,9 +1638,34 @@ Every structural mechanism used to legally bypass statutory fraud, antitrust, or
     content: JSON.stringify(graphEdges, null, 2)
   };
 
+  const pageRankNodes = computeGraphPageRankAndContagion(graphNodes, graphEdges);
+  const entropyReports = [
+    computeShannonEntropyMetrics(
+      'Operating Jurisdictions',
+      liveIntel?.jurisdictions.length
+        ? liveIntel.jurisdictions
+        : [matchedEntity.hqCity || matchedEntity.country || 'Global']
+    ),
+    computeShannonEntropyMetrics(
+      'CSP & Infrastructure Origins',
+      [
+        ...(liveIntel?.deepAttackSurface?.httpSecurityAudit?.cspDiscoveredOrigins || []),
+        ...(liveIntel?.extremeDorkingAndDna?.infraDna.cspOrigins || []),
+      ]
+    ),
+    computeShannonEntropyMetrics(
+      'Federal Agencies & Regulatory Forums',
+      [
+        ...(liveIntel?.temporalCausalityAndLobbying?.senateLdaDetailed.targetedAgencies || []),
+        ...(liveIntel?.extremeDorkingAndDna?.discoveredAgencies || []),
+        ...(liveIntel?.regulatoryAndLegalDockets.map((d) => d.forum) || []),
+      ]
+    ),
+  ];
+
   const fileGraphCentralityBridges = {
     filename: 'graph/centrality_and_bridges.json',
-    description: 'Brandes Betweenness Centrality Rankings, Louvain Modularity Q, k-Core Shells & Shortest-Path Hidden Bridges',
+    description: 'Brandes Betweenness Centrality Rankings, Louvain Modularity Q, k-Core Shells, PageRank Chokepoints & Shortest-Path Hidden Bridges',
     type: 'json' as const,
     content: JSON.stringify({
       target_entity: matchedEntity.name,
@@ -1583,6 +1674,7 @@ Every structural mechanism used to legally bypass statutory fraud, antitrust, or
       community_count: propertyGraph.communityCount,
       max_k_core: propertyGraph.maxKCore,
       top_betweenness_central_nodes: propertyGraph.topCentralNodes,
+      top_pagerank_contagion_nodes: pageRankNodes.slice(0, 12),
       shortest_path_hidden_bridges: propertyGraph.hiddenBridges,
     }, null, 2)
   };
@@ -1657,19 +1749,47 @@ This document maps global power across frontier AI, orbital launch (SpaceX), ins
   const fileHeatmaps = {
     filename: 'powermap/consolidation_heatmaps.json',
     description: liveIntel
-      ? 'Target Entity Risk & Consolidation Telemetry Breakdown'
+      ? 'Target Entity Risk, Peer Concentration & Regulatory Pressure Heatmap Matrix'
       : 'Domain Heatmaps: Consolidation Intensity by Sector (Cloud, LLM, Hardware, Ads, Space, Neurotech)',
     type: 'json' as const,
     content: JSON.stringify(
       liveIntel
         ? {
             target_entity: liveIntel.entityName,
+            legal_name: liveIntel.legalName,
             industry: liveIntel.industry,
             business_scale: liveIntel.businessScale,
+            country: liveIntel.country,
+            jurisdictions: liveIntel.jurisdictions,
             concentration_index_mai: mai,
             compliance_risk_index_fri: fri,
             peer_benchmark_count: liveIntel.competitorsAndPeers.length,
-            regulatory_docket_count: liveIntel.regulatoryAndLegalDockets.length
+            regulatory_docket_count: liveIntel.regulatoryAndLegalDockets.length,
+            risk_and_market_breakdown: {
+              high_severity_claims: liveIntel.publicClaimsVsReality.filter((c) => c.severity === 'HIGH').length,
+              high_risk_supply_dependencies: liveIntel.supplyChainDependencies.filter(
+                (s) => s.riskLevel === 'HIGH' || s.riskLevel === 'CRITICAL'
+              ).length,
+              opacity_subsidiaries_count:
+                liveIntel.subsidiarySwarm?.opacityFlaggedCount ?? 0,
+              federal_awards_count: liveIntel.governmentSubsidiesAndGrants.length,
+              form_d_offerings_count: liveIntel.shadowFinance?.formDOfferings.length ?? 0,
+              lobbying_filings_count: liveIntel.shadowFinance?.lobbyingFilings.length ?? 0,
+              court_dockets_count: liveIntel.legalSlappBankruptcy?.courtListenerDocketsCount ?? 0,
+              epa_facilities_count: liveIntel.environmentalEpa?.epaFacilitiesCount ?? 0,
+              cisa_kev_count: liveIntel.adversarialInfra?.cisaKevMatches.length ?? 0,
+            },
+            peer_benchmarks: liveIntel.competitorsAndPeers,
+            subsidiaries_sample: liveIntel.subsidiaries.slice(0, 20),
+            regulatory_pressure_by_forum: Object.entries(
+              liveIntel.regulatoryAndLegalDockets.reduce<Record<string, number>>((acc, d) => {
+                const key = d.forum || 'Public Forum';
+                acc[key] = (acc[key] || 0) + 1;
+                return acc;
+              }, {})
+            ).map(([forum, count]) => ({ forum, count })),
+            sector_heatmap_baselines: DOMAIN_HEATMAP_DATA,
+            macro_shock_events: SHOCK_EVENTS.slice(0, 10),
           }
         : { heatmaps: DOMAIN_HEATMAP_DATA, shockEvents: SHOCK_EVENTS },
       null,
@@ -1891,7 +2011,17 @@ This document maps global power across frontier AI, orbital launch (SpaceX), ins
   let totalRawSquadBytes = 0;
   const squadUtf8Encoder = new TextEncoder();
 
-  const rawSquadFiles = squads.flatMap((squad) => {
+  const syncedSquads: SwarmSquad[] = squads.map((sq) => ({
+    ...sq,
+    status: 'completed',
+    agents: sq.agents.map((a) => ({
+      ...a,
+      status: 'completed',
+      progress: 100,
+    })),
+  }));
+
+  const rawSquadFiles = syncedSquads.flatMap((squad) => {
     const perAgent = extractGroundedHitsByAgent(squad.id, liveIntel);
     totalUniqueEvidenceCitations += perAgent.uniqueCitationCount;
     totalEvidenceAssignments += perAgent.totalAssignmentCount;
@@ -1916,6 +2046,9 @@ This document maps global power across frontier AI, orbital launch (SpaceX), ins
           perAgent.probedEndpoints
         );
         totalRawSquadBytes += compressed.byteLength;
+        agent.rawMarkdownContent = compressed.markdown;
+        agent.findingsCount = 0;
+        agent.claimCitations = [];
         return {
           filename: agent.outputFilePath,
           description: `Compressed Zero-Hit Specialist Attestation: ${agent.agentName} (${squad.name})`,
@@ -1999,6 +2132,10 @@ ${JSON.stringify(citations, null, 2)}
       const rawHash = sha256Hex(body);
       const finalContent = `${body}\n---\n*Sovereign Swarm Node ${agent.id} · FIPS 180-4 SHA-256: ${rawHash.slice(0, 16).toUpperCase()}*\n`;
       totalRawSquadBytes += squadUtf8Encoder.encode(finalContent).byteLength;
+      agent.rawMarkdownContent = finalContent;
+      agent.findingsCount = liveIntel
+        ? agentHits.length
+        : Math.max(1, finalContent.split('\n- ').length - 1);
       return {
         filename: agent.outputFilePath,
         description: `Specialist Raw Output: ${agent.agentName} (${squad.name})`,
@@ -2020,6 +2157,9 @@ ${JSON.stringify(citations, null, 2)}
           perAgent.probedEndpoints
         );
         totalRawSquadBytes += compressed.byteLength;
+        agent.rawMarkdownContent = compressed.markdown;
+        agent.findingsCount = 0;
+        agent.claimCitations = [];
         return {
           filename: agent.outputFilePath,
           description: `Compressed Zero-Hit Compiler Attestation: ${agent.agentName} (${squad.name})`,
@@ -2071,6 +2211,10 @@ ${JSON.stringify(citations, null, 2)}
       const rawHash = sha256Hex(body);
       const finalContent = `${body}\n---\n*Sovereign Swarm Compiler ${agent.id} · FIPS 180-4 SHA-256: ${rawHash.slice(0, 16).toUpperCase()}*\n`;
       totalRawSquadBytes += squadUtf8Encoder.encode(finalContent).byteLength;
+      agent.rawMarkdownContent = finalContent;
+      agent.findingsCount = liveIntel
+        ? nonZeroSpecialistSummaries.length
+        : Math.max(1, finalContent.split('\n- ').length - 1);
       return {
         filename: agent.outputFilePath,
         description: `Squad Compiler Synthesis: ${agent.agentName} (${squad.name})`,
@@ -2128,6 +2272,13 @@ ${JSON.stringify(citations, null, 2)}
             live_registries_queried: liveIntel.liveRegistriesQueried,
             verified_grounding_source_count: liveIntel.groundingSources.length,
             signal_density_metrics: signalDensityMetrics,
+            bayesian_risk_posterior: {
+              prior: bayesianPosterior.priorProbability,
+              posterior: bayesianPosterior.posteriorProbability,
+              bayes_factor: bayesianPosterior.combinedBayesFactor,
+              risk_tier: bayesianPosterior.riskTier,
+              credible_interval_95: bayesianPosterior.confidenceInterval95,
+            },
             claims_evaluated: liveIntel.publicClaimsVsReality.length > 0
               ? liveIntel.publicClaimsVsReality.map((c, idx) => ({
                   claim_id: `verified_claim_${idx + 1}`,
@@ -2182,18 +2333,76 @@ ${JSON.stringify(citations, null, 2)}
           .join('\n')}\n`
       : '';
 
+  const sovReg = liveIntel?.sovereignRegistries;
+  const sovereignRegistriesSection = (() => {
+    const parts: string[] = [];
+    if (sovReg?.gleifPrimary) {
+      const g = sovReg.gleifPrimary;
+      parts.push(
+        `\n\n---\n\n## SOVEREIGN GLEIF LEVEL-2 CORPORATE OWNERSHIP RECORD (ZERO-KEY)\n- **20-Char LEI:** \`${g.lei}\` · **Legal Name:** ${g.legalName} · **Jurisdiction:** \`${g.jurisdiction}\`\n- **Registration Status / Entity Status:** \`${g.registrationStatus}\` / \`${g.entityStatus}\` · **Local Registry ID:** \`${g.localRegistryId}\` · **Managing LOU:** \`${g.managingLou}\`\n- **Direct Accounting Parent:** ${g.directParent ? `${g.directParent.legalName} (\`${g.directParent.lei}\`)` : 'None / Independent Ultimate Parent'}\n- **Ultimate Parent:** ${g.ultimateParent ? `${g.ultimateParent.legalName} (\`${g.ultimateParent.lei}\`)` : 'Self / Top-Level Ultimate Parent'}\n- **Direct Children (${g.directChildren.length}):** ${g.directChildren.length > 0 ? g.directChildren.slice(0, 12).map((c) => `${c.legalName} (${c.country || 'N/A'}, \`${c.lei}\`)`).join('; ') : 'None listed in GLEIF RR-CDF'}\n`
+      );
+    }
+    if (sovReg && sovReg.usaSpendingAwards.length > 0) {
+      parts.push(
+        `\n\n---\n\n## USASPENDING.GOV FEDERAL & DEFENSE CONTRACTS LEDGER (${sovReg.usaSpendingContractsCount} AWARDS · $${Math.round(sovReg.usaSpendingTotalObligatedUsd).toLocaleString('en-US')} OBLIGATED)\n| Award ID | Type | Awarding Agency | Sub-Agency | Obligated (USD) | Performance Period | Description |\n|----------|------|-----------------|------------|----------------:|--------------------|-------------|\n${sovReg.usaSpendingAwards
+          .slice(0, 20)
+          .map(
+            (a) =>
+              `| \`${a.awardId}\` | ${a.kind} | ${a.awardingAgency.replace(/\|/g, '-')} | ${a.awardingSubAgency.replace(/\|/g, '-')} | $${Math.round(a.obligatedAmountUsd).toLocaleString('en-US')} | \`${a.performancePeriod}\` | ${a.description.slice(0, 90).replace(/\|/g, '-')} |`
+          )
+          .join('\n')}\n`
+      );
+    }
+    if (sovReg && sovReg.secFormDCount > 0) {
+      parts.push(
+        `\n\n---\n\n## SEC FORM D PRIVATE PLACEMENTS & NAMED EXECUTIVES (${sovReg.secFormDCount} FILINGS · $${Math.round(sovReg.secFormDTotalOfferingUsd).toLocaleString('en-US')} DISCLOSED OFFERINGS)\n${
+          sovReg.secFormDRelatedPersons.length > 0
+            ? `| Related Person / Executive | Relationships | Issuer Entity | Filed | Filing |\n|----------------------------|---------------|---------------|-------|--------|\n${sovReg.secFormDRelatedPersons
+                .slice(0, 15)
+                .map(
+                  (rp) =>
+                    `| **${rp.name.replace(/\|/g, '-')}** | ${rp.relationships.join(', ').replace(/\|/g, '-')} | ${rp.entityName.replace(/\|/g, '-')} | \`${rp.filedAt}\` | [SEC Form D](${rp.url}) |`
+                )
+                .join('\n')}\n`
+            : '- SEC Form D filings indexed; primary XML related-person schedules pending or undisclosed.\n'
+        }`
+      );
+    }
+    return parts.join('');
+  })();
+
   const file12Subsidies = {
     filename: '12_SUBSIDIARIES_SUBSIDIES_ACQUIRED_AND_SOLD.md',
-    description: 'All Subsidiaries & Subsidies Acquired (From Whom), Sold/Divested (To Whom) & GLEIF Level-2 Tree',
+    description: 'All Subsidiaries & Subsidies Acquired (From Whom), Sold/Divested (To Whom), GLEIF Level-2 Tree, USASpending Defense Awards & SEC Form D Private Placements',
     type: 'markdown' as const,
-    content: buildSubsidiariesAndSubsidiesMarkdown(matchedEntity, liveIntel) + gleifL2Section
+    content: buildSubsidiariesAndSubsidiesMarkdown(matchedEntity, liveIntel) + gleifL2Section + sovereignRegistriesSection
   };
+
+  const extraUsaCsvRows =
+    sovReg && sovReg.usaSpendingAwards.length > 0
+      ? '\n' +
+        sovReg.usaSpendingAwards
+          .slice(0, 20)
+          .map((a) => {
+            const q = (v: string) => `"${String(v || '').replace(/"/g, '""')}"`;
+            return [
+              q(`USASpending_${a.kind}`),
+              q(`${a.awardId}: ${a.description.slice(0, 80)}`),
+              q(`${a.awardingAgency} / ${a.awardingSubAgency}`),
+              q(a.recipientName),
+              q(`$${Math.round(a.obligatedAmountUsd).toLocaleString('en-US')}`),
+              q(a.performancePeriod),
+              q('USASpending.gov Zero-Key API'),
+            ].join(',');
+          })
+          .join('\n')
+      : '';
 
   const file12SubsidiesCsv = {
     filename: 'subsidiaries_subsidies_ledger.csv',
-    description: 'Structured CSV Ledger of Subsidiaries Acquired, Sold To Whom & Sovereign Subsidies',
+    description: 'Structured CSV Ledger of Subsidiaries Acquired, Sold To Whom, USASpending Sub-Agency Awards & Sovereign Subsidies',
     type: 'csv' as const,
-    content: buildSubsidiariesAndSubsidiesCsv(matchedEntity, liveIntel)
+    content: buildSubsidiariesAndSubsidiesCsv(matchedEntity, liveIntel) + extraUsaCsvRows
   };
 
   const baseInProcessAcq = buildInProcessAcquisitionsData(matchedEntity, liveIntel);
@@ -2969,27 +3178,42 @@ ${
 
   const file35ArtifactMinerAndInfraDna = {
     filename: '35_DEEP_ARTIFACT_METADATA_AND_INFRA_DNA.md',
-    description: 'v22.0 Deep Public PDF/DOCX Metadata Mining (Author/Creator/XMP) & Invisible Infrastructure DNA Fingerprinting (Favicon MMH3, GTM/GA, Recursive SPF)',
+    description: 'v26.0 Deep Public PDF/DOCX/XLSX/PPTX Metadata Mining, Active Author-to-Entity Pivot Engine & Invisible Infrastructure DNA Fingerprinting',
     type: 'markdown' as const,
-    content: `# 35. DEEP ARTIFACT METADATA MINING & INVISIBLE INFRASTRUCTURE DNA
+    content: `# 35. DEEP ARTIFACT METADATA MINING, AUTHOR-TO-ENTITY PIVOTS & INVISIBLE INFRASTRUCTURE DNA
 
 **Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
 **Primary Domain:** \`${edna?.domain || 'N/A'}\`  
 **Generated At:** \`${timestampIso}\`  
-**Live Public Documents Mined (PDF/DOCX <= 8 MB):** **${edna?.minedDocuments.length ?? 0}**
+**Live Public Documents Mined (PDF/DOCX/XLSX/PPTX <= 8 MB):** **${edna?.minedDocuments.length ?? 0}**  
+**High-Signal Binary Metadata Author Pivots:** **${metadataPivots.highSignalPivotsCount}** (\`${metadataPivots.verdict}\`)
 
 ---
 
-## 1. DEEP PUBLIC ARTIFACT METADATA RIPPING (PDF /Author, /Creator, XMP & DOCX core.xml)
+## 1. DEEP PUBLIC ARTIFACT METADATA RIPPING (PDF /Author, /Creator, XMP, Internal Paths & DOCX/XLSX/PPTX core.xml)
 ${
   edna && edna.minedDocuments.length > 0
-    ? `| Format | Bytes | Author | Creator / Producer | Extracted Corporate Entities & Domains | IPFS CIDv1 |\n|--------|------:|--------|--------------------|----------------------------------------|------------|\n${edna.minedDocuments
+    ? `| Format | Bytes | Author | Creator / Producer | Internal Paths / Usernames | Extracted Corporate Entities & Domains | IPFS CIDv1 |\n|--------|------:|--------|--------------------|----------------------------|----------------------------------------|------------|\n${edna.minedDocuments
         .map(
           (doc) =>
-            `| \`${doc.format}\` | ${doc.byteLength.toLocaleString('en-US')} | ${(doc.author || 'N/A').replace(/\|/g, '-')} | ${[doc.creator, doc.producer].filter(Boolean).join(' / ').replace(/\|/g, '-') || 'N/A'} | ${[...doc.extractedEntities.slice(0, 3), ...doc.extractedDomains.slice(0, 3)].join(', ').replace(/\|/g, '-') || 'None'} | [\`${doc.ipfsCidV1.slice(0, 14)}\`](${doc.sourceUrl}) |`
+            `| \`${doc.format}\` | ${doc.byteLength.toLocaleString('en-US')} | ${(doc.author || 'N/A').replace(/\|/g, '-')} | ${[doc.creator, doc.producer].filter(Boolean).join(' / ').replace(/\|/g, '-') || 'N/A'} | ${[...(doc.internalUsernames || []).slice(0, 2), ...(doc.internalFilePaths || []).slice(0, 1)].join('; ').replace(/\|/g, '-') || 'None'} | ${[...doc.extractedEntities.slice(0, 3), ...doc.extractedDomains.slice(0, 3)].join(', ').replace(/\|/g, '-') || 'None'} | [\`${doc.ipfsCidV1.slice(0, 14)}\`](${doc.sourceUrl}) |`
         )
         .join('\n')}`
-    : '- Zero public PDF/DOCX binaries surfaced or reachable under the 8 MB zero-key safety cap on this run.'
+    : '- Zero public PDF/DOCX/XLSX/PPTX binaries surfaced or reachable under the 8 MB zero-key safety cap on this run.'
+}
+
+---
+
+## 1B. ACTIVE AUTHOR-TO-ENTITY BINARY METADATA PIVOT ENGINE (REVOLVING DOOR / GITHUB / FORM D / COURT CROSS-REFERENCE)
+${
+  metadataPivots.pivots.length > 0
+    ? `| Pivot ID | Signal Tag | Extracted Author / User | Document Domain | Matched Registry Source | Matched Person / Entity | Confidence | Forensic Rationale |\n|----------|------------|-------------------------|-----------------|-------------------------|-------------------------|-----------:|--------------------|\n${metadataPivots.pivots
+        .map(
+          (p) =>
+            `| \`${p.pivotId}\` | **\`${p.signalTag}\`** | \`${p.extractedAuthorOrUsername.replace(/\|/g, '-')}\` | \`${p.documentDomain}\` | \`${p.matchedReferenceSource}\` | **${p.matchedEntityOrPerson.replace(/\|/g, '-')}** | ${(p.matchConfidence * 100).toFixed(0)}% | ${p.rationale.replace(/\|/g, '-')} |`
+        )
+        .join('\n')}`
+    : `- ${metadataPivots.verdict}`
 }
 
 ---
@@ -3088,6 +3312,443 @@ ${
 `,
   };
 
+  const tlsCert = liveIntel?.deepAttackSurface?.tlsCertificate || null;
+  const wikiRev = liveIntel?.deepAttackSurface?.wikipediaRevisionForensics || null;
+  const causalChains = tcl?.causalChains || [];
+  const burstSummary = tcl?.burstSummary;
+
+  const file37BayesianAndTls = {
+    filename: '37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md',
+    description: 'v25.0 Bayesian Fraud Risk Posterior, Multi-Hop Causal Chains, Live TLS X.509 & SAN Audit, Wikipedia Revision Forensics, PageRank Contagion & Shannon Entropy',
+    type: 'markdown' as const,
+    content: `# 37. BAYESIAN RISK POSTERIOR, MULTI-HOP CAUSAL CHAINS, LIVE TLS X.509 & GRAPH PAGERANK
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Bayesian Fraud Risk Posterior:** **${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}%** (\`${bayesianPosterior.riskTier}\` · Prior ${(bayesianPosterior.priorProbability * 100).toFixed(1)}% · Combined Bayes Factor **${bayesianPosterior.combinedBayesFactor}x** · 95% Credible Interval **${(bayesianPosterior.confidenceInterval95[0] * 100).toFixed(1)}%–${(bayesianPosterior.confidenceInterval95[1] * 100).toFixed(1)}%**)
+
+---
+
+## 1. SEQUENTIAL LOG-ODDS BAYESIAN EVIDENCE UPDATE TABLE
+${
+  bayesianPosterior.evidenceContributions.length > 0
+    ? `| Signal | Category | Likelihood Ratio | Log-Odds Δ | Direction | Observed Telemetry |\n|--------|----------|-----------------:|-----------:|-----------|--------------------|\n${bayesianPosterior.evidenceContributions
+        .map(
+          (c) =>
+            `| **${c.label.replace(/\|/g, '-')}** | \`${c.category}\` | \`${c.likelihoodRatio}x\` | \`${c.logOddsDelta >= 0 ? '+' : ''}${c.logOddsDelta}\` | **${c.direction}** | ${c.observedValue.replace(/\|/g, '-')} |`
+        )
+        .join('\n')}`
+    : '- No elevated forensic likelihood ratios triggered beyond the baseline prior probability.'
+}
+
+---
+
+## 2. MULTI-HOP TEMPORAL CAUSAL CHAINS (LENGTH 3–4 · Δt <= ${tcl?.windowDays ?? 14} DAYS/HOP)
+${
+  burstSummary
+    ? `- **Monthly Temporal Burst Z-Score:** Peak Month \`${burstSummary.peakMonth || 'N/A'}\` (${burstSummary.peakMonthCount} events vs mean ${burstSummary.meanMonthlyEvents}/mo, σ=${burstSummary.stdDevMonthlyEvents}, **Z=${burstSummary.peakBurstZScore}** · ${burstSummary.burstDetected ? '**ANOMALOUS BURST DETECTED**' : 'Normal cadence'})\n`
+    : ''
+}${
+  causalChains.length > 0
+    ? `| Chain ID | Severity | Streams Traversed | Total Span | Causal Narrative |\n|----------|----------|-------------------|-----------:|------------------|\n${causalChains
+        .map(
+          (ch) =>
+            `| \`${ch.chainId}\` | **${ch.severity}** | \`${ch.streamSequence.join(' -> ')}\` | ${ch.totalSpanDays}d | ${ch.narrative.replace(/\|/g, '-')} |`
+        )
+        .join('\n')}`
+    : '- Zero 3+ stream directed multi-hop causal chains detected within the sliding synchrony window.'
+}
+
+---
+
+## 3. LIVE TLS X.509 CERTIFICATE & SUBJECT ALTERNATIVE NAME (SAN) AUDIT
+${
+  tlsCert
+    ? `- **Host:** \`${tlsCert.host}:443\` · **Negotiated Protocol / Cipher:** \`${tlsCert.protocol}\` / \`${tlsCert.cipherName}\`
+- **Subject / Issuer:** \`${tlsCert.subjectCn || tlsCert.subjectOrg}\` — Issued by **${tlsCert.issuerCn || tlsCert.issuerOrg}**
+- **Validity Window:** \`${tlsCert.validFrom}\` -> \`${tlsCert.validTo}\` (**${tlsCert.daysUntilExpiry} days remaining**${tlsCert.isExpired ? ' · **EXPIRED**' : ''}${tlsCert.isSelfSigned ? ' · **SELF-SIGNED**' : ''})
+- **X.509 SHA-256 Fingerprint:** \`${tlsCert.fingerprintSha256 || 'N/A'}\` · **Serial:** \`${tlsCert.serialNumber || 'N/A'}\`
+- **Subject Alternative Names (${tlsCert.sanDomains.length}):** ${tlsCert.sanDomains.length > 0 ? tlsCert.sanDomains.slice(0, 24).map((s) => `\`${s}\``).join(', ') : 'None listed'}`
+    : '- Live TLS X.509 socket handshake not executed or domain unreachable on port 443.'
+}
+
+---
+
+## 4. WIKIPEDIA REVISION WHITEWASH & EDIT-WAR FORENSICS (ZERO-KEY WIKIMEDIA API)
+${
+  wikiRev && wikiRev.revisionsAnalyzed > 0
+    ? `- **Article:** [${wikiRev.articleTitle}](${wikiRev.articleUrl}) · **Verdict:** **\`${wikiRev.verdict}\`**
+- **Revision Metrics (Last ${wikiRev.revisionsAnalyzed} Edits):** ${wikiRev.uniqueEditors} unique editors · ${(wikiRev.anonymousIpRatio * 100).toFixed(1)}% anonymous/IP edits · ${wikiRev.revertOrUndoEdits} revert/undo edits · ${wikiRev.editsPerWeek} edits/week
+- **Large Content Removals (Δ <= -1,500 bytes · ${wikiRev.largeDeletions.length}${typeof wikiRev.benignCleanupDeletionsCount === 'number' && wikiRev.benignCleanupDeletionsCount > 0 ? ` · ${wikiRev.benignCleanupDeletionsCount} classified BENIGN_SOURCING_CLEANUP` : ''}):**
+${
+  wikiRev.largeDeletions.length > 0
+    ? wikiRev.largeDeletions
+        .slice(0, 8)
+        .map((d) => `  - \`${d.timestamp.slice(0, 10)}\` · \`${d.deltaBytes}B\` by \`${d.user}\`${d.isAnonymousIp ? ' (ANON/IP)' : ''} [\`${d.intentClassification || 'SUSPICIOUS_DELETION'}\`]: ${d.comment || '(no edit summary)'}`)
+        .join('\n')
+    : '  - Zero large-byte deletions observed across sampled revisions.'
+}`
+    : '- No Wikipedia revision history matched or sampled for this entity.'
+}
+
+---
+
+## 5. PROPERTY GRAPH PAGERANK & RISK CONTAGION DIFFUSION (TOP 10 CHOKEPOINTS)
+${
+  pageRankNodes.length > 0
+    ? `| Rank | Entity / Node | Type | PageRank | Contagion Risk | Degree |\n|-----:|---------------|------|---------:|---------------:|-------:|\n${pageRankNodes
+        .slice(0, 10)
+        .map(
+          (n, idx) =>
+            `| ${idx + 1} | **${n.label.replace(/\|/g, '-')}** | \`${n.nodeType}\` | \`${n.pageRank.toFixed(4)}\` | \`${n.contagionRisk.toFixed(3)}\` | ${n.degree} |`
+        )
+        .join('\n')}`
+    : '- Insufficient graph edges for PageRank centrality scoring.'
+}
+
+---
+
+## 6. SHANNON ENTROPY & HHI CONCENTRATION AUDIT
+| Dimension | Unique | Observations | Shannon Entropy (bits) | Normalized [0–1] | HHI | Concentration Verdict |
+|-----------|-------:|-------------:|-----------------------:|-----------------:|----:|-----------------------|
+${entropyReports
+  .map(
+    (e) =>
+      `| **${e.dimension}** | ${e.uniqueCategories} | ${e.totalSamples} | \`${e.shannonEntropyBits}\` | \`${e.normalizedEntropy}\` | \`${e.herfindahlIndex}\` | \`${e.concentrationVerdict}\` |`
+  )
+  .join('\n')}
+
+> **Machine-Readable Analytics Export:** Merkle-proven in \`evidence/bayesian_and_graph_analytics.json\`.
+`,
+  };
+
+  // v26.0 Pillar 2: Phase-5 Adversarial Red-Team & ACH (Analysis of Competing Hypotheses) Artifacts
+  const file38AdversarialAchMd = {
+    filename: '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md',
+    description: 'v26.0 Phase-5 Adversarial Red-Team Steelman Pass & Analysis of Competing Hypotheses (ACH) Matrix with Negative Bayesian Likelihood Ratios',
+    type: 'markdown' as const,
+    content: `# 38. PHASE-5 ADVERSARIAL RED-TEAM & ANALYSIS OF COMPETING HYPOTHESES (ACH)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Pre-Red-Team Bayesian Posterior:** **${(achReport.preRedTeamPosterior * 100).toFixed(1)}%**  
+**Post-Red-Team Bayesian Posterior:** **${(achReport.postRedTeamPosterior * 100).toFixed(1)}%** (Combined Red-Team Negative LR: **\`${achReport.combinedNegativeLr}x\`**, Log-Odds Δ: \`${achReport.totalRedTeamLogOddsDelta}\`)  
+**Findings Stress-Tested (Top 10 Highest Severity):** **${achReport.totalFindingsEvaluated}** · **Survived:** **${achReport.survivedCount}** · **Weakened:** **${achReport.weakenedCount}** · **Refuted (Non-Diagnostic):** **${achReport.refutedCount}**  
+**Bulletproof Threshold (>85% Post-ACH Survival):** **\`${achReport.bulletproofThresholdMet ? 'SURVIVED_BULLETPROOF' : 'CALIBRATED_STANDARD'}\`**
+
+> **Executive ACH Verdict:** ${achReport.executiveVerdict}
+
+---
+
+## 1. COMPETING HYPOTHESES MATRIX (H1 ADVERSE vs. H0 BENIGN STEELMAN)
+${
+  achReport.findings.length > 0
+    ? `| ID | Severity | Signal | H1 (Adverse Hypothesis) | H0 (Benign Steelman) | Avg Diag. | Neg LR | Verdict |\n|----|----------|--------|-------------------------|----------------------|----------:|-------:|---------|\n${achReport.findings
+        .map(
+          (f) =>
+            `| \`${f.findingId}\` | **${f.severity}** | \`${f.sourceAgentOrSignal.replace(/\|/g, '-')}\` | ${f.h1AdverseHypothesis.slice(0, 110).replace(/\|/g, '-')} | ${f.h0BenignSteelman.slice(0, 110).replace(/\|/g, '-')} | \`${f.diagnosticityAvg}\` | \`${f.negativeLikelihoodRatio}x\` | **\`${f.verdict}\`** |`
+        )
+        .join('\n')}`
+    : '- Zero elevated adverse findings required Phase-5 ACH falsification on this run.'
+}
+
+---
+
+## 2. DIAGNOSTICITY FILTER & STEELMAN RATIONALE
+${
+  achReport.findings.length > 0
+    ? achReport.findings
+        .map(
+          (f) =>
+            `### ${f.findingId} — ${f.verdict} (\`${f.sourceAgentOrSignal}\` · Neg LR \`${f.negativeLikelihoodRatio}x\`)\n- **Steelman Rationale:** ${f.steelmanRationale}\n- **Non-Diagnostic Evidence Rows Filtered:** ${f.nonDiagnosticFilteredCount}/${f.evidenceMatrix.length}\n${f.evidenceMatrix
+              .map(
+                (e) =>
+                  `  - \`${e.evidenceId}\` [H1:${e.supportsH1} | H0:${e.supportsH0} | Diag:${e.diagnosticityScore}${e.isNonDiagnosticNoise ? ' · FILTERED_NOISE' : ''}]: ${e.description}`
+              )
+              .join('\n')}`
+        )
+        .join('\n\n')
+    : '- No adversarial steelman overrides needed.'
+}
+
+> **Machine-Readable ACH Matrix:** Merkle-proven in \`evidence/ach_red_team_matrix.json\`.
+`,
+  };
+
+  const fileAchMatrixJson = {
+    filename: 'evidence/ach_red_team_matrix.json',
+    description: 'v26.0 Phase-5 Adversarial Red-Team ACH Matrix & Negative Likelihood Ratio Bayesian Calibration JSON',
+    type: 'json' as const,
+    content: JSON.stringify(achReport, null, 2),
+  };
+
+  // v26.0 Pillar 1D: OCCRP FollowTheMoney (.ftm.json) Interoperable Graph Export
+  const ftmExport = buildFollowTheMoneyNdjson({
+    investigationId,
+    entityName: matchedEntity.name,
+    legalName: matchedEntity.legalName,
+    country: liveIntel?.country || matchedEntity.country,
+    liveIntel: liveIntelWithPivots,
+    graphNodes,
+    graphEdges,
+  });
+  const fileFollowTheMoneyNdjson = {
+    filename: 'evidence/followthemoney_graph.ftm.json',
+    description: `v26.0 OCCRP FollowTheMoney NDJSON Graph (${ftmExport.entities.length} entities ready for OCCRP Aleph, Maltego & Gephi)`,
+    type: 'json' as const,
+    content: ftmExport.ndjson,
+  };
+
+  // v26.0 Pillar 5: Fail-Closed TLSNotary Proxy-Mode zkTLS Provenance Bundle
+  const zktlsBundle = liveIntel?.zktlsProvenance || {
+    protocol: 'TLSNotary_Proxy_Mode_v26' as const,
+    zktlsProvenanceStatus: 'LOCAL_HASH_ONLY (TLSN_SIDECAR_OFFLINE)' as const,
+    sidecarConfigured: false,
+    sidecarReachable: false,
+    verifierUrl: null,
+    verifiedProofsCount: 0,
+    attemptedFetchesCount: 0,
+    receipts: [],
+    checkedAtIso: timestampIso,
+  };
+  const fileZkTlsManifest = {
+    filename: 'evidence/zktls_proofs/zktls_provenance_manifest.json',
+    description: `v26.0 TLSNotary Proxy-Mode zkTLS Web Provenance Manifest (ZKTLS_PROVENANCE_STATUS=${zktlsBundle.zktlsProvenanceStatus})`,
+    type: 'json' as const,
+    content: JSON.stringify(
+      {
+        ZKTLS_PROVENANCE_STATUS: zktlsBundle.zktlsProvenanceStatus,
+        ...zktlsBundle,
+      },
+      null,
+      2
+    ),
+  };
+  const zktlsProofFiles = zktlsBundle.receipts
+    .filter((r) => r.status === 'VERIFIED_TLSN_PROOF' && r.proofJson)
+    .map((r) => ({
+      filename: `evidence/zktls_proofs/${r.proofFilename}`,
+      description: `TLSNotary Proxy-Mode Cryptographic Web Proof (${r.targetRole} -> ${r.serverName})`,
+      type: 'json' as const,
+      content: JSON.stringify(r.proofJson, null, 2),
+    }));
+
+  // v26.0 Pillar 3: Longitudinal T1 vs T2 Delta Alert Report (emitted automatically when prior snapshot exists in Vault)
+  const currentLongitudinalSnapshot = extractLongitudinalSnapshot({
+    investigationId,
+    targetEntity: matchedEntity.name,
+    capturedAtIso: timestampIso,
+    fri,
+    mai,
+    bayesian: bayesianPosterior,
+    liveIntel: liveIntelWithPivots,
+  });
+  const longitudinalDiff = liveIntel?.previousVaultSnapshot
+    ? computeLongitudinalDossierDiff(liveIntel.previousVaultSnapshot, currentLongitudinalSnapshot)
+    : null;
+  const longitudinalDeltaFiles = longitudinalDiff
+    ? [
+        {
+          filename: 'DELTA_ALERT_REPORT.md',
+          description: `v26.0 Longitudinal T1 vs T2 Surveillance Delta Alert Report (${longitudinalDiff.highestSeverity})`,
+          type: 'markdown' as const,
+          content: buildDeltaAlertMarkdown(longitudinalDiff),
+        },
+        {
+          filename: 'evidence/delta_diff.json',
+          description: 'v26.0 Machine-Readable Sealed Longitudinal T1 vs T2 Delta Diff JSON',
+          type: 'json' as const,
+          content: JSON.stringify(longitudinalDiff, null, 2),
+        },
+      ]
+    : [];
+
+  const fileBayesianGraphJson = {
+    filename: 'evidence/bayesian_and_graph_analytics.json',
+    description: 'v26.0 Structured JSON: Post-Red-Team Bayesian Fraud Risk Posterior, ACH Calibration, Metadata Pivots, PageRank Contagion, Shannon Entropy, Multi-Hop Causal Chains, Live TLS X.509 & Wikipedia Forensics',
+    type: 'json' as const,
+    content: JSON.stringify(
+      {
+        target_entity: matchedEntity.name,
+        legal_name: matchedEntity.legalName,
+        investigation_id: investigationId,
+        generated_at: timestampIso,
+        bayesian_fraud_risk_posterior: bayesianPosterior,
+        pre_red_team_posterior: achReport.preRedTeamPosterior,
+        post_red_team_posterior: achReport.postRedTeamPosterior,
+        phase5_ach_summary: {
+          evaluated: achReport.totalFindingsEvaluated,
+          survived: achReport.survivedCount,
+          weakened: achReport.weakenedCount,
+          refuted: achReport.refutedCount,
+          combined_negative_lr: achReport.combinedNegativeLr,
+          bulletproof_threshold_met: achReport.bulletproofThresholdMet,
+        },
+        metadata_author_pivots: metadataPivots,
+        zktls_provenance_status: zktlsBundle.zktlsProvenanceStatus,
+        followthemoney_summary: {
+          total_entities: ftmExport.entities.length,
+          count_by_schema: ftmExport.countBySchema,
+        },
+        pagerank_contagion_top_nodes: pageRankNodes.slice(0, 20),
+        shannon_entropy_reports: entropyReports,
+        temporal_burst_summary: burstSummary || null,
+        multi_hop_causal_chains: causalChains,
+        live_tls_x509_certificate: tlsCert,
+        wikipedia_revision_forensics: wikiRev,
+        longitudinal_snapshot: currentLongitudinalSnapshot,
+      },
+      null,
+      2
+    ),
+  };
+
+  const escHtml = (val: unknown): string =>
+    String(val ?? '')
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+
+  const fileExecutiveBriefHtml = {
+    filename: 'EXECUTIVE_BRIEF_PRINTABLE.html',
+    description: 'v25.0 Court-Ready Self-Contained Printable Executive Forensic Brief (Print-to-PDF with @media print Layout)',
+    type: 'html' as const,
+    content: `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Executive Forensic Brief — ${escHtml(matchedEntity.legalName)} (${escHtml(investigationId)})</title>
+  <style>
+    :root { --ink:#0f172a; --muted:#475569; --border:#cbd5e1; --bg:#ffffff; --panel:#f8fafc; --accent:#0369a1; --danger:#b91c1c; --warn:#b45309; --ok:#047857; }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding: 32px; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; color: var(--ink); background: var(--bg); line-height: 1.5; font-size: 13px; }
+    .container { max-width: 960px; margin: 0 auto; }
+    header { border-bottom: 2px solid var(--ink); padding-bottom: 16px; margin-bottom: 20px; display: flex; justify-content: space-between; align-items: flex-end; gap: 16px; }
+    h1 { margin: 0 0 4px 0; font-size: 22px; letter-spacing: -0.02em; }
+    h2 { font-size: 14px; text-transform: uppercase; letter-spacing: 0.06em; border-bottom: 1px solid var(--border); padding-bottom: 4px; margin: 24px 0 10px 0; color: var(--accent); }
+    .meta { font-size: 11px; color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .kpi-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin: 16px 0 22px 0; }
+    .kpi { border: 1px solid var(--border); background: var(--panel); padding: 10px 12px; border-radius: 6px; }
+    .kpi-label { font-size: 10px; text-transform: uppercase; color: var(--muted); letter-spacing: 0.05em; }
+    .kpi-value { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; margin-top: 2px; }
+    .kpi-sub { font-size: 10px; color: var(--muted); margin-top: 2px; }
+    table { width: 100%; border-collapse: collapse; margin: 8px 0 14px 0; font-size: 12px; }
+    th, td { border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top; }
+    th { background: var(--panel); font-size: 11px; text-transform: uppercase; color: var(--muted); }
+    .num { text-align: right; font-variant-numeric: tabular-nums; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    .badge { display: inline-block; padding: 1px 6px; border-radius: 3px; font-size: 10px; font-weight: 600; border: 1px solid var(--border); }
+    .tier-CRITICAL { color: var(--danger); border-color: #fca5a5; background: #fef2f2; }
+    .tier-ELEVATED { color: var(--warn); border-color: #fcd34d; background: #fffbeb; }
+    .tier-MODERATE, .tier-LOW { color: var(--ok); border-color: #6ee7b7; background: #ecfdf5; }
+    footer { margin-top: 28px; padding-top: 12px; border-top: 1px solid var(--border); font-size: 11px; color: var(--muted); }
+    @media print {
+      body { padding: 0; font-size: 11px; }
+      .kpi-grid { page-break-inside: avoid; }
+      table { page-break-inside: auto; }
+      tr { page-break-inside: avoid; }
+      h2 { page-break-after: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <div class="meta">SOVEREIGN TECH HYPER-INVESTIGATIONS GRID v26.0 · APEX SINGULARITY · EXECUTIVE FORENSIC BRIEF</div>
+        <h1>${escHtml(matchedEntity.legalName)}</h1>
+        <div class="meta">Investigation ID: ${escHtml(investigationId)} · Synthesized: ${escHtml(timestampIso)} · Mode: ${liveIntel ? '100% LIVE ZERO-KEY OSINT' : 'CATALOG BASELINE'} · zkTLS: ${escHtml(zktlsBundle.zktlsProvenanceStatus)}</div>
+      </div>
+      <div style="text-align:right;display:flex;flex-direction:column;gap:4px;align-items:flex-end;">
+        <span class="badge tier-${escHtml(bayesianPosterior.riskTier)}">POST-ACH POSTERIOR: ${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}% (${escHtml(bayesianPosterior.riskTier)})</span>
+        <span class="badge tier-${achReport.survivedCount > 0 ? 'ELEVATED' : 'LOW'}">SURVIVED ADVERSARIAL RED-TEAM: ${achReport.survivedCount} / ${achReport.totalFindingsEvaluated} ACH</span>
+      </div>
+    </header>
+
+    <section class="kpi-grid">
+      <div class="kpi">
+        <div class="kpi-label">Post-ACH Bayesian Posterior</div>
+        <div class="kpi-value">${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}%</div>
+        <div class="kpi-sub">Pre-ACH ${(achReport.preRedTeamPosterior * 100).toFixed(1)}% · Neg LR ${achReport.combinedNegativeLr}x</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">FRI / MAI Risk Indices</div>
+        <div class="kpi-value">${fri.toFixed(2)} / ${mai.toFixed(2)}</div>
+        <div class="kpi-sub">95% CI ${(bayesianPosterior.confidenceInterval95[0] * 100).toFixed(0)}%–${(bayesianPosterior.confidenceInterval95[1] * 100).toFixed(0)}%</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">Swarm Active Coverage</div>
+        <div class="kpi-value">${activeSpecialistsCount} / ${totalAgentsProcessed}</div>
+        <div class="kpi-sub">Dup Ratio ${(intraSquadDuplicationRatio * 100).toFixed(1)}% · ${sourcesCount} Sources</div>
+      </div>
+      <div class="kpi">
+        <div class="kpi-label">ACH Survived / FtM Entities</div>
+        <div class="kpi-value">${achReport.survivedCount} / ${ftmExport.entities.length}</div>
+        <div class="kpi-sub">${metadataPivots.highSignalPivotsCount} Metadata Pivots · ${causalChains.length} Chains</div>
+      </div>
+    </section>
+
+    <h2>1. Executive Overview &amp; Entity Standing</h2>
+    <p>${escHtml(liveIntel?.executiveSummary || `${matchedEntity.legalName} — Primary chokepoint: ${matchedEntity.primaryChokepoint}.`)}</p>
+    <table>
+      <tbody>
+        <tr><th>Jurisdiction / HQ</th><td>${escHtml(liveIntel?.headquarters || matchedEntity.hqCity || matchedEntity.country || 'Global')} (${escHtml(liveIntel?.country || matchedEntity.country || 'Global')})</td><th>GLEIF LEI / Ticker</th><td class="mono">${escHtml(liveIntel?.leiCode || 'N/A')} · ${escHtml(liveIntel?.stockTickerOrRegistryId || 'N/A')}</td></tr>
+        <tr><th>Industry / Scale</th><td>${escHtml(liveIntel?.industry || matchedEntity.category)} (${escHtml(liveIntel?.businessScale || 'Enterprise')})</td><th>Official Website</th><td class="mono">${escHtml(liveIntel?.officialWebsite || 'N/A')}</td></tr>
+        <tr><th>TLS X.509 Certificate</th><td>${tlsCert ? `${escHtml(tlsCert.protocol)} · ${escHtml(tlsCert.issuerCn || tlsCert.issuerOrg)} (${tlsCert.daysUntilExpiry}d left, ${tlsCert.sanDomains.length} SANs)` : 'Not probed'}</td><th>zkTLS Web Provenance</th><td class="mono">${escHtml(zktlsBundle.zktlsProvenanceStatus)} (${zktlsBundle.verifiedProofsCount}/${zktlsBundle.attemptedFetchesCount})</td></tr>
+      </tbody>
+    </table>
+
+    <h2>2. Survived Adversarial Red-Team Findings (Phase-5 ACH Steelman Audit)</h2>
+    <p>${escHtml(achReport.executiveVerdict)}</p>
+    ${
+      achReport.findings.length > 0
+        ? `<table><thead><tr><th>ID</th><th>Verdict</th><th>Signal</th><th>H1 Adverse Finding</th><th class="num">Diag.</th><th class="num">Neg LR</th></tr></thead><tbody>${achReport.findings
+            .slice(0, 8)
+            .map(
+              (f) =>
+                `<tr><td class="mono">${escHtml(f.findingId)}</td><td><span class="badge tier-${f.verdict === 'SURVIVED_RED_TEAM' ? 'CRITICAL' : f.verdict === 'WEAKENED_BY_STEELMAN' ? 'ELEVATED' : 'LOW'}">${escHtml(f.verdict)}</span></td><td class="mono">${escHtml(f.sourceAgentOrSignal)}</td><td>${escHtml(f.h1AdverseHypothesis.slice(0, 120))}</td><td class="num">${f.diagnosticityAvg}</td><td class="num">${f.negativeLikelihoodRatio}x</td></tr>`
+            )
+            .join('')}</tbody></table>`
+        : '<p>Zero elevated adverse findings required Phase-5 ACH falsification.</p>'
+    }
+
+    <h2>3. Sequential Bayesian Likelihood Evidence Breakdown</h2>
+    ${
+      bayesianPosterior.evidenceContributions.length > 0
+        ? `<table><thead><tr><th>Signal</th><th>Category</th><th class="num">LR</th><th class="num">Log-Odds Δ</th><th>Observed Telemetry</th></tr></thead><tbody>${bayesianPosterior.evidenceContributions
+            .map(
+              (c) =>
+                `<tr><td><strong>${escHtml(c.label)}</strong></td><td class="mono">${escHtml(c.category)}</td><td class="num">${c.likelihoodRatio}x</td><td class="num">${c.logOddsDelta >= 0 ? '+' : ''}${c.logOddsDelta}</td><td>${escHtml(c.observedValue)}</td></tr>`
+            )
+            .join('')}</tbody></table>`
+        : '<p>No adverse Bayesian likelihood multipliers exceeded baseline prior thresholds.</p>'
+    }
+
+    <h2>4. Multi-Hop Cross-Stream Causal Chains &amp; Top Graph PageRank Chokepoints</h2>
+    <table>
+      <thead><tr><th>#</th><th>Entity / Node</th><th>Type</th><th class="num">PageRank</th><th class="num">Contagion Risk</th><th class="num">Degree</th></tr></thead>
+      <tbody>
+        ${pageRankNodes
+          .slice(0, 8)
+          .map(
+            (n, i) =>
+              `<tr><td class="num">${i + 1}</td><td><strong>${escHtml(n.label)}</strong></td><td class="mono">${escHtml(n.nodeType)}</td><td class="num">${n.pageRank.toFixed(4)}</td><td class="num">${n.contagionRisk.toFixed(3)}</td><td class="num">${n.degree}</td></tr>`
+          )
+          .join('')}
+      </tbody>
+    </table>
+
+    <footer>
+      <strong>Cryptographic Chain of Custody (v26.0):</strong> This HTML brief, \`38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md\`, \`evidence/followthemoney_graph.ftm.json\`, and \`evidence/zktls_proofs/\` are sealed inside the Binary Merkle Tree (\`SHA256SUMS\`, \`LEDGER_ENTRY.json\`, RFC 8032 Ed25519 \`PUBLIC_KEY.pem\`, and RFC 3161 TSA receipt). Verify offline via <span class="mono">node verify_dossier.mjs</span> or diff longitudinal runs via <span class="mono">node diff_dossiers.mjs</span>.
+    </footer>
+  </div>
+</body>
+</html>
+`,
+  };
+
   const merkleIncludedFiles = [
     file00,
     file01,
@@ -3133,6 +3794,15 @@ ${
     file34StealthDiffAndDeletion,
     file35ArtifactMinerAndInfraDna,
     file36TemporalCausality,
+    file37BayesianAndTls,
+    file38AdversarialAchMd,
+    fileAchMatrixJson,
+    fileFollowTheMoneyNdjson,
+    fileZkTlsManifest,
+    ...zktlsProofFiles,
+    ...longitudinalDeltaFiles,
+    fileBayesianGraphJson,
+    fileExecutiveBriefHtml,
     fileBftCorroboration,
     fileUnverifiedWatchlist,
     fileRejectedHypotheses,
@@ -3191,9 +3861,16 @@ ${
 
   const fileVerifyDossierMjs = {
     filename: 'verify_dossier.mjs',
-    description: 'Zero-Dependency Offline Node CLI Verifier (SHA-256, Merkle Root, Inclusion Proofs, Ed25519 & Zero Orphaned Claims)',
+    description: 'Zero-Dependency Offline Node CLI Verifier (SHA-256, Merkle Root, Inclusion Proofs, Ed25519, zkTLS, FtM, ACH & Zero Orphaned Claims)',
     type: 'text' as const,
     content: buildVerifyDossierMjs()
+  };
+
+  const fileDiffDossiersMjs = {
+    filename: 'diff_dossiers.mjs',
+    description: 'v26.0 Zero-Dependency Offline Longitudinal T1 vs T2 Dossier Diff CLI (Silent Deletions & Risk Spikes)',
+    type: 'text' as const,
+    content: buildStandaloneDiffDossiersMjs()
   };
 
   const merkleExcludedFiles = [
@@ -3202,6 +3879,7 @@ ${
     'MERKLE_ROOT.tsr',
     'MERKLE_ROOT.tsr.status.json',
     'verify_dossier.mjs',
+    'diff_dossiers.mjs',
     'artifact-index.json',
     'SHA256SUMS',
     'workbench_data.js',
@@ -3212,14 +3890,26 @@ ${
 
   const fileLedgerEntry = {
     filename: 'LEDGER_ENTRY.json',
-    description: 'Chain of Custody Ledger Entry: Binary Merkle Root, Inclusion Proofs, IPFS CIDv1, BTC/RFC3161 Anchor & Ed25519 Signature',
+    description: 'Chain of Custody Ledger Entry: Binary Merkle Root, Inclusion Proofs, IPFS CIDv1, BTC/RFC3161 Anchor, zkTLS Status, Phase-5 ACH & Ed25519 Signature',
     type: 'json' as const,
     content: JSON.stringify({
       investigation_id: investigationId,
       target_entity: matchedEntity.name,
       timestamp: timestampIso,
-      generator_system: 'Sovereign Tech Hyper-Investigations Grid v24.0 (160-Agent · Apex Precision)',
-      signing_scheme: 'fips_180_4_sha256_merkle_tree_ed25519_ipfs_cidv1',
+      generator_system: 'Sovereign Tech Hyper-Investigations Grid v26.0 (160-Agent · Apex Singularity: Sovereign Provenance & Adversarial Truth)',
+      signing_scheme: 'fips_180_4_sha256_merkle_tree_ed25519_ipfs_cidv1_zktls',
+      zktls_provenance_status: zktlsBundle.zktlsProvenanceStatus,
+      phase5_ach_red_team: {
+        evaluated: achReport.totalFindingsEvaluated,
+        survived: achReport.survivedCount,
+        weakened: achReport.weakenedCount,
+        refuted: achReport.refutedCount,
+        pre_red_team_posterior: achReport.preRedTeamPosterior,
+        post_red_team_posterior: achReport.postRedTeamPosterior,
+        combined_negative_lr: achReport.combinedNegativeLr,
+        bulletproof_threshold_met: achReport.bulletproofThresholdMet,
+      },
+      followthemoney_entities_count: ftmExport.entities.length,
       sparse_squad_compression: {
         expanded_agents: expandedSquadFilesCount,
         compressed_zero_hit_agents: compressedZeroHitFilesCount,
@@ -3259,6 +3949,7 @@ ${
     fileLedgerEntry,
     filePublicKeyPem,
     fileVerifyDossierMjs,
+    fileDiffDossiersMjs,
   ];
 
   const filesMapForWorkbench: Record<string, string> = {};
@@ -3370,6 +4061,11 @@ ${
     content_type: file.type
   }));
 
+  const resolvedCanonicalLei =
+    liveIntel?.canonicalLei ||
+    liveIntel?.sovereignRegistries?.gleifPrimary?.lei ||
+    (liveIntel?.leiCode && /^[A-Z0-9]{20}$/.test(liveIntel.leiCode.trim()) ? liveIntel.leiCode.trim() : null);
+
   const fileArtifactIndex = {
     filename: 'artifact-index.json',
     description: 'Cryptographic Artifact Index: Authentic FIPS 180-4 SHA-256 Hashes, Ed25519 Signature & Merkle Root Reference',
@@ -3377,6 +4073,7 @@ ${
     content: JSON.stringify(
       {
         hash_algorithm: 'FIPS_180_4_SHA256',
+        canonical_gleif_lei: resolvedCanonicalLei,
         merkle_root_sha256: merkleTree.root,
         merkle_leaves_count: merkleTree.leafCount,
         ipfs_cidv1: ipfsCidV1,
@@ -3423,5 +4120,6 @@ ${
     isLiveGrounded: Boolean(liveIntel),
     rfc3161Status: initialTsaStatus,
     signalDensityMetrics,
+    squads: syncedSquads,
   };
 }

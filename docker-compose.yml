@@ -1,0 +1,27 @@
+services:
+  sovereign-grid:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: sovereign-tech-hyper-investigations-grid:26.1.0
+    container_name: sovereign-grid
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - APP_URL=${APP_URL:-http://localhost:3000}
+      - TLSN_VERIFIER_URL=${TLSN_VERIFIER_URL:-}
+    volumes:
+      - sovereign_wal_data:/app/.sovereign_data
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:3000/api/health').then(r => process.exit(r.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+
+volumes:
+  sovereign_wal_data:
+    driver: local

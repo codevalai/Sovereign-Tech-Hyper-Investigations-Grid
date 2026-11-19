@@ -312,6 +312,15 @@ export interface ShadowFinanceTelemetry {
     filedAt: string;
     form: string;
     url: string;
+    totalOfferingAmountUsd?: number | null;
+    totalAmountSoldUsd?: number | null;
+    federalExemptions?: string[];
+    industryGroup?: string;
+    relatedPersons?: Array<{
+      name: string;
+      relationships: string[];
+    }>;
+    isExternalSpvVehicle?: boolean;
   }[];
   xbrlFacts: {
     tag: string;
@@ -349,6 +358,7 @@ export interface ShadowFinanceTelemetry {
     publicationDate: string;
     agencies: string[];
     url: string;
+    pdfUrl?: string;
   }[];
   patentSignals: {
     title: string;
@@ -965,10 +975,57 @@ export interface LivingDeltaPatchRecord {
   ed25519PublicKeyPem: string;
 }
 
+export interface TlsCertificateAudit {
+  host: string;
+  port: number;
+  protocol: string;
+  cipherName: string;
+  subjectCn: string;
+  subjectOrg: string;
+  subjectCountry: string;
+  issuerCn: string;
+  issuerOrg: string;
+  validFrom: string;
+  validTo: string;
+  daysUntilExpiry: number;
+  isExpired: boolean;
+  isSelfSigned: boolean;
+  serialNumber: string;
+  fingerprintSha256: string;
+  sanDomains: string[];
+  checkedAtIso: string;
+}
+
+export interface WikipediaRevisionForensics {
+  articleTitle: string;
+  articleUrl: string;
+  revisionsAnalyzed: number;
+  uniqueEditors: number;
+  anonymousIpEdits: number;
+  anonymousIpRatio: number;
+  revertOrUndoEdits: number;
+  editsPerWeek: number;
+  largeDeletions: Array<{
+    revId: number;
+    timestamp: string;
+    user: string;
+    isAnonymousIp: boolean;
+    deltaBytes: number;
+    comment: string;
+    diffUrl: string;
+    intentClassification?: 'BENIGN_SOURCING_CLEANUP' | 'SUSPICIOUS_DELETION';
+  }>;
+  benignCleanupDeletionsCount?: number;
+  verdict: 'WHITEWASH_RISK' | 'ACTIVE_EDIT_WAR' | 'ELEVATED_CHURN' | 'STABLE';
+  checkedAtIso: string;
+}
+
 export interface DeepAttackSurfaceTelemetry {
   shodanHosts: ShodanInternetDbHost[];
   httpSecurityAudit: HttpSecurityAndCspAudit | null;
   rdapAndDnssec: RdapAndDnssecRecord | null;
+  tlsCertificate?: TlsCertificateAudit | null;
+  wikipediaRevisionForensics?: WikipediaRevisionForensics | null;
   hstsPreload?: HstsPreloadAudit | null;
   mozillaObservatory?: MozillaObservatoryAudit | null;
   epssScores?: EpssCveScore[];
@@ -1062,6 +1119,7 @@ export interface DorkArtifactRecord {
   quarantined: boolean;
   quarantineReason?: string;
   promptTrapsStripped: number;
+  pdfUrl?: string;
 }
 
 export interface StealthEditDiffRecord {
@@ -1105,6 +1163,8 @@ export interface MinedArtifactMetadataRecord {
   embeddedUrls: string[];
   extractedEntities: string[];
   extractedDomains: string[];
+  internalFilePaths?: string[];
+  internalUsernames?: string[];
   viaWaybackId?: boolean;
 }
 
@@ -1159,7 +1219,7 @@ export interface ExtremeDorkingAndDnaBundle {
   observedSourceClasses: DorkSourceClass[];
   discoveredSubdomains: string[];
   discoveredAgencies: string[];
-  engineStats: Record<string, { status: 'ok' | 'error'; count: number; latencyMs: number; error?: string }>;
+  engineStats: Record<string, { status: 'ok' | 'rate_limited' | 'error'; count: number; latencyMs: number; error?: string }>;
   artifacts: DorkArtifactRecord[];
   stealthEditDiffs: StealthEditDiffRecord[];
   minedDocuments: MinedArtifactMetadataRecord[];
@@ -1185,7 +1245,9 @@ export type TemporalEventStream =
   | 'SEC_FILING'
   | 'USASPENDING_AWARD'
   | 'EPA_ECHO'
-  | 'CLINICAL_TRIAL_MUTATION';
+  | 'CLINICAL_TRIAL_MUTATION'
+  | 'WIKIPEDIA_LARGE_DELETION'
+  | 'TLS_CERT_MUTATION';
 
 export interface TemporalCausalEvent {
   id: string;
@@ -1207,6 +1269,7 @@ export interface TemporalCausalCluster {
     | 'FORM_D_SYNC_WITH_FEDERAL_AWARD'
     | 'SEC_FILING_SYNC_WITH_REGULATORY_ACTION'
     | 'CLINICAL_MUTATION_CORRELATED_WITH_FILING'
+    | 'WIKIPEDIA_WHITEWASH_AROUND_DISCLOSURE'
     | 'CROSS_STREAM_TEMPORAL_SYNCHRONY';
   severity: 'MEDIUM' | 'HIGH' | 'CRITICAL';
   causalityScore: number;
@@ -1216,6 +1279,308 @@ export interface TemporalCausalCluster {
   streamsInvolved: [TemporalEventStream, TemporalEventStream];
   narrative: string;
   events: [TemporalCausalEvent, TemporalCausalEvent];
+}
+
+export interface TemporalCausalChain {
+  chainId: string;
+  hopCount: number;
+  totalSpanDays: number;
+  severity: 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  chainScore: number;
+  streamSequence: TemporalEventStream[];
+  startDate: string;
+  endDate: string;
+  narrative: string;
+  events: TemporalCausalEvent[];
+}
+
+export interface TemporalBurstSummary {
+  monthsObserved: number;
+  meanMonthlyEvents: number;
+  stdDevMonthlyEvents: number;
+  peakMonth: string | null;
+  peakMonthCount: number;
+  peakBurstZScore: number;
+  burstDetected: boolean;
+}
+
+export interface BayesianEvidenceContribution {
+  signalId: string;
+  label: string;
+  category: 'ACCOUNTING' | 'CYBER' | 'SANCTIONS' | 'ADVERSARIAL' | 'REGULATORY' | 'CAUSAL' | 'METADATA_PIVOT' | 'RED_TEAM_ACH';
+  observedValue: string;
+  likelihoodRatio: number;
+  logOddsDelta: number;
+  direction: 'RISK_INCREASING' | 'RISK_DECREASING' | 'NEUTRAL';
+}
+
+export interface BayesianRiskPosterior {
+  priorProbability: number;
+  posteriorProbability: number;
+  preRedTeamPosterior?: number;
+  postRedTeamPosterior?: number;
+  redTeamAdjustmentLogOdds?: number;
+  priorOdds: number;
+  posteriorOdds: number;
+  combinedBayesFactor: number;
+  confidenceInterval95: [number, number];
+  riskTier: 'LOW' | 'MODERATE' | 'ELEVATED' | 'CRITICAL';
+  evidenceContributions: BayesianEvidenceContribution[];
+  verdict: string;
+}
+
+export interface SovereignGleifRecord {
+  lei: string;
+  legalName: string;
+  jurisdiction: string;
+  registrationStatus: string;
+  entityStatus: string;
+  localRegistryId: string;
+  managingLou: string;
+  directParent?: { lei: string; legalName: string } | null;
+  ultimateParent?: { lei: string; legalName: string } | null;
+  directChildren: Array<{ lei: string; legalName: string; country: string }>;
+  gleifUrl: string;
+}
+
+export interface SovereignUsaSpendingAward {
+  awardId: string;
+  recipientName: string;
+  obligatedAmountUsd: number;
+  awardingAgency: string;
+  awardingSubAgency: string;
+  startDate: string;
+  endDate: string;
+  performancePeriod: string;
+  description: string;
+  kind: 'Contract' | 'Grant / Subsidy';
+}
+
+export interface SovereignRegistriesBundle {
+  gleifPrimary: SovereignGleifRecord | null;
+  usaSpendingContractsCount: number;
+  usaSpendingTotalObligatedUsd: number;
+  usaSpendingAwards: SovereignUsaSpendingAward[];
+  secFormDCount: number;
+  secFormDTotalOfferingUsd: number;
+  secFormDRelatedPersons: Array<{
+    name: string;
+    relationships: string[];
+    entityName: string;
+    filedAt: string;
+    url: string;
+  }>;
+  externalSpvInvestors?: Array<{
+    name: string;
+    relationships: string[];
+    spvIssuerName: string;
+    filedAt: string;
+    url: string;
+    role: 'External_SPV_Investor';
+  }>;
+  queriedAtIso: string;
+}
+
+export interface AdversarialAchEvidenceItem {
+  evidenceId: string;
+  description: string;
+  supportsH1: 'STRONG' | 'MODERATE' | 'WEAK' | 'INCONSISTENT';
+  supportsH0: 'STRONG' | 'MODERATE' | 'WEAK' | 'INCONSISTENT';
+  diagnosticityScore: number;
+  isNonDiagnosticNoise: boolean;
+}
+
+export interface AdversarialAchFinding {
+  findingId: string;
+  rank: number;
+  sourceAgentOrSignal: string;
+  category: string;
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW';
+  h1AdverseHypothesis: string;
+  h0BenignSteelman: string;
+  diagnosticityAvg: number;
+  nonDiagnosticFilteredCount: number;
+  negativeLikelihoodRatio: number;
+  logOddsPenalty: number;
+  verdict: 'SURVIVED_RED_TEAM' | 'WEAKENED_BY_STEELMAN' | 'REFUTED_NON_DIAGNOSTIC';
+  steelmanRationale: string;
+  evidenceMatrix: AdversarialAchEvidenceItem[];
+}
+
+export interface AdversarialAchReport {
+  targetEntity: string;
+  generatedAtIso: string;
+  totalFindingsEvaluated: number;
+  survivedCount: number;
+  weakenedCount: number;
+  refutedCount: number;
+  preRedTeamPosterior: number;
+  postRedTeamPosterior: number;
+  combinedNegativeLr: number;
+  totalRedTeamLogOddsDelta: number;
+  bulletproofThresholdMet: boolean;
+  findings: AdversarialAchFinding[];
+  executiveVerdict: string;
+}
+
+export interface MetadataAuthorPivotHit {
+  pivotId: string;
+  signalTag: 'HIGH_SIGNAL_METADATA_PIVOT' | 'MEDIUM_SIGNAL_METADATA_OVERLAP';
+  documentUrl: string;
+  documentDomain: string;
+  extractedAuthorOrUsername: string;
+  matchedReferenceSource: 'REVOLVING_DOOR_LOBBYING' | 'GITHUB_COMMIT_EMAIL' | 'SEC_FORM_D_EXECUTIVE' | 'COURT_DOCKET_PARTY' | 'EXECUTIVE_ROSTER' | 'CROSS_DOMAIN_SELF_AUTHORSHIP';
+  matchedEntityOrPerson: string;
+  matchConfidence: number;
+  softwareProducer?: string;
+  internalPathLeak?: string;
+  creationDate?: string;
+  rationale: string;
+}
+
+export interface MetadataPivotReport {
+  targetEntity: string;
+  documentsScanned: number;
+  uniqueAuthorsExtracted: number;
+  uniqueInternalPathsExtracted: number;
+  highSignalPivotsCount: number;
+  pivots: MetadataAuthorPivotHit[];
+  verdict: string;
+}
+
+export interface ZkTlsProofReceipt {
+  targetRole: 'PRIMARY_SEC_FILING' | 'TERMS_OF_SERVICE' | 'WIKIPEDIA_REVISION_API' | 'USASPENDING_AWARD_API' | 'GLEIF_LEI_RECORD';
+  url: string;
+  proofFilename: string;
+  status: 'VERIFIED_TLSN_PROOF' | 'LOCAL_HASH_ONLY (TLSN_SIDECAR_OFFLINE)' | 'SKIPPED_NO_TARGET_URL';
+  verifierEndpoint: string | null;
+  serverName: string;
+  notaryPublicKeyHex?: string;
+  sessionTimestampIso: string;
+  responseSha256: string;
+  proofJson?: Record<string, unknown> | null;
+  errorNote?: string;
+}
+
+export interface ZkTlsProvenanceBundle {
+  protocol: 'TLSNotary_Proxy_Mode_v26';
+  zktlsProvenanceStatus: 'VERIFIED_ZKTLS_PROOFS' | 'PARTIAL_ZKTLS_PROOFS' | 'LOCAL_HASH_ONLY (TLSN_SIDECAR_OFFLINE)';
+  sidecarConfigured: boolean;
+  sidecarReachable: boolean;
+  verifierUrl: string | null;
+  verifiedProofsCount: number;
+  attemptedFetchesCount: number;
+  receipts: ZkTlsProofReceipt[];
+  checkedAtIso: string;
+}
+
+export interface LongitudinalSnapshot {
+  investigationId: string;
+  targetEntity: string;
+  primaryDomain?: string;
+  subsidiaryDomains?: string[];
+  capturedAtIso: string;
+  merkleRoot?: string;
+  postRedTeamPosterior: number;
+  preRedTeamPosterior?: number;
+  fri: number;
+  mai: number;
+  executives: string[];
+  tlsSanDomains: string[];
+  dorkedArtifactUrls: string[];
+  tosPathsAndHashes: Record<string, string>;
+  subsidiaries: string[];
+  gleifParents: string[];
+  usaSpendingAwardIds: string[];
+  peakBurstZScore: number;
+  wikipediaLargeDeletionsCount: number;
+  lobbyingFilingsCount: number;
+}
+
+export interface LongitudinalDeltaItem {
+  category: 'SILENT_DELETION' | 'RISK_SPIKE' | 'STRUCTURAL_CHANGE';
+  code:
+    | 'EXECUTIVE_SCRUBBED'
+    | 'TLS_SAN_DROPPED'
+    | 'ARTIFACT_DISAPPEARED'
+    | 'PAGINATION_DRIFT'
+    | 'TOS_CLAUSE_REMOVED_OR_MUTATED'
+    | 'BAYESIAN_POSTERIOR_SPIKE'
+    | 'NEW_SHADOW_SPV_OR_GLEIF_CHANGE'
+    | 'NEW_USASPENDING_CONTRACT'
+    | 'TEMPORAL_BURST_Z_SPIKE'
+    | 'NEW_WIKIPEDIA_WHITEWASH'
+    | 'NEW_LOBBYING_FILING';
+  severity: 'CRITICAL' | 'HIGH' | 'MEDIUM' | 'LOW' | 'INFO';
+  summary: string;
+  beforeValue?: string;
+  afterValue?: string;
+}
+
+export interface LongitudinalDiffReport {
+  diffId: string;
+  targetEntity: string;
+  runAId: string;
+  runACapturedAtIso: string;
+  runBId: string;
+  runBCapturedAtIso: string;
+  hasMaterialDelta: boolean;
+  highestSeverity: 'NONE' | 'INFO' | 'LOW' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  posteriorDelta: number;
+  silentDeletionsCount: number;
+  riskSpikesCount: number;
+  deltas: LongitudinalDeltaItem[];
+  diffSha256: string;
+  ed25519SignatureBase64?: string;
+  ed25519PublicKeyPem?: string;
+  generatedAtIso: string;
+}
+
+export interface GraphPageRankNode {
+  id: string;
+  label: string;
+  nodeType: PropertyGraphNodeType;
+  layer: PropertyGraphLayer;
+  pageRank: number;
+  contagionRisk: number;
+  degree: number;
+  betweennessCentrality: number;
+}
+
+export interface ShannonEntropyReport {
+  dimension: string;
+  uniqueCategories: number;
+  totalSamples: number;
+  shannonEntropyBits: number;
+  normalizedEntropy: number;
+  herfindahlIndex: number;
+  concentrationVerdict: 'MONOPOLIZED_SINGLE_POINT' | 'CONCENTRATED' | 'MODERATELY_DISPERSED' | 'HIGHLY_DIVERSIFIED';
+  topShareLabel: string;
+  topSharePct: number;
+}
+
+export interface MonitoredWatchlistItem {
+  id: string;
+  entityName: string;
+  primaryDomain: string;
+  notes: string;
+  addedAtIso: string;
+  lastCheckedAtIso: string | null;
+  lastSeverity: string | null;
+  lastHardeningScore: number | null;
+  lastOpenPortsCount: number | null;
+  lastMutationsSummary: string | null;
+}
+
+export interface VaultSearchHit {
+  id: string;
+  category: 'INVESTIGATION' | 'LIVE_EVENT' | 'CONTAGION_EDGE' | 'SILENT_DELETION' | 'INFRA_DNA';
+  entityName: string;
+  title: string;
+  subtitle: string;
+  timestampIso: string;
+  url?: string;
+  score: number;
 }
 
 export interface SenateLdaDetailedRecord {
@@ -1268,6 +1633,8 @@ export interface TemporalCausalityAndLobbyingBundle {
   totalNormalizedEvents: number;
   eventsByStream: Record<string, number>;
   clusters: TemporalCausalCluster[];
+  causalChains?: TemporalCausalChain[];
+  burstSummary?: TemporalBurstSummary;
   events: TemporalCausalEvent[];
   highestSeverity: 'NONE' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   verdict: string;
@@ -1335,12 +1702,21 @@ export interface LiveBusinessIntelligence {
   revenueOrValuation: string;
   stockTickerOrRegistryId: string;
   leiCode: string;
+  canonicalLei?: string;
   officialWebsite: string;
   executiveSummary: string;
   originStory: string;
   incorporationVehicle: string;
   ownershipAndUboChain: string[];
   keyExecutives: string[];
+  externalSpvInvestors?: Array<{
+    name: string;
+    relationships: string[];
+    spvIssuerName: string;
+    filedAt: string;
+    url: string;
+    role: 'External_SPV_Investor';
+  }>;
   productsAndServices: string[];
   primaryMarketMechanism: string;
   subsidiaries: string[];
@@ -1363,6 +1739,9 @@ export interface LiveBusinessIntelligence {
   governmentSubsidiesAndGrants: {
     program: string;
     agency: string;
+    subAgency?: string;
+    awardId?: string;
+    performancePeriod?: string;
     country: string;
     amount: string;
     year: string;
@@ -1456,6 +1835,10 @@ export interface LiveBusinessIntelligence {
   probeTelemetry?: ProbeExecutionRecord[];
   bftCorroboration?: BftCorroborationSummary;
   blockchainAnchor?: BlockchainTimestampAnchor;
+  sovereignRegistries?: SovereignRegistriesBundle;
+  metadataPivots?: MetadataPivotReport;
+  zktlsProvenance?: ZkTlsProvenanceBundle;
+  previousVaultSnapshot?: LongitudinalSnapshot | null;
   realtimeDaemonFeedSnapshot?: LiveFeedEvent[];
   rawPayloads?: Record<string, unknown>;
   groundingSources: LiveGroundingSource[];
@@ -1513,6 +1896,7 @@ export interface InvestigationResult {
   rfc3161Attempts?: Rfc3161AttemptDiagnostic[];
   rfc3161ErrorNote?: string | null;
   signalDensityMetrics?: SignalDensityMetrics;
+  squads?: SwarmSquad[];
   zipBlob?: Blob;
   zipSizeFormatted?: string;
 }

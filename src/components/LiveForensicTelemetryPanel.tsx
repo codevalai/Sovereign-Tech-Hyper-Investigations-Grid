@@ -17,6 +17,7 @@ import {
   TrendingUp,
 } from 'lucide-react';
 import type { InvestigationResult, LiveBusinessIntelligence } from '../types/investigation';
+import { computeBayesianFraudRiskPosterior, computeBenfordAnalysis } from '../services/forensicMathEngine';
 
 interface LiveForensicTelemetryPanelProps {
   result: InvestigationResult;
@@ -892,6 +893,30 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
               ) : (
                 <p className="text-slate-500">Official website did not return inspectable HTTP headers.</p>
               )}
+
+              {intel.deepAttackSurface?.tlsCertificate && (() => {
+                const cert = intel.deepAttackSurface!.tlsCertificate!;
+                return (
+                  <div className="pt-3 border-t border-slate-800 space-y-1 text-[11px] text-slate-300 tabular-nums">
+                    <div className="flex items-center justify-between gap-2">
+                      <span className="text-slate-200 font-semibold flex items-center gap-1.5">
+                        <Lock className="w-3 h-3 text-emerald-400" />
+                        <span>Live TLS X.509 Handshake ({cert.host}:443)</span>
+                      </span>
+                      <span className={cert.isExpired || cert.isSelfSigned ? 'text-rose-400 font-semibold' : 'text-emerald-400'}>
+                        {cert.protocol} · {cert.daysUntilExpiry}d left
+                      </span>
+                    </div>
+                    <div>Issuer: <strong className="text-slate-100">{cert.issuerCn || cert.issuerOrg}</strong> · Cipher: {cert.cipherName}</div>
+                    <div className="truncate text-slate-400">SHA-256: {cert.fingerprintSha256 || 'Unavailable'}</div>
+                    {cert.sanDomains.length > 0 && (
+                      <div className="text-cyan-300 truncate">
+                        SANs ({cert.sanDomains.length}): {cert.sanDomains.slice(0, 8).join(', ')}
+                      </div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
@@ -1199,6 +1224,47 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
               ) : (
                 <p className="text-slate-500">No matching Hacker News discussions returned.</p>
               )}
+
+              {intel.deepAttackSurface?.wikipediaRevisionForensics && (() => {
+                const wr = intel.deepAttackSurface!.wikipediaRevisionForensics!;
+                const verdictColor =
+                  wr.verdict === 'WHITEWASH_RISK'
+                    ? 'text-rose-400'
+                    : wr.verdict === 'ACTIVE_EDIT_WAR'
+                      ? 'text-amber-400'
+                      : wr.verdict === 'ELEVATED_CHURN'
+                        ? 'text-cyan-300'
+                        : 'text-emerald-400';
+                return (
+                  <div className="pt-3 border-t border-slate-800 space-y-1.5 text-[11px] tabular-nums">
+                    <div className="flex items-center justify-between gap-2">
+                      <a
+                        href={wr.articleUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="font-semibold text-slate-200 hover:text-amber-300 truncate"
+                      >
+                        Wikipedia Revision Forensics ({wr.articleTitle})
+                      </a>
+                      <span className={`font-semibold shrink-0 ${verdictColor}`}>{wr.verdict}</span>
+                    </div>
+                    <div className="text-slate-400">
+                      {wr.revisionsAnalyzed} edits · {wr.uniqueEditors} editors · {(wr.anonymousIpRatio * 100).toFixed(0)}% anon · {wr.revertOrUndoEdits} reverts · {wr.editsPerWeek}/wk
+                    </div>
+                    {wr.largeDeletions.length > 0 ? (
+                      <div className="space-y-1 max-h-24 overflow-y-auto pt-1">
+                        {wr.largeDeletions.slice(0, 4).map((d) => (
+                          <div key={d.revId} className="text-rose-300 truncate">
+                            [{d.timestamp.slice(0, 10)}] {d.deltaBytes}B by {d.user}{d.isAnonymousIp ? ' (ANON)' : ''} — {d.comment || 'no summary'}
+                          </div>
+                        ))}
+                      </div>
+                    ) : (
+                      <div className="text-slate-500">Zero large content removals (&le;-1,500B) in recent revisions.</div>
+                    )}
+                  </div>
+                );
+              })()}
             </div>
           </div>
         )}
@@ -1288,6 +1354,52 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                 {intel.bftCorroboration?.quorumRule}
               </p>
             </div>
+
+            {/* Bayesian Fraud Risk Posterior Breakdown */}
+            {(() => {
+              const ben = computeBenfordAnalysis(intel.shadowFinance?.numericSamples || []);
+              const bayes = computeBayesianFraudRiskPosterior(result.fri, intel, ben);
+              const tierColor =
+                bayes.riskTier === 'CRITICAL'
+                  ? 'text-rose-400'
+                  : bayes.riskTier === 'ELEVATED'
+                    ? 'text-amber-300'
+                    : 'text-emerald-400';
+              return (
+                <div className="lg:col-span-2 p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-2.5 tabular-nums">
+                  <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                    <span className="font-semibold text-slate-200">
+                      Sequential Log-Odds Bayesian Fraud Risk Posterior
+                    </span>
+                    <span className={`font-semibold ${tierColor}`}>
+                      Posterior {(bayes.posteriorProbability * 100).toFixed(1)}% [{bayes.riskTier}] · Prior {(bayes.priorProbability * 100).toFixed(1)}% · BF {bayes.combinedBayesFactor}x · 95% CI {(bayes.confidenceInterval95[0] * 100).toFixed(0)}%–{(bayes.confidenceInterval95[1] * 100).toFixed(0)}%
+                    </span>
+                  </div>
+                  {bayes.evidenceContributions.length > 0 ? (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-2 text-[11px]">
+                      {bayes.evidenceContributions.map((c) => (
+                        <div
+                          key={c.signalId}
+                          className="p-2.5 rounded bg-[#111827]/70 border border-slate-800 flex items-start justify-between gap-2"
+                        >
+                          <div className="min-w-0">
+                            <div className="text-slate-200 font-semibold truncate">{c.label}</div>
+                            <div className="text-slate-400 truncate mt-0.5">{c.observedValue}</div>
+                          </div>
+                          <span className={`shrink-0 font-semibold ${c.direction === 'RISK_INCREASING' ? 'text-rose-400' : 'text-emerald-400'}`}>
+                            LR {c.likelihoodRatio}x
+                          </span>
+                        </div>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-[11px] text-slate-500">
+                      No elevated forensic likelihood ratios triggered beyond baseline prior calibration.
+                    </p>
+                  )}
+                </div>
+              );
+            })()}
           </div>
         )}
 
@@ -2082,6 +2194,46 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                       Analyzed {tc.analyzedAtIso.slice(0, 19).replace('T', ' ')}Z
                     </span>
                   </div>
+
+                  {/* v25.0 Multi-Hop Directed Causal Chains & Monthly Burst Z-Score */}
+                  {((tc.causalChains && tc.causalChains.length > 0) || tc.burstSummary) && (
+                    <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-2.5 tabular-nums">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                        <span className="font-semibold text-slate-200">
+                          Multi-Hop Directed Causal Chains (3–4 Streams · Δt ≤ {tc.windowDays}d/hop)
+                        </span>
+                        {tc.burstSummary && (
+                          <span className={tc.burstSummary.burstDetected ? 'text-rose-400 font-semibold text-[11px]' : 'text-slate-400 text-[11px]'}>
+                            Peak Month {tc.burstSummary.peakMonth || 'N/A'}: {tc.burstSummary.peakMonthCount} events (μ={tc.burstSummary.meanMonthlyEvents}, Z={tc.burstSummary.peakBurstZScore})
+                          </span>
+                        )}
+                      </div>
+                      {tc.causalChains && tc.causalChains.length > 0 ? (
+                        <div className="space-y-2 max-h-48 overflow-y-auto text-[11px]">
+                          {tc.causalChains.slice(0, 6).map((ch) => (
+                            <div
+                              key={ch.chainId}
+                              className="p-2.5 rounded bg-[#111827]/70 border border-slate-800 space-y-1"
+                            >
+                              <div className="flex flex-wrap items-center justify-between gap-2">
+                                <span className={ch.severity === 'CRITICAL' ? 'text-rose-400 font-semibold' : 'text-amber-300 font-semibold'}>
+                                  {ch.streamSequence.join(' → ')}
+                                </span>
+                                <span className="text-slate-400">
+                                  {ch.severity} · {ch.totalSpanDays}d total · {ch.startDate} → {ch.endDate}
+                                </span>
+                              </div>
+                              <div className="text-slate-300 leading-relaxed">{ch.narrative}</div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <div className="text-[11px] text-slate-500">
+                          Zero 3+ distinct-stream multi-hop causal chains detected within the sliding window.
+                        </div>
+                      )}
+                    </div>
+                  )}
 
                   {/* Two-Column Main Breakdown */}
                   <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">

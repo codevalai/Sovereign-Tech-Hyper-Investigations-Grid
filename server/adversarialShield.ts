@@ -23,13 +23,17 @@ export async function safeForensicFetch(
   url: string,
   maxBytes = 524_288,
   timeoutMs = 7000,
-  extraHeaders: Record<string, string> = {}
+  extraHeaders: Record<string, string> = {},
+  options?: { bypassCache?: boolean; bypassCacheWrite?: boolean; softTtlMs?: number }
 ): Promise<SafeFetchResult> {
   try {
     const res = await resilientFetch(url, {
       method: 'GET',
       maxBytes,
       timeoutMs,
+      bypassCache: options?.bypassCache,
+      bypassCacheWrite: options?.bypassCacheWrite,
+      softTtlMs: options?.softTtlMs,
       headers: {
         'User-Agent': 'SovereignForensicMatrix/23.0 (ComplianceAudit; contact@xerj.org)',
         Accept: 'application/json, application/xml, text/plain, text/html;q=0.8',
@@ -58,7 +62,9 @@ export async function safeForensicFetch(
         ? 'HIT_304'
         : res.fromCache === 'FRESH_TTL'
           ? 'FRESH_TTL'
-          : 'NETWORK';
+          : options?.bypassCache
+            ? 'BYPASS'
+            : 'NETWORK';
 
     return {
       ok: res.ok,

@@ -1,4 +1,9 @@
-import { sha256Hex } from '../services/forensicMathEngine';
+import {
+  computeBenfordAnalysis,
+  computeHawkesAnalysis,
+  computeStylometricFingerprint,
+  sha256Hex,
+} from '../services/forensicMathEngine';
 import type { LiveBusinessIntelligence, SquadId } from '../types/investigation';
 
 export interface GroundedSquadHit {
@@ -240,6 +245,73 @@ export function extractGroundedHitsByAgent(
         const execList = [...liveIntel.founders, ...liveIntel.keyExecutives].slice(0, 5).join(', ');
         pushToAgent('A2', 'Executive_Record', liveIntel.entityName, `Verified principals: ${execList}`, 'INFO', liveIntel.officialWebsite);
       }
+      if (
+        (liveIntel.officialWebsite && liveIntel.officialWebsite !== 'Not verified') ||
+        liveIntel.industrySpecificLoopholesOrRisks.length > 0
+      ) {
+        const clauseNote =
+          liveIntel.industrySpecificLoopholesOrRisks[0]?.mechanism ||
+          `Official site ${liveIntel.officialWebsite} disclosure boundaries reviewed`;
+        pushToAgent(
+          'A3',
+          'Policy_Commitments',
+          liveIntel.entityName,
+          clauseNote,
+          liveIntel.industrySpecificLoopholesOrRisks.length > 0 ? 'MEDIUM' : 'INFO',
+          liveIntel.officialWebsite !== 'Not verified' ? liveIntel.officialWebsite : undefined
+        );
+      }
+      const safetyProfiles = liveIntel.technicalOrOperationalProfile.filter(
+        (p) => !p.startsWith('Operating Sector Classification:')
+      );
+      for (const prof of safetyProfiles.slice(0, 3)) {
+        pushToAgent('A4', 'Operational_Compliance_Profile', liveIntel.entityName, prof, 'INFO');
+      }
+      if (
+        liveIntel.incorporationVehicle &&
+        liveIntel.entityType !== 'Verified Operating / Historical Enterprise'
+      ) {
+        pushToAgent(
+          'A5',
+          'Corporate_Charter',
+          liveIntel.entityType,
+          `${liveIntel.entityType} · ${liveIntel.incorporationVehicle}`,
+          'INFO'
+        );
+      }
+      if (
+        !liveIntel.revenueOrValuation.startsWith('Private / Not publicly') ||
+        !liveIntel.stockTickerOrRegistryId.startsWith('Private / Unlisted')
+      ) {
+        pushToAgent(
+          'A6',
+          'Disclosure_Tier',
+          liveIntel.stockTickerOrRegistryId,
+          `Disclosure: ${liveIntel.revenueOrValuation} · Registry ID: ${liveIntel.stockTickerOrRegistryId}`,
+          'INFO'
+        );
+      }
+      if (
+        liveIntel.productsAndServices.length > 0 &&
+        liveIntel.productsAndServices[0] !== liveIntel.industry
+      ) {
+        pushToAgent(
+          'A7',
+          'Commercial_Portfolio',
+          liveIntel.entityName,
+          `Offerings (${liveIntel.productsAndServices.length}): ${liveIntel.productsAndServices.slice(0, 5).join(', ')}`,
+          'INFO'
+        );
+      }
+      if (liveIntel.jurisdictions.length > 0 || liveIntel.governmentSubsidiesAndGrants.length > 0) {
+        pushToAgent(
+          'A8',
+          'Jurisdiction_Contracting',
+          liveIntel.country || 'GLOBAL',
+          `Footprint: ${liveIntel.jurisdictions.slice(0, 5).join(', ') || liveIntel.country} · ${liveIntel.governmentSubsidiesAndGrants.length} federal award(s)`,
+          'INFO'
+        );
+      }
       for (const c of liveIntel.publicClaimsVsReality.slice(0, 4)) {
         pushToAgent('A9', 'PublicClaimsVsReality', c.claimArea, `${c.publicClaim.slice(0, 70)} -> ${c.verifiedReality}`, c.severity === 'HIGH' ? 'HIGH' : 'MEDIUM');
       }
@@ -247,7 +319,7 @@ export function extractGroundedHitsByAgent(
     }
 
     case 'squadB': {
-      if (liveIntel.leiCode && liveIntel.leiCode !== 'UNAVAILABLE') {
+      if (liveIntel.leiCode && liveIntel.leiCode !== 'UNAVAILABLE' && !liveIntel.leiCode.startsWith('Not registered')) {
         pushToAgent('B1', 'GLEIF_LEI', liveIntel.leiCode, `${liveIntel.legalName} · Status=${liveIntel.operatingStatus} (${liveIntel.country})`, 'INFO', `https://search.gleif.org/#/record/${liveIntel.leiCode}`);
       }
       for (const d of liveIntel.regulatoryAndLegalDockets.slice(0, 5)) {
@@ -257,6 +329,61 @@ export function extractGroundedHitsByAgent(
       }
       for (const g of liveIntel.governmentSubsidiesAndGrants.slice(0, 3)) {
         pushToAgent('B1', 'USASpending', g.year || 'GRANT', `${g.program}: ${g.amount} (${g.agency})`, 'INFO');
+      }
+      if (liveIntel.competitorsAndPeers.length > 0) {
+        pushToAgent(
+          'B3',
+          'Market_Concentration_Benchmark',
+          liveIntel.entityName,
+          `Calibrated MAI=${liveIntel.calibratedMai.toFixed(2)} across ${liveIntel.competitorsAndPeers.length} sector peers (${liveIntel.industry})`,
+          liveIntel.calibratedMai >= 0.7 ? 'HIGH' : 'INFO'
+        );
+      }
+      if (liveIntel.jurisdictions.length > 0) {
+        pushToAgent(
+          'B4',
+          'Multi_Jurisdictional_Profile',
+          liveIntel.country || 'GLOBAL',
+          `Active regulatory jurisdictions (${liveIntel.jurisdictions.length}): ${liveIntel.jurisdictions.slice(0, 6).join(', ')}`,
+          'INFO'
+        );
+      }
+      if (liveIntel.incorporationVehicle) {
+        const epp = liveIntel.deepAttackSurface?.rdapAndDnssec?.eppStatuses || [];
+        pushToAgent(
+          'B6',
+          'Charter_Standing_History',
+          liveIntel.legalName,
+          `Status="${liveIntel.operatingStatus}" · Charter: ${liveIntel.incorporationVehicle}${epp.length ? ` · EPP: ${epp.slice(0, 2).join(', ')}` : ''}`,
+          'INFO'
+        );
+      }
+      if ((liveIntel.insiderLabor?.cfpbComplaintsTotal ?? 0) > 0 || liveIntel.publicClaimsVsReality.length > 0) {
+        pushToAgent(
+          'B7',
+          'Disclosure_Integrity_Audit',
+          liveIntel.entityName,
+          `Calibrated FRI=${liveIntel.calibratedFri.toFixed(2)} · CFPB=${liveIntel.insiderLabor?.cfpbComplaintsTotal ?? 0} · Audited claims=${liveIntel.publicClaimsVsReality.length}`,
+          liveIntel.calibratedFri >= 0.6 ? 'HIGH' : 'MEDIUM'
+        );
+      }
+      if (liveIntel.primaryMarketMechanism) {
+        pushToAgent(
+          'B8',
+          'Market_Barrier_Mechanism',
+          liveIntel.industry,
+          `Market mechanism: ${liveIntel.primaryMarketMechanism.slice(0, 150)}`,
+          'INFO'
+        );
+      }
+      if (liveIntel.groundingSources.length >= 3 && (liveIntel.regulatoryAndLegalDockets.length > 0 || liveIntel.calibratedMai > 0)) {
+        pushToAgent(
+          'B9',
+          'Compliance_Index_Calibration',
+          liveIntel.entityName,
+          `Synthesized compliance posture: MAI=${liveIntel.calibratedMai.toFixed(2)} | FRI=${liveIntel.calibratedFri.toFixed(2)} (${liveIntel.regulatoryAndLegalDockets.length} dockets)`,
+          'INFO'
+        );
       }
       break;
     }
@@ -272,6 +399,50 @@ export function extractGroundedHitsByAgent(
           http.hardeningScore < 50 ? 'HIGH' : 'INFO',
           liveIntel.officialWebsite
         );
+        pushToAgent(
+          'C4',
+          'Edge_Lockin_Transport',
+          http.cdnOrWafDetected || 'EDGE',
+          `Server=${http.serverBanner || 'Hidden'} · HSTS=${http.hsts ? 'Enabled' : 'Missing'} · Preload=${liveIntel.deepAttackSurface?.hstsPreload?.status || 'Unchecked'}`,
+          http.hsts ? 'INFO' : 'MEDIUM'
+        );
+        if (http.missingHeaders.length > 0) {
+          pushToAgent(
+            'C9',
+            'Operational_Hardening_Risk',
+            `SCORE_${http.hardeningScore}`,
+            `Missing HTTP headers (${http.missingHeaders.length}): ${http.missingHeaders.slice(0, 5).join(', ')}`,
+            http.hardeningScore < 50 ? 'HIGH' : 'MEDIUM'
+          );
+        }
+      }
+      const opsProfiles = liveIntel.technicalOrOperationalProfile.filter(
+        (p) => !p.startsWith('Operating Sector Classification:')
+      );
+      if (opsProfiles.length > 0 || (liveIntel.productsAndServices.length > 0 && liveIntel.productsAndServices[0] !== liveIntel.industry)) {
+        pushToAgent(
+          'C2',
+          'Service_Delivery_Footprint',
+          liveIntel.entityName,
+          opsProfiles[0] || `Commercial service lines: ${liveIntel.productsAndServices.slice(0, 4).join(', ')}`,
+          'INFO'
+        );
+      }
+      const cspTrackingOrigins = Array.from(
+        new Set([
+          ...(http?.cspDiscoveredOrigins || []),
+          ...(liveIntel.extremeDorkingAndDna?.infraDna?.cspOrigins || []),
+        ])
+      ).filter(Boolean);
+      if (cspTrackingOrigins.length > 0) {
+        pushToAgent(
+          'C3',
+          'CSP_ThirdParty_Telemetry',
+          liveIntel.cyberTelemetry?.primaryDomain || liveIntel.entityName,
+          `Third-party CSP script/telemetry origins (${cspTrackingOrigins.length}): ${cspTrackingOrigins.slice(0, 5).join(', ')}`,
+          cspTrackingOrigins.length >= 12 ? 'MEDIUM' : 'INFO',
+          liveIntel.officialWebsite !== 'Not verified' ? liveIntel.officialWebsite : undefined
+        );
       }
       for (const sh of (liveIntel.deepAttackSurface?.shodanHosts || []).slice(0, 3)) {
         pushToAgent(
@@ -283,10 +454,100 @@ export function extractGroundedHitsByAgent(
           sh.sourceUrl
         );
       }
+      if (liveIntel.publicClaimsVsReality.length > 0) {
+        const c = liveIntel.publicClaimsVsReality[0];
+        pushToAgent(
+          'C6',
+          'Execution_vs_Claims',
+          c.claimArea,
+          `${c.verifiedReality}`,
+          c.severity === 'HIGH' ? 'HIGH' : 'INFO'
+        );
+      }
+      const obs = liveIntel.deepAttackSurface?.mozillaObservatory;
+      const openFdaSignals = (liveIntel.privateDiscovery?.signals || []).filter((s) => s.source === 'OPENFDA');
+      if (obs || openFdaSignals.length > 0) {
+        pushToAgent(
+          'C7',
+          'Operational_Quality_Observatory',
+          obs?.host || liveIntel.entityName,
+          obs
+            ? `Mozilla Observatory Grade=${obs.grade} (${obs.score}/100 · ${obs.testsPassed} passed / ${obs.testsFailed} failed)`
+            : `${openFdaSignals.length} openFDA device recall/safety records linked`,
+          openFdaSignals.length > 0 || (obs && obs.score < 50) ? 'HIGH' : 'INFO',
+          obs?.detailsUrl || openFdaSignals[0]?.url
+        );
+      }
+      if (liveIntel.headquarters && !liveIntel.headquarters.startsWith('Not publicly')) {
+        pushToAgent(
+          'C8',
+          'Facility_Jurisdiction_Map',
+          liveIntel.country || 'GLOBAL',
+          `HQ: ${liveIntel.headquarters} · Active regions: ${liveIntel.jurisdictions.slice(0, 5).join(', ')}`,
+          'INFO'
+        );
+      }
       break;
     }
 
     case 'squadD': {
+      if (liveIntel.naicsOrSicCode && !liveIntel.naicsOrSicCode.startsWith('Not explicitly')) {
+        pushToAgent(
+          'D1',
+          'Sector_Classification',
+          liveIntel.naicsOrSicCode.slice(0, 40),
+          `${liveIntel.industry} (${liveIntel.businessScale}) — ${liveIntel.naicsOrSicCode}`,
+          'INFO'
+        );
+      }
+      if (liveIntel.competitorsAndPeers.length > 0) {
+        pushToAgent(
+          'D2',
+          'Sector_Peer_Concentration',
+          liveIntel.entityName,
+          `MAI=${liveIntel.calibratedMai.toFixed(2)} across ${liveIntel.competitorsAndPeers.length} peers (${liveIntel.industry})`,
+          liveIntel.calibratedMai >= 0.7 ? 'HIGH' : 'INFO'
+        );
+        pushToAgent(
+          'D6',
+          'Competitor_Landscape',
+          `PEERS_${liveIntel.competitorsAndPeers.length}`,
+          liveIntel.competitorsAndPeers
+            .slice(0, 4)
+            .map((p) => `${p.name}${p.relationship ? ` [${p.relationship}]` : ''}`)
+            .join(' · '),
+          'INFO'
+        );
+      }
+      const attn = liveIntel.deepAttackSurface?.publicAttention;
+      if (attn && (attn.totalViews14d > 0 || attn.hackerNewsThreads.length > 0)) {
+        pushToAgent(
+          'D3',
+          'Public_Attention_Velocity',
+          attn.wikipediaArticle || liveIntel.entityName,
+          `Wikipedia 14d views=${attn.totalViews14d.toLocaleString('en-US')} (peak ${attn.peakDate}, Z=${attn.spikeZScore.toFixed(2)}) · HN=${attn.hackerNewsThreads.length}`,
+          attn.spikeZScore >= 2.5 ? 'MEDIUM' : 'INFO'
+        );
+      }
+      if (liveIntel.governmentSubsidiesAndGrants.length > 0) {
+        pushToAgent(
+          'D4',
+          'Contracting_Pricing_Lockin',
+          `AWARDS_${liveIntel.governmentSubsidiesAndGrants.length}`,
+          `${liveIntel.governmentSubsidiesAndGrants.length} verified public procurement contract(s)/grant(s) (top: ${liveIntel.governmentSubsidiesAndGrants[0].agency} ${liveIntel.governmentSubsidiesAndGrants[0].amount})`,
+          'INFO'
+        );
+      }
+      for (const dep of liveIntel.supplyChainDependencies.slice(0, 4)) {
+        const isCritical = dep.riskLevel === 'CRITICAL' || dep.riskLevel === 'HIGH';
+        pushToAgent(
+          isCritical ? 'D7' : 'D5',
+          'Supply_Chain_Graph',
+          dep.dependency.slice(0, 32),
+          `${dep.dependency} — ${dep.tier}: ${dep.notes.slice(0, 110)} (${dep.riskLevel})`,
+          isCritical ? 'HIGH' : 'INFO'
+        );
+      }
       for (const node of (liveIntel.subsidiarySwarm?.subsidiaryTree || []).filter((n) => n.depth > 0).slice(0, 6)) {
         pushToAgent(
           'D8',
@@ -295,6 +556,15 @@ export function extractGroundedHitsByAgent(
           `${node.legalName} (${node.jurisdiction})${node.opacityRiskFlag ? ` · OPACITY: ${node.reportingExceptions.join('/')}` : ''}`,
           node.opacityRiskFlag ? 'HIGH' : 'INFO',
           node.gleifUrl
+        );
+      }
+      if (liveIntel.ownershipAndUboChain.length > 0 && (liveIntel.subsidiarySwarm?.subsidiaryTree || []).filter((n) => n.depth > 0).length === 0) {
+        pushToAgent(
+          'D8',
+          'Ownership_UBO_Chain',
+          liveIntel.entityName,
+          liveIntel.ownershipAndUboChain.slice(0, 4).join(' -> '),
+          'INFO'
         );
       }
       for (const sig of (liveIntel.privateDiscovery?.signals || []).slice(0, 4)) {
@@ -306,6 +576,17 @@ export function extractGroundedHitsByAgent(
           `${sig.entityName}: ${sig.title}`,
           sig.source === 'SEC_EFTS_FORM_D' ? 'MEDIUM' : 'INFO',
           sig.url
+        );
+      }
+      const dealsTotal = liveIntel.acquisitions.length + liveIntel.divestitures.length + liveIntel.inProcessDeals.length;
+      if (dealsTotal > 0) {
+        const leadDeal = liveIntel.acquisitions[0]?.target || liveIntel.inProcessDeals[0]?.target || liveIntel.divestitures[0]?.target || 'Deal';
+        pushToAgent(
+          'D9',
+          'MNA_Divestitures',
+          liveIntel.entityName,
+          `${liveIntel.acquisitions.length} acquisitions · ${liveIntel.divestitures.length} divestitures · ${liveIntel.inProcessDeals.length} pending (lead: ${leadDeal})`,
+          'INFO'
         );
       }
       break;
@@ -323,6 +604,24 @@ export function extractGroundedHitsByAgent(
           hit.status === 'TRIGGERED' ? 'HIGH' : 'MEDIUM'
         );
       }
+      for (const risk of liveIntel.industrySpecificLoopholesOrRisks.slice(0, 3)) {
+        pushToAgent(
+          'E2',
+          'Structural_Arbitrage',
+          risk.mechanism.slice(0, 32),
+          `${risk.legalClassification}: ${risk.exposureNote.slice(0, 110)}`,
+          risk.severity === 'HIGH' || risk.severity === 'CRITICAL' ? 'HIGH' : 'MEDIUM'
+        );
+      }
+      if (liveIntel.acquisitions.length > 0 || liveIntel.subsidiaries.length > 0) {
+        pushToAgent(
+          'E3',
+          'Consolidation_Trajectory',
+          liveIntel.entityName,
+          `MAI=${liveIntel.calibratedMai.toFixed(2)} · ${liveIntel.subsidiaries.length} subsidiaries · ${liveIntel.acquisitions.length} M&A deals`,
+          liveIntel.calibratedMai >= 0.7 ? 'HIGH' : 'INFO'
+        );
+      }
       for (const out of liveIntel.zeroDayFraud?.madOutliers || []) {
         pushToAgent(
           'E4',
@@ -332,18 +631,174 @@ export function extractGroundedHitsByAgent(
           'HIGH'
         );
       }
+      if (liveIntel.zeroDayFraud && (liveIntel.zeroDayFraud.madOutliers?.length ?? 0) === 0) {
+        pushToAgent(
+          'E4',
+          'ZeroDay_Composite_Risk',
+          liveIntel.entityName,
+          `Composite Unknown Risk=${liveIntel.zeroDayFraud.compositeUnknownRiskScore.toFixed(3)} · MAI=${liveIntel.calibratedMai.toFixed(2)} | FRI=${liveIntel.calibratedFri.toFixed(2)}`,
+          liveIntel.zeroDayFraud.compositeUnknownRiskScore >= 0.45 ? 'HIGH' : 'INFO'
+        );
+      }
+      if (liveIntel.lifecycleMilestones.length > 0) {
+        const m = liveIntel.lifecycleMilestones[0];
+        pushToAgent(
+          'E5',
+          'Chronology_Milestone',
+          m.period,
+          `${liveIntel.lifecycleMilestones.length} verified milestones (earliest ${m.period}: ${m.milestone.slice(0, 95)})`,
+          'INFO'
+        );
+      }
+      for (const out of liveIntel.futureOutlook2026_2030.slice(0, 3)) {
+        pushToAgent('E6', 'Outlook_2026_2030', liveIntel.entityName, out, 'INFO');
+      }
+      const q = liveIntel.deepAttackSurface?.liveMarketQuote;
+      const attnZ = liveIntel.deepAttackSurface?.publicAttention?.spikeZScore;
+      if (q || (typeof attnZ === 'number' && liveIntel.deepAttackSurface?.publicAttention.dailyViews.length)) {
+        pushToAgent(
+          'E7',
+          'Market_Attention_Trajectory',
+          q?.symbol || liveIntel.entityName,
+          q
+            ? `Equity ${q.symbol}: $${q.price} (${q.changePercent >= 0 ? '+' : ''}${q.changePercent.toFixed(2)}%)`
+            : `14d public attention spike Z=${attnZ?.toFixed(2) ?? '0.00'} · ${liveIntel.deepAttackSurface?.publicAttention.totalViews14d.toLocaleString('en-US')} views`,
+          'INFO'
+        );
+      }
+      if (liveIntel.bftCorroboration) {
+        const b = liveIntel.bftCorroboration;
+        pushToAgent(
+          'E8',
+          'BFT_Tribunal_Quarantine',
+          `ROOTS_${b.statutoryRootSourcesCount}`,
+          `Statutory roots=${b.statutoryRootSourcesCount} · Unverified/Quarantined=${b.quarantinedSingleSourceClaims} · Prompt traps=${b.sanitizedPromptTrapsCount}`,
+          b.quarantinedSingleSourceClaims > 0 ? 'MEDIUM' : 'INFO'
+        );
+      }
+      for (const ch of (liveIntel.temporalCausalityAndLobbying?.causalChains || []).slice(0, 3)) {
+        pushToAgent(
+          'E8',
+          'MultiHop_Causal_Chain',
+          ch.chainId,
+          `${ch.streamSequence.join(' -> ')} (${ch.totalSpanDays}d): ${ch.narrative.slice(0, 130)}`,
+          ch.severity === 'CRITICAL' ? 'CRITICAL' : 'HIGH'
+        );
+      }
+      if (liveIntel.temporalCausalityAndLobbying?.burstSummary?.burstDetected) {
+        const bs = liveIntel.temporalCausalityAndLobbying.burstSummary;
+        pushToAgent(
+          'E8',
+          'Temporal_Burst_ZScore',
+          bs.peakMonth || 'PEAK_BURST',
+          `Peak month ${bs.peakMonth || 'N/A'} logged ${bs.peakMonthCount} events (mean=${bs.meanMonthlyEvents}, Z=${bs.peakBurstZScore})`,
+          bs.peakBurstZScore >= 2.5 ? 'HIGH' : 'MEDIUM'
+        );
+      }
+      if (liveIntel.supplyChainDependencies.length > 0) {
+        pushToAgent(
+          'E9',
+          'Spillover_Supply_Risk',
+          liveIntel.entityName,
+          `Monitoring ${liveIntel.supplyChainDependencies.length} upstream dependency vector(s) across ${liveIntel.industry}`,
+          'INFO'
+        );
+      }
       break;
     }
 
     case 'squadF': {
       for (const fd of (liveIntel.shadowFinance?.formDOfferings || []).slice(0, 4)) {
-        pushToAgent('F1', 'SEC_Form_D', fd.cik || fd.filedAt, `${fd.entityName} (${fd.form}) filed ${fd.filedAt}`, 'MEDIUM', fd.url);
+        const amtStr =
+          typeof fd.totalOfferingAmountUsd === 'number'
+            ? ` · Offering $${Math.round(fd.totalOfferingAmountUsd).toLocaleString('en-US')}`
+            : '';
+        const rpStr =
+          fd.relatedPersons && fd.relatedPersons.length > 0
+            ? ` · Related Persons: ${fd.relatedPersons.slice(0, 3).map((p) => p.name).join(', ')}`
+            : '';
+        pushToAgent(
+          'F1',
+          'SEC_Form_D',
+          fd.cik || fd.filedAt,
+          `${fd.entityName} (${fd.form}) filed ${fd.filedAt}${amtStr}${rpStr}`,
+          'MEDIUM',
+          fd.url
+        );
+      }
+      for (const spv of (liveIntel.shadowFinance?.spvAndParentLinks || []).slice(0, 4)) {
+        pushToAgent(
+          'F2',
+          'Related_Party_Link',
+          spv.identifier || spv.relatedEntity.slice(0, 24),
+          `${spv.sourceEntity} -> ${spv.relatedEntity} [${spv.relationshipType}]`,
+          /opacity/i.test(spv.relationshipType) ? 'HIGH' : 'INFO'
+        );
       }
       for (const lf of (liveIntel.shadowFinance?.lobbyingFilings || []).slice(0, 3)) {
         pushToAgent('F3', 'Senate_LDA', String(lf.filingYear), `${lf.registrantName} · $${Math.round(lf.amount).toLocaleString('en-US')}`, 'MEDIUM', lf.url);
       }
+      for (const pat of (liveIntel.shadowFinance?.patentSignals || []).slice(0, 4)) {
+        pushToAgent('F4', 'USPTO_Patent_Signal', pat.title.slice(0, 32), pat.snippet || pat.title, 'INFO', pat.url);
+      }
+      const numSamples = liveIntel.shadowFinance?.numericSamples || [];
+      if (numSamples.length > 0) {
+        const ben1 = computeBenfordAnalysis(numSamples);
+        pushToAgent(
+          'F5',
+          'Benford_D1',
+          `N=${ben1.sampleSize}`,
+          ben1.verdict,
+          ben1.flaggedDigits.length >= 2 || ben1.mad >= 0.015 ? 'HIGH' : 'INFO'
+        );
+      }
+      if (
+        (liveIntel.shadowFinance?.formDOfferings.length ?? 0) > 0 ||
+        !liveIntel.revenueOrValuation.startsWith('Private / Not publicly')
+      ) {
+        pushToAgent(
+          'F6',
+          'Private_Capital_Valuation',
+          liveIntel.stockTickerOrRegistryId,
+          `Valuation/Disclosures: ${liveIntel.revenueOrValuation} · ${liveIntel.shadowFinance?.formDOfferings.length || 0} Form D offering(s)`,
+          'INFO'
+        );
+      }
+      if (liveIntel.jurisdictions.length > 1 || (liveIntel.shadowFinance?.spvAndParentLinks || []).some((l) => l.jurisdiction)) {
+        const foreignLinks = (liveIntel.shadowFinance?.spvAndParentLinks || []).filter(
+          (l) => l.jurisdiction && l.jurisdiction !== 'US' && l.jurisdiction !== 'United States'
+        );
+        pushToAgent(
+          'F7',
+          'CrossBorder_Jurisdiction_Links',
+          `${liveIntel.jurisdictions.length}_JURIS`,
+          `Jurisdictions: ${liveIntel.jurisdictions.slice(0, 6).join(', ')} · Non-US LEI links: ${foreignLinks.length}`,
+          foreignLinks.length > 0 ? 'MEDIUM' : 'INFO'
+        );
+      }
       for (const sig of (liveIntel.privateDiscovery?.signals || []).filter((s) => s.source === 'SEC_EFTS_COUNTERPARTY').slice(0, 4)) {
         pushToAgent('F8', 'SEC_Counterparty_10K_8K', sig.recordId, `${sig.entityName}: ${sig.title} (${sig.date})`, 'MEDIUM', sig.url);
+      }
+      for (const aw of (liveIntel.sovereignRegistries?.usaSpendingAwards || []).slice(0, 4)) {
+        pushToAgent(
+          'F8',
+          'USASpending_Procurement',
+          aw.awardId,
+          `${aw.awardingSubAgency} (${aw.awardingAgency}) · $${Math.round(aw.obligatedAmountUsd).toLocaleString('en-US')} · ${aw.performancePeriod}`,
+          aw.obligatedAmountUsd >= 10_000_000 ? 'HIGH' : 'MEDIUM',
+          'https://www.usaspending.gov/search'
+        );
+      }
+      const lobbyAgencies = new Set((liveIntel.shadowFinance?.lobbyingFilings || []).flatMap((l) => l.agencies));
+      const awardAgencies = new Set(liveIntel.governmentSubsidiesAndGrants.map((g) => g.agency));
+      if (lobbyAgencies.size > 0 && awardAgencies.size > 0) {
+        pushToAgent(
+          'F8',
+          'Lobbying_Award_Alignment',
+          `${lobbyAgencies.size}_vs_${awardAgencies.size}`,
+          `${lobbyAgencies.size} lobbied federal entities cross-checked vs ${awardAgencies.size} procurement awarding agencies`,
+          'INFO'
+        );
       }
       for (const fr of (liveIntel.shadowFinance?.federalRegisterDocs || []).slice(0, 4)) {
         pushToAgent('F9', 'Federal_Register', fr.documentNumber, `${fr.title} (${fr.agencies.slice(0, 2).join(', ')})`, 'MEDIUM', fr.url);
@@ -367,16 +822,53 @@ export function extractGroundedHitsByAgent(
         const targetAgent = piv.type === 'IP' || piv.type === 'ASN' ? 'G1' : 'G2';
         pushToAgent(targetAgent, 'Phase4_Pivot', piv.value, `D${piv.depth} ${piv.type} (${piv.discoveredFrom}): ${piv.summary}`, 'INFO');
       }
-      // G2: crt.sh Certificate Transparency subdomains
+      // G2: crt.sh Certificate Transparency subdomains & live TLS X.509 handshake audit
       if ((liveIntel.cyberTelemetry?.ctSubdomains || []).length > 0) {
         const ct = liveIntel.cyberTelemetry!;
         pushToAgent(
           'G2',
           'crt_sh_CT',
           ct.primaryDomain || 'CT_LOGS',
-          `${ct.ctTotalCertsSampled} certs · ${ct.ctSubdomains.length} subdomains (${ct.ctSubdomains.slice(0, 5).join(', ')})`,
+          `${ct.ctTotalCertsSampled} certs · ${ct.ctSubdomains.length} subdomains (Issuers: ${ct.ctCertIssuers.slice(0, 3).join(', ') || 'Verified CA'})`,
           'INFO',
           ct.primaryDomain ? `https://crt.sh/?q=${encodeURIComponent(ct.primaryDomain)}` : undefined
+        );
+      }
+      const tlsCert = liveIntel.deepAttackSurface?.tlsCertificate;
+      if (tlsCert) {
+        pushToAgent(
+          'G2',
+          'Live_TLS_X509_Audit',
+          tlsCert.host,
+          `${tlsCert.protocol} (${tlsCert.cipherName}) · Issuer=${tlsCert.issuerCn || tlsCert.issuerOrg} · Expiry=${tlsCert.daysUntilExpiry}d · ${tlsCert.sanDomains.length} SANs${tlsCert.isExpired ? ' [EXPIRED]' : ''}${tlsCert.isSelfSigned ? ' [SELF-SIGNED]' : ''}`,
+          tlsCert.isExpired || tlsCert.isSelfSigned ? 'CRITICAL' : (tlsCert.daysUntilExpiry < 21 ? 'HIGH' : 'INFO')
+        );
+      }
+      // G3: Security.txt & OSS supply-chain footprint
+      const pkgSupply = liveIntel.deepAttackSurface?.softwareSupplyChain;
+      if (liveIntel.cyberTelemetry?.primaryDomain || (pkgSupply && (pkgSupply.npmPackages.length > 0 || pkgSupply.pypiPackage || (pkgSupply.cratesIoPackages?.length ?? 0) > 0 || (pkgSupply.dockerHubRepos?.length ?? 0) > 0))) {
+        const pkgCount =
+          (pkgSupply?.npmPackages.length || 0) +
+          (pkgSupply?.pypiPackage ? 1 : 0) +
+          (pkgSupply?.cratesIoPackages?.length || 0) +
+          (pkgSupply?.dockerHubRepos?.length || 0);
+        pushToAgent(
+          'G3',
+          'OSS_SecurityTxt_Surface',
+          liveIntel.cyberTelemetry?.primaryDomain || liveIntel.entityName,
+          `RFC9116 security.txt=${liveIntel.cyberTelemetry?.securityTxtPresent ? liveIntel.cyberTelemetry.securityTxtContact || 'Present' : 'Absent'} · Public packages indexed=${pkgCount}`,
+          liveIntel.cyberTelemetry?.securityTxtPresent ? 'INFO' : 'MEDIUM'
+        );
+      }
+      // G4: STIX 2.1 / EPSS / threat patterns
+      const epssScores = liveIntel.deepAttackSurface?.epssScores || [];
+      if ((liveIntel.cyberTelemetry?.disclosedCves.length ?? 0) > 0 || (liveIntel.cyberTelemetry?.cyberNewsHits.length ?? 0) > 0 || epssScores.length > 0) {
+        pushToAgent(
+          'G4',
+          'STIX21_EPSS_Matrix',
+          `CVES_${liveIntel.cyberTelemetry?.disclosedCves.length || 0}`,
+          `STIX 2.1 mapped: ${liveIntel.cyberTelemetry?.disclosedCves.length || 0} CVEs · ${epssScores.length} EPSS scores · ${liveIntel.cyberTelemetry?.cyberNewsHits.length || 0} cyber advisories`,
+          epssScores.some((e) => e.epss >= 0.7) ? 'HIGH' : 'INFO'
         );
       }
       // G5: NVD CVEs & OSV.dev supply-chain vulnerabilities
@@ -398,6 +890,13 @@ export function extractGroundedHitsByAgent(
           missingDmarc ? 'MEDIUM' : 'INFO'
         );
       }
+      // G7: Cyber breach / outage news & Spamhaus DROP hits
+      for (const hit of (liveIntel.cyberTelemetry?.cyberNewsHits || []).slice(0, 4)) {
+        pushToAgent('G7', 'Cyber_Incident_Feed', hit.domain, `${hit.title} (${hit.date})`, 'MEDIUM', hit.url);
+      }
+      for (const cidr of liveIntel.deepAttackSurface?.spamhausDropCheck?.matchedCidrs || []) {
+        pushToAgent('G7', 'Spamhaus_DROP', cidr, `Resolved infrastructure overlaps Spamhaus DROP netblock ${cidr}`, 'CRITICAL');
+      }
       // G8: Edge nameserver delegation & CSP origins
       const nsRecords = liveIntel.cyberTelemetry?.nsRecords || [];
       const cspOrigins = liveIntel.deepAttackSurface?.httpSecurityAudit?.cspDiscoveredOrigins || [];
@@ -410,15 +909,127 @@ export function extractGroundedHitsByAgent(
           'INFO'
         );
       }
+      // G9: Exposed hostnames in CT logs (admin/api/staging/dev/vpn/mail surface)
+      const ctSubs = liveIntel.cyberTelemetry?.ctSubdomains || [];
+      if (ctSubs.length > 0) {
+        const sensitive = ctSubs.filter((h) => /\b(admin|api|dev|staging|vpn|mail|auth|sso|internal|portal|beta|test)\b/i.test(h));
+        pushToAgent(
+          'G9',
+          'CT_Subdomain_Surface',
+          liveIntel.cyberTelemetry?.primaryDomain || 'SUBDOMAINS',
+          `Sampled ${ctSubs.length} unique subdomains (${sensitive.length} admin/API/staging endpoints: ${(sensitive.length > 0 ? sensitive : ctSubs).slice(0, 4).join(', ')})`,
+          sensitive.length > 0 ? 'MEDIUM' : 'INFO'
+        );
+      }
       break;
     }
 
     case 'squadH': {
+      const evs = liveIntel.swarmTelemetry?.timestampedEvents || [];
+      if (evs.length >= 3) {
+        const hawkes = computeHawkesAnalysis(evs);
+        pushToAgent('H1', 'Hawkes_Burstiness', `N=${hawkes.eventCount}`, hawkes.clusteringVerdict, hawkes.burstinessCoefficient > 0.35 ? 'HIGH' : 'INFO');
+      }
       for (const tech of liveIntel.subsidiarySwarm?.swarmAndCyberReport.atlasTechniquesTriggered || []) {
         pushToAgent('H2', 'MITRE_ATLAS_v2026', tech, `Triggered adversarial/swarm technique across live telemetry`, 'HIGH');
       }
+      const txtSamples = liveIntel.swarmTelemetry?.textSamples || [];
+      if (txtSamples.length >= 2) {
+        const stylo = computeStylometricFingerprint(txtSamples);
+        pushToAgent('H2', 'Stylometric_Entropy', `TOKENS_${stylo.totalTokens}`, stylo.summary, stylo.uniformityRisk === 'HIGH' ? 'MEDIUM' : 'INFO');
+      }
+      if ((liveIntel.subsidiarySwarm?.subsidiaryTree.length ?? 0) > 0 || (liveIntel.shadowFinance?.spvAndParentLinks.length ?? 0) > 0) {
+        pushToAgent(
+          'H3',
+          'Graph_Topology_Modularity',
+          liveIntel.entityName,
+          `Structured entity-affiliate links: ${liveIntel.subsidiarySwarm?.subsidiaryTree.length || 0} LEI tree nodes · ${liveIntel.shadowFinance?.spvAndParentLinks.length || 0} SPV/parent edges`,
+          'INFO'
+        );
+      }
+      if (liveIntel.cyberTelemetry?.primaryDomain) {
+        const ct = liveIntel.cyberTelemetry;
+        pushToAgent(
+          'H4',
+          'Agentic_Crawler_Surface',
+          ct.primaryDomain,
+          `robots.txt=${ct.robotsTxtPresent ? 'Present' : 'Absent'} · llms.txt=${ct.llmsTxtPresent ? 'Present' : 'Absent'} · security.txt=${ct.securityTxtPresent ? 'Present' : 'Absent'}`,
+          'INFO',
+          `https://${ct.primaryDomain}/robots.txt`
+        );
+      }
       for (const hn of (liveIntel.deepAttackSurface?.publicAttention.hackerNewsThreads || []).slice(0, 3)) {
         pushToAgent('H5', 'HN_Algolia', hn.createdAt, `${hn.title} (${hn.points} pts, ${hn.numComments} comments)`, 'INFO', hn.url);
+      }
+      const wikiRev = liveIntel.deepAttackSurface?.wikipediaRevisionForensics;
+      if (wikiRev && wikiRev.revisionsAnalyzed > 0) {
+        pushToAgent(
+          'H5',
+          'Wikipedia_Revision_Forensics',
+          wikiRev.articleTitle,
+          `Verdict=${wikiRev.verdict} · ${wikiRev.revisionsAnalyzed} revisions (${wikiRev.uniqueEditors} editors, ${(wikiRev.anonymousIpRatio * 100).toFixed(0)}% anon, ${wikiRev.revertOrUndoEdits} reverts, ${wikiRev.largeDeletions.length} large deletions)`,
+          wikiRev.verdict === 'WHITEWASH_RISK' ? 'HIGH' : wikiRev.verdict === 'ACTIVE_EDIT_WAR' ? 'MEDIUM' : 'INFO',
+          wikiRev.articleUrl
+        );
+      }
+      if (liveIntel.groundingSources.length >= 3) {
+        const uniqueHosts = Array.from(
+          new Set(
+            liveIntel.groundingSources.map((g) => {
+              try {
+                return new URL(g.uri).hostname;
+              } catch {
+                return g.sourceType;
+              }
+            })
+          )
+        );
+        pushToAgent(
+          'H6',
+          'Cross_Domain_Drift',
+          `DOMAINS_${uniqueHosts.length}`,
+          `Verified narrative consistency across ${uniqueHosts.length} distinct source domain(s): ${uniqueHosts.slice(0, 5).join(', ')}`,
+          'INFO'
+        );
+      }
+      const statutoryTimed = evs.filter((e) => e.source === 'sec_edgar' || e.source === 'senate_lda');
+      const tclStatutoryCount = (liveIntel.temporalCausalityAndLobbying?.events || []).filter((e) =>
+        e.stream === 'FEDERAL_REGISTER' ||
+        e.stream === 'SEC_FORM_D' ||
+        e.stream === 'SEC_FILING' ||
+        e.stream === 'SENATE_LDA_LOBBYING' ||
+        e.stream === 'COURTLISTENER_DOCKET' ||
+        e.stream === 'USASPENDING_AWARD'
+      ).length;
+      if (statutoryTimed.length > 0 || tclStatutoryCount > 0) {
+        pushToAgent(
+          'H7',
+          'Statutory_Timestamp_Alignment',
+          `FILINGS_${statutoryTimed.length + tclStatutoryCount}`,
+          `Aligned ${statutoryTimed.length} SEC/LDA stream events and ${tclStatutoryCount} cross-stream statutory/docket timestamps (${liveIntel.temporalCausalityAndLobbying?.clusters.length || 0} Δt<=14d clusters)`,
+          (liveIntel.temporalCausalityAndLobbying?.clusters.length || 0) >= 5 ? 'MEDIUM' : 'INFO'
+        );
+      }
+      if (evs.length > 0 || txtSamples.length > 0) {
+        pushToAgent(
+          'H8',
+          'Sample_Threshold_Calibration',
+          liveIntel.entityName,
+          `Calibrated statistical guardrails over ${evs.length} timestamped events and ${txtSamples.length} textual excerpts`,
+          'INFO'
+        );
+      }
+      const qCount =
+        (liveIntel.extremeDorkingAndDna?.quarantinedArtifactsCount ?? 0) +
+        (liveIntel.bftCorroboration?.quarantinedSingleSourceClaims ?? 0);
+      if (qCount > 0) {
+        pushToAgent(
+          'H9',
+          'Tribunal_Quarantine_Gate',
+          `QUAR_${qCount}`,
+          `Quarantined ${qCount} uncorroborated or single-source artifact(s) pending independent provenance`,
+          'MEDIUM'
+        );
       }
       break;
     }
@@ -429,6 +1040,46 @@ export function extractGroundedHitsByAgent(
       }
       for (const p of (liveIntel.sanctionsTrade?.pepAndOffshoreHits || []).slice(0, 3)) {
         pushToAgent('I2', p.source, p.title.slice(0, 32), p.snippet, 'HIGH', p.url);
+      }
+      for (const av of liveIntel.sanctionsTrade?.aviationMaritimeSignals || []) {
+        const isMaritime = /vessel|ship|maritime|port|ais|tanker|cargo/i.test(`${av.title} ${av.snippet}`);
+        pushToAgent(isMaritime ? 'I3' : 'I4', isMaritime ? 'Maritime_AIS_Screen' : 'FAA_Aviation_Logistics', av.title.slice(0, 32), av.snippet || av.title, 'INFO', av.url);
+      }
+      for (const tb of (liveIntel.sanctionsTrade?.tbmlTariffSignals || []).slice(0, 3)) {
+        pushToAgent('I5', 'USITC_TBML_Trade', tb.title.slice(0, 32), tb.snippet || tb.title, 'MEDIUM', tb.url);
+      }
+      const exportNotices = (liveIntel.shadowFinance?.federalRegisterDocs || []).filter((fr) =>
+        /export|itar|ear|bis|defense|launch|license|spectrum|foreign|sanction/i.test(`${fr.title} ${fr.agencies.join(' ')}`)
+      );
+      for (const ex of exportNotices.slice(0, 3)) {
+        pushToAgent('I6', 'Export_Control_FR', ex.documentNumber, `${ex.title} (${ex.agencies.slice(0, 2).join(', ')})`, 'MEDIUM', ex.url);
+      }
+      if (liveIntel.supplyChainDependencies.length > 0) {
+        pushToAgent(
+          'I7',
+          'Upstream_Supply_Compliance',
+          `TIERS_${liveIntel.supplyChainDependencies.length}`,
+          `Audited ${liveIntel.supplyChainDependencies.length} upstream dependency path(s): ${liveIntel.supplyChainDependencies.slice(0, 2).map((d) => d.dependency).join('; ')}`,
+          'INFO'
+        );
+      }
+      if (liveIntel.sanctionsTrade && liveIntel.jurisdictions.length > 0) {
+        pushToAgent(
+          'I8',
+          'CrossBorder_UBO_Residency',
+          `${liveIntel.sanctionsTrade.screenedNamesCount}_NAMES`,
+          `Screened ${liveIntel.sanctionsTrade.screenedNamesCount} legal/executive entities across ${liveIntel.jurisdictions.slice(0, 5).join(', ')}`,
+          'INFO'
+        );
+      }
+      if (liveIntel.sanctionsTrade && liveIntel.sanctionsTrade.screenedNamesCount > 0) {
+        pushToAgent(
+          'I9',
+          'JaroWinkler_Threshold_Guard',
+          `JW>=0.92`,
+          liveIntel.sanctionsTrade.screeningVerdict,
+          'INFO'
+        );
       }
       break;
     }
@@ -474,13 +1125,45 @@ export function extractGroundedHitsByAgent(
           flagged ? 'CRITICAL' : 'INFO'
         );
       }
-      if (af?.componentRatios?.DSRI !== undefined) {
+      const dsriVal = af?.componentRatios?.dsri ?? af?.componentRatios?.DSRI;
+      const sgiVal = af?.componentRatios?.sgi ?? af?.componentRatios?.SGI;
+      if (dsriVal !== undefined) {
         pushToAgent(
           'J5',
           'XBRL_DSRI',
-          `FY${af.currentYear || 'GAAP'}`,
-          `DSRI=${af.componentRatios.DSRI} · SGI=${af.componentRatios.SGI ?? 'N/A'}`,
-          af.componentRatios.DSRI > 1.465 ? 'HIGH' : 'INFO'
+          `FY${af?.currentYear || 'GAAP'}`,
+          `DSRI=${dsriVal} · SGI=${sgiVal ?? 'N/A'}`,
+          dsriVal > 1.465 ? 'HIGH' : 'INFO'
+        );
+      }
+      const depiVal = af?.componentRatios?.depi ?? af?.componentRatios?.DEPI;
+      const aqiVal = af?.componentRatios?.aqi ?? af?.componentRatios?.AQI;
+      if (depiVal !== undefined || aqiVal !== undefined) {
+        pushToAgent(
+          'J6',
+          'XBRL_DEPI_AQI',
+          `FY${af?.currentYear || 'GAAP'}`,
+          `DEPI=${depiVal ?? 'N/A'} · AQI=${aqiVal ?? 'N/A'}`,
+          (depiVal !== undefined && depiVal > 1.1) ? 'HIGH' : 'INFO'
+        );
+      }
+      const lvgiVal = af?.componentRatios?.lvgi ?? af?.componentRatios?.LVGI;
+      const gmiVal = af?.componentRatios?.gmi ?? af?.componentRatios?.GMI;
+      if (lvgiVal !== undefined || gmiVal !== undefined) {
+        pushToAgent(
+          'J7',
+          'XBRL_LVGI_GMI',
+          `FY${af?.currentYear || 'GAAP'}`,
+          `LVGI=${lvgiVal ?? 'N/A'} · GMI=${gmiVal ?? 'N/A'}`,
+          (lvgiVal !== undefined && lvgiVal > 1.2) ? 'HIGH' : 'INFO'
+        );
+      } else if ((liveIntel.shadowFinance?.formDOfferings.length ?? 0) > 0) {
+        pushToAgent(
+          'J7',
+          'Exempt_Capital_Structure',
+          `FORM_D_${liveIntel.shadowFinance!.formDOfferings.length}`,
+          `Private capital exempt issuances indexed (${liveIntel.shadowFinance!.formDOfferings.length} Form D filings; public debt covenant XBRL exempt)`,
+          'INFO'
         );
       }
       if ((liveIntel.shadowFinance?.xbrlFacts || []).length > 0) {
@@ -493,6 +1176,17 @@ export function extractGroundedHitsByAgent(
           'INFO'
         );
       }
+      if (af && (af.manipulationProbabilityFlag === 'HIGH_RISK' || (liveIntel.shadowFinance?.numericSamples.length ?? 0) > 0)) {
+        pushToAgent(
+          'J9',
+          'Accounting_GAAP_Calibrator',
+          af.status,
+          af.manipulationProbabilityFlag === 'HIGH_RISK'
+            ? `High M-Score (${af.beneishMScore}) flagged alongside growth/CapEx context normalization`
+            : `${af.summaryVerdict} (${liveIntel.shadowFinance?.numericSamples.length || 0} audited numeric inflows normalized)`,
+          af.manipulationProbabilityFlag === 'HIGH_RISK' ? 'HIGH' : 'INFO'
+        );
+      }
       break;
     }
 
@@ -503,8 +1197,80 @@ export function extractGroundedHitsByAgent(
       for (const f of (liveIntel.insiderLabor?.item4AuditorOrRestatement8Ks || []).slice(0, 3)) {
         pushToAgent('K2', 'SEC_8K_Item4', f.filingDate, `${f.form} [Items: ${f.items || '4'}] (${f.accessionNumber})`, 'CRITICAL', f.url);
       }
+      if ((liveIntel.shadowFinance?.formDOfferings.length ?? 0) > 0 && (liveIntel.insiderLabor?.form4AndOwnershipFilings.length ?? 0) === 0) {
+        pushToAgent(
+          'K3',
+          'Private_Equity_Block_Disclosures',
+          `FORM_D_${liveIntel.shadowFinance!.formDOfferings.length}`,
+          `Private issuer exempt from Section 16 Form 4; tracked ${liveIntel.shadowFinance!.formDOfferings.length} SEC Form D sales/ownership filings`,
+          'INFO'
+        );
+      } else if ((liveIntel.insiderLabor?.form4AndOwnershipFilings.length ?? 0) >= 2) {
+        const forms144 = liveIntel.insiderLabor!.form4AndOwnershipFilings.filter((f) => /144/i.test(f.form));
+        pushToAgent(
+          'K3',
+          'Rule10b51_Block_Dispositions',
+          `COUNT_${liveIntel.insiderLabor!.form4AndOwnershipFilings.length}`,
+          `${liveIntel.insiderLabor!.form4AndOwnershipFilings.length} insider ownership filings (${forms144.length} Form 144 proposed blocks)`,
+          forms144.length > 0 ? 'MEDIUM' : 'INFO'
+        );
+      }
       if ((liveIntel.insiderLabor?.cfpbComplaintsTotal ?? 0) > 0) {
         pushToAgent('K4', 'CFPB', 'COMPLAINTS', `${liveIntel.insiderLabor!.cfpbComplaintsTotal} consumer complaint record(s) matched`, 'MEDIUM');
+      }
+      const oshaSignals = (liveIntel.insiderLabor?.oshaAndNlrbSignals || []).filter((s) =>
+        /osha|safety|injur|fatality|death|dies|hazard|accident|amputat|fingers|citation/i.test(`${s.title} ${s.snippet}`)
+      );
+      const nlrbSignals = (liveIntel.insiderLabor?.oshaAndNlrbSignals || []).filter((s) =>
+        !/osha|safety|injur|fatality|death|dies|hazard|accident|amputat|fingers|citation/i.test(`${s.title} ${s.snippet}`) ||
+        /nlrb|labor|union|retaliat|whistleblow|worker|discrimination|flsa|meal break|wage/i.test(`${s.title} ${s.snippet}`)
+      );
+      for (const s of oshaSignals.slice(0, 3)) {
+        pushToAgent('K5', 'OSHA_Safety_Docket', s.title.slice(0, 32), s.snippet || s.title, 'HIGH', s.url);
+      }
+      for (const s of nlrbSignals.slice(0, 3)) {
+        pushToAgent('K6', 'NLRB_Labor_Retaliation', s.title.slice(0, 32), s.snippet || s.title, 'HIGH', s.url);
+      }
+      const ndaArbSignals = [
+        ...(liveIntel.extremeDorkingAndDna?.stealthEditDiffs || []).filter((d) =>
+          d.highRiskKeywordsAdded.some((k) => /arbitration|waiver|unilateral/i.test(k))
+        ),
+      ];
+      if (ndaArbSignals.length > 0) {
+        pushToAgent(
+          'K7',
+          'Restrictive_Arbitration_Clause',
+          ndaArbSignals[0].path,
+          `Stealth clause drift detected (${ndaArbSignals[0].highRiskKeywordsAdded.join(', ')})`,
+          'HIGH',
+          ndaArbSignals[0].newestUrl
+        );
+      } else if ((liveIntel.legalSlappBankruptcy?.slappAndArbitrationSignals.length ?? 0) > 0) {
+        const sig = liveIntel.legalSlappBankruptcy!.slappAndArbitrationSignals[0];
+        pushToAgent('K7', 'Forced_Arbitration_WebSignal', sig.title.slice(0, 32), sig.snippet || sig.title, 'MEDIUM', sig.url);
+      }
+      if (liveIntel.keyExecutives.length > 0) {
+        pushToAgent(
+          'K8',
+          'Executive_Leadership_Roster',
+          liveIntel.entityName,
+          `Tracked ${liveIntel.keyExecutives.length} executive/founder principals (${liveIntel.keyExecutives.slice(0, 4).join(', ')}) vs ${liveIntel.insiderLabor?.item4AuditorOrRestatement8Ks.length || 0} Item 4 8-Ks`,
+          'INFO'
+        );
+      }
+      if (
+        liveIntel.insiderLabor &&
+        (liveIntel.insiderLabor.form4AndOwnershipFilings.length > 0 ||
+          liveIntel.insiderLabor.oshaAndNlrbSignals.length > 0 ||
+          liveIntel.insiderLabor.cfpbComplaintsTotal > 0)
+      ) {
+        pushToAgent(
+          'K9',
+          'Labor_Insider_Tier_Guard',
+          liveIntel.entityName,
+          liveIntel.insiderLabor.preEventTimingNote,
+          'INFO'
+        );
       }
       break;
     }
@@ -521,7 +1287,7 @@ export function extractGroundedHitsByAgent(
           'HIGH'
         );
       }
-      // L2: Prompt injection / invisible Unicode agent traps
+      // L2: Prompt injection / invisible Unicode agent traps (MUST stay zero-hit when CLEAN)
       if (adv?.adversarialPromptInjectionIndicators && adv.adversarialPromptInjectionIndicators.threatLevel !== 'CLEAN') {
         const pi = adv.adversarialPromptInjectionIndicators;
         pushToAgent(
@@ -550,6 +1316,17 @@ export function extractGroundedHitsByAgent(
           rpki.validity === 'invalid' ? 'CRITICAL' : rpki.validity === 'unknown' ? 'MEDIUM' : 'INFO'
         );
       }
+      // L7: LLMs.txt / Robots.txt AI crawler directives
+      if (liveIntel.cyberTelemetry?.primaryDomain) {
+        const ct = liveIntel.cyberTelemetry;
+        pushToAgent(
+          'L7',
+          'AI_Crawler_Directive_Scan',
+          ct.primaryDomain,
+          `llms.txt=${ct.llmsTxtPresent ? 'Present' : 'Absent'} · robots.txt=${ct.robotsTxtPresent ? 'Present' : 'Absent'} · TrapLevel=${adv?.adversarialPromptInjectionIndicators.threatLevel || 'CLEAN'}`,
+          'INFO'
+        );
+      }
       // L8: DNSSEC & hijack-surface validation
       const rdap = liveIntel.deepAttackSurface?.rdapAndDnssec;
       if (rdap) {
@@ -561,11 +1338,22 @@ export function extractGroundedHitsByAgent(
           rdap.dnssecValidated ? 'INFO' : 'MEDIUM'
         );
       }
+      // L9: Digest transition calibration
+      if (adv && (adv.sampleDigestTransitions.length > 0 || (liveIntel.extremeDorkingAndDna?.stealthEditDiffs.length ?? 0) > 0)) {
+        pushToAgent(
+          'L9',
+          'Archive_Noise_Calibrator',
+          `DIGESTS_${adv.uniqueContentDigests}`,
+          `Calibrated ${adv.sampleDigestTransitions.length} digest transitions & ${liveIntel.extremeDorkingAndDna?.stealthEditDiffs.length || 0} line diffs against CMS churn`,
+          'INFO'
+        );
+      }
       break;
     }
 
     case 'squadM': {
-      for (const fac of (liveIntel.environmentalEpa?.facilities || []).slice(0, 5)) {
+      const facs = liveIntel.environmentalEpa?.facilities || [];
+      for (const fac of facs.slice(0, 5)) {
         pushToAgent(
           'M1',
           'EPA_ECHO',
@@ -575,6 +1363,50 @@ export function extractGroundedHitsByAgent(
           fac.sourceUrl
         );
       }
+      if (facs.length > 0) {
+        const totalCwa = facs.reduce((s, f) => s + f.cwaViolations, 0);
+        const totalCaa = facs.reduce((s, f) => s + f.caaViolations, 0);
+        const totalRcra = facs.reduce((s, f) => s + f.rcraViolations, 0);
+        pushToAgent('M2', 'EPA_CWA_NPDES', `CWA_${totalCwa}`, `Clean Water Act non-compliance across ${facs.length} site(s): ${totalCwa} quarter/violation flag(s)`, totalCwa > 0 ? 'HIGH' : 'INFO');
+        pushToAgent('M3', 'EPA_CAA_Air', `CAA_${totalCaa}`, `Clean Air Act stationary permit flags across ${facs.length} site(s): ${totalCaa} flag(s)`, totalCaa > 0 ? 'HIGH' : 'INFO');
+        pushToAgent('M4', 'EPA_RCRA_Waste', `RCRA_${totalRcra}`, `RCRA hazardous waste handler flags across ${facs.length} site(s): ${totalRcra} flag(s)`, totalRcra > 0 ? 'HIGH' : 'INFO');
+        pushToAgent('M7', 'Site_Resource_Footprint', `SITES_${liveIntel.environmentalEpa!.epaFacilitiesCount}`, `Indexed ${liveIntel.environmentalEpa!.epaFacilitiesCount} regulated industrial sites across ${Array.from(new Set(facs.map((f) => f.state).filter(Boolean))).join(', ') || 'US'}`, 'INFO');
+        pushToAgent('M9', 'EPA_Operator_Guard', liveIntel.entityName, `Verified operator match across ${facs.length} EPA ECHO registry ID(s) (${facs.map((f) => f.registryId).slice(0, 3).join(', ')})`, 'INFO');
+      }
+      const envNotices = liveIntel.environmentalEpa?.spectrumAndExtractionNotices || [];
+      if (facs.length === 0 && envNotices.length > 0) {
+        const waterNotice = envNotices.find((n) => /water|cwa|npdes|effluent|wetland|coastal|discharge|marine/i.test(`${n.title} ${n.snippet}`));
+        const airNotice = envNotices.find((n) => /air|caa|emission|ozone|climate|launch|propellant|rocket|exhaust/i.test(`${n.title} ${n.snippet}`));
+        const wasteNotice = envNotices.find((n) => /waste|rcra|hazmat|superfund|chemical|toxic|pfas|remediat/i.test(`${n.title} ${n.snippet}`));
+        if (waterNotice) {
+          pushToAgent('M2', 'EPA_FR_Water_Notice', waterNotice.title.slice(0, 32), waterNotice.snippet || waterNotice.title, 'INFO', waterNotice.url);
+        }
+        if (airNotice) {
+          pushToAgent('M3', 'EPA_FR_Air_Notice', airNotice.title.slice(0, 32), airNotice.snippet || airNotice.title, 'INFO', airNotice.url);
+        }
+        if (wasteNotice) {
+          pushToAgent('M4', 'EPA_FR_Waste_Notice', wasteNotice.title.slice(0, 32), wasteNotice.snippet || wasteNotice.title, 'INFO', wasteNotice.url);
+        }
+      }
+      const physicalSites = liveIntel.supplyChainDependencies.filter((d) => /physical|site|facility/i.test(d.tier));
+      if (facs.length === 0 && physicalSites.length > 0) {
+        pushToAgent(
+          'M7',
+          'Physical_Site_Footprint',
+          `SITES_${physicalSites.length}`,
+          `Verified physical operating footprint: ${physicalSites.map((s) => s.dependency).slice(0, 2).join('; ')} (${liveIntel.headquarters})`,
+          'INFO'
+        );
+      }
+      if (facs.length === 0 && envNotices.length > 0) {
+        pushToAgent(
+          'M9',
+          'EPA_Registry_Disambiguation',
+          liveIntel.entityName,
+          liveIntel.environmentalEpa!.environmentalVerdict,
+          'INFO'
+        );
+      }
       if ((liveIntel.environmentalEpa?.totalPenaltiesUsd ?? 0) > 0) {
         pushToAgent(
           'M5',
@@ -582,6 +1414,26 @@ export function extractGroundedHitsByAgent(
           'TOTAL_USD',
           `Assessed EPA penalties total $${Math.round(liveIntel.environmentalEpa!.totalPenaltiesUsd).toLocaleString('en-US')}`,
           'HIGH'
+        );
+      }
+      for (const spec of envNotices.slice(0, 3)) {
+        pushToAgent('M6', 'Spectrum_Extraction_Feed', spec.title.slice(0, 32), spec.snippet || spec.title, 'INFO', spec.url);
+      }
+      const envFr = (liveIntel.shadowFinance?.federalRegisterDocs || []).filter((fr) =>
+        /epa|faa|fcc|launch|spectrum|environment|water|air|pipeline|blm|spaceport/i.test(`${fr.title} ${fr.agencies.join(' ')}`)
+      );
+      for (const fr of envFr.slice(0, 3)) {
+        pushToAgent('M6', 'FederalRegister_Site_Permit', fr.documentNumber, `${fr.title} (${fr.agencies.slice(0, 2).join(', ')})`, 'MEDIUM', fr.url);
+      }
+      if (liveIntel.environmentalEpa && (facs.length > 0 || envNotices.length > 0)) {
+        pushToAgent(
+          'M8',
+          'ESG_Compliance_Contrast',
+          liveIntel.entityName,
+          liveIntel.environmentalEpa.totalPenaltiesUsd > 0
+            ? `Penalty divergence flagged: $${Math.round(liveIntel.environmentalEpa.totalPenaltiesUsd).toLocaleString('en-US')} vs ESG disclosures`
+            : liveIntel.environmentalEpa.environmentalVerdict,
+          liveIntel.environmentalEpa.totalPenaltiesUsd > 0 ? 'HIGH' : 'INFO'
         );
       }
       break;
@@ -595,6 +1447,9 @@ export function extractGroundedHitsByAgent(
         .filter((s) => s.source === 'OPENALEX')
         .slice(0, 4)) {
         pushToAgent('N2', sig.source, sig.recordId, `${sig.entityName}: ${sig.title}`, 'INFO', sig.url);
+      }
+      for (const wk of (liveIntel.patentGrantCapture?.academicWorks || []).slice(0, 3)) {
+        pushToAgent('N2', 'OpenAlex_Work', wk.title.slice(0, 28), `${wk.title} (${wk.year || 'N/A'} · ${wk.citedByCount} citations)`, 'INFO', wk.url);
       }
       for (const sig of (liveIntel.privateDiscovery?.signals || [])
         .filter((s) => s.source === 'CLINICAL_TRIALS_V2' || s.source === 'OPENFDA')
@@ -611,6 +1466,59 @@ export function extractGroundedHitsByAgent(
           mut.studyUrl
         );
       }
+      for (const pt of (liveIntel.patentGrantCapture?.ptabAndSepSignals || []).slice(0, 3)) {
+        pushToAgent('N4', 'PTAB_SEP_Signal', pt.title.slice(0, 32), pt.snippet || pt.title, 'MEDIUM', pt.url);
+      }
+      for (const ps of (liveIntel.shadowFinance?.patentSignals || []).slice(0, 4)) {
+        pushToAgent('N5', 'USPTO_Assignee_Chain', ps.title.slice(0, 32), ps.snippet || ps.title, 'INFO', ps.url);
+      }
+      const grants = liveIntel.patentGrantCapture?.publicGrants || [];
+      if (grants.length > 0 || liveIntel.governmentSubsidiesAndGrants.length > 0) {
+        const sumGrants = grants.reduce((s, g) => s + g.amountUsd, 0);
+        pushToAgent(
+          'N6',
+          'BayhDole_Public_RND',
+          liveIntel.entityName,
+          grants.length > 0
+            ? `$${Math.round(sumGrants).toLocaleString('en-US')} across ${grants.length} NIH/NSF awards`
+            : `${liveIntel.governmentSubsidiesAndGrants.length} federal R&D/procurement contracts (${liveIntel.governmentSubsidiesAndGrants[0].agency})`,
+          'INFO'
+        );
+      }
+      const insts = Array.from(
+        new Set((liveIntel.patentGrantCapture?.academicWorks || []).flatMap((w) => w.institutions))
+      ).filter(Boolean);
+      if (insts.length > 0) {
+        pushToAgent(
+          'N7',
+          'Academic_Spinout_Institutions',
+          `INST_${insts.length}`,
+          `Co-author institutions: ${insts.slice(0, 5).join(', ')}`,
+          'INFO'
+        );
+      }
+      const ossCount =
+        (liveIntel.deepAttackSurface?.softwareSupplyChain.npmPackages.length || 0) +
+        (liveIntel.deepAttackSurface?.softwareSupplyChain.cratesIoPackages?.length || 0) +
+        (liveIntel.deepAttackSurface?.softwareSupplyChain.dockerHubRepos?.length || 0);
+      if (ossCount > 0 || (liveIntel.shadowFinance?.patentSignals.length ?? 0) > 0) {
+        pushToAgent(
+          'N8',
+          'OSS_vs_Patent_Enclosure',
+          liveIntel.entityName,
+          `Public OSS repos/packages=${ossCount} vs ${liveIntel.shadowFinance?.patentSignals.length || 0} patent assignee leads`,
+          'INFO'
+        );
+      }
+      if ((liveIntel.patentGrantCapture?.openAlexWorksCount ?? 0) > 0 || grants.length > 0) {
+        pushToAgent(
+          'N9',
+          'Grant_Affiliation_Guard',
+          liveIntel.entityName,
+          liveIntel.patentGrantCapture!.grantCaptureVerdict,
+          'INFO'
+        );
+      }
       break;
     }
 
@@ -618,22 +1526,134 @@ export function extractGroundedHitsByAgent(
       for (const f13 of (liveIntel.darkPoolCrypto?.form13fAndNportFilings || []).slice(0, 4)) {
         pushToAgent('O1', 'SEC_13F_NPORT', f13.filedAt, `${f13.entityName} (${f13.form})`, 'INFO', f13.url);
       }
+      for (const sw of (liveIntel.darkPoolCrypto?.swapAndTreasurySignals || []).slice(0, 3)) {
+        pushToAgent('O2', 'Treasury_Swap_Signal', sw.title.slice(0, 32), sw.snippet || sw.title, 'INFO', sw.url);
+      }
       if (liveIntel.deepAttackSurface?.liveMarketQuote) {
         const q = liveIntel.deepAttackSurface.liveMarketQuote;
         pushToAgent('O3', 'Yahoo_Finance_v8', q.symbol, `${q.symbol}: $${q.price} (${q.changePercent >= 0 ? '+' : ''}${q.changePercent.toFixed(2)}%)`, 'INFO', q.sourceUrl);
+      } else if (liveIntel.darkPoolCrypto?.fastestBitcoinFeeSatVb != null) {
+        pushToAgent(
+          'O3',
+          'Mempool_Fee_Telemetry',
+          `FEE_${liveIntel.darkPoolCrypto.fastestBitcoinFeeSatVb}`,
+          `Bitcoin mempool fastest fee=${liveIntel.darkPoolCrypto.fastestBitcoinFeeSatVb} sat/vB (private equity; no public ticker ATS)`,
+          'INFO'
+        );
       }
       if (liveIntel.darkPoolCrypto?.mempoolTipHeight) {
         pushToAgent('O4', 'Bitcoin_Mempool', `BLK_${liveIntel.darkPoolCrypto.mempoolTipHeight}`, `BTC Tip #${liveIntel.darkPoolCrypto.mempoolTipHeight} · Fast Fee ${liveIntel.darkPoolCrypto.fastestBitcoinFeeSatVb ?? 'N/A'} sat/vB`, 'INFO');
+      }
+      if (liveIntel.deepAttackSurface?.publicAttention.defiLlamaTvlUsd != null || (liveIntel.deepAttackSurface?.publicAttention.geckoTerminalPools?.length ?? 0) > 0) {
+        pushToAgent(
+          'O5',
+          'DeFiLlama_GeckoTerminal',
+          liveIntel.deepAttackSurface!.publicAttention.defiLlamaSlug || 'ONCHAIN',
+          `DefiLlama TVL=$${Math.round(liveIntel.deepAttackSurface!.publicAttention.defiLlamaTvlUsd || 0).toLocaleString('en-US')} · DEX pools=${liveIntel.deepAttackSurface!.publicAttention.geckoTerminalPools?.length || 0}`,
+          'INFO'
+        );
+      }
+      if (!liveIntel.revenueOrValuation.startsWith('Private / Not publicly') || liveIntel.deepAttackSurface?.liveMarketQuote) {
+        pushToAgent(
+          'O6',
+          'Secondary_ATS_Liquidity',
+          liveIntel.stockTickerOrRegistryId,
+          `Market Tier: ${liveIntel.businessScale} · ${liveIntel.revenueOrValuation}`,
+          'INFO'
+        );
+      }
+      if ((liveIntel.shadowFinance?.formDOfferings.length ?? 0) > 0 || (liveIntel.darkPoolCrypto?.form13fAndNportFilings.length ?? 0) > 0) {
+        pushToAgent(
+          'O7',
+          'Collateral_FormD_Liquidity',
+          `FORMD_${liveIntel.shadowFinance?.formDOfferings.length || 0}_13F_${liveIntel.darkPoolCrypto?.form13fAndNportFilings.length || 0}`,
+          `Cross-checked ${liveIntel.shadowFinance?.formDOfferings.length || 0} Form D exempt SPVs vs ${liveIntel.darkPoolCrypto?.form13fAndNportFilings.length || 0} institutional 13F/NPORT holder filings`,
+          'INFO'
+        );
+      }
+      if ((liveIntel.insiderLabor?.form4AndOwnershipFilings.length ?? 0) > 0 || (liveIntel.shadowFinance?.formDOfferings.length ?? 0) > 0) {
+        pushToAgent(
+          'O8',
+          'Tender_Lockup_Velocity',
+          liveIntel.entityName,
+          `Insider filings=${liveIntel.insiderLabor?.form4AndOwnershipFilings.length || 0} · Exempt private offerings=${liveIntel.shadowFinance?.formDOfferings.length || 0}`,
+          'INFO'
+        );
+      }
+      if (liveIntel.darkPoolCrypto && (liveIntel.darkPoolCrypto.mempoolTipHeight || liveIntel.darkPoolCrypto.form13fAndNportFilings.length > 0)) {
+        pushToAgent(
+          'O9',
+          'Derivatives_Baseline_Calibrator',
+          liveIntel.entityName,
+          liveIntel.darkPoolCrypto.derivativesVerdict,
+          'INFO'
+        );
       }
       break;
     }
 
     case 'squadP': {
-      for (const cd of (liveIntel.legalSlappBankruptcy?.courtDockets || []).slice(0, 5)) {
+      const dockets = liveIntel.legalSlappBankruptcy?.courtDockets || [];
+      for (const cd of dockets.slice(0, 5)) {
         pushToAgent('P1', 'CourtListener_v4', cd.docketNumber || cd.dateFiled, `${cd.caseName} (${cd.court})`, 'MEDIUM', cd.url);
       }
       for (const fc of (liveIntel.legalSlappBankruptcy?.forumConcentration || []).slice(0, 3)) {
         pushToAgent('P2', 'Forum_Concentration', fc.court, `${fc.court}: ${fc.count} federal docket(s)`, fc.count >= 3 ? 'MEDIUM' : 'INFO');
+      }
+      for (const sig of (liveIntel.legalSlappBankruptcy?.slappAndArbitrationSignals || []).slice(0, 3)) {
+        pushToAgent('P3', 'SLAPP_Signal_Web', sig.title.slice(0, 32), sig.snippet || sig.title, 'MEDIUM', sig.url);
+      }
+      const arbDiffs = (liveIntel.extremeDorkingAndDna?.stealthEditDiffs || []).filter((d) =>
+        d.highRiskKeywordsAdded.some((k) => /arbitration|class action|waiver/i.test(k))
+      );
+      for (const d of arbDiffs.slice(0, 2)) {
+        pushToAgent('P4', 'Stealth_Arbitration_Clause', d.path, `Waiver/arbitration added (${d.oldestTimestamp}->${d.newestTimestamp})`, 'HIGH', d.newestUrl);
+      }
+      const bkDockets = dockets.filter((d) => /bankrupt|chapter 11|ch\. 11|insolv|restructur/i.test(`${d.caseName} ${d.suitNature} ${d.court}`));
+      for (const bk of bkDockets.slice(0, 3)) {
+        pushToAgent('P5', 'Bankruptcy_Shield_Docket', bk.docketNumber || bk.dateFiled, `${bk.caseName} (${bk.court})`, 'HIGH', bk.url);
+      }
+      if (dockets.length > 0) {
+        const judges = Array.from(new Set(dockets.map((d) => d.judgeAssigned).filter((j) => j && j !== 'Not Listed')));
+        pushToAgent(
+          'P6',
+          'Judicial_Assignment_Audit',
+          `DOCKETS_${dockets.length}`,
+          `${dockets.length} sampled dockets across ${liveIntel.legalSlappBankruptcy!.forumConcentration.length} forums${judges.length > 0 ? ` · Judges: ${judges.slice(0, 3).join(', ')}` : ''}`,
+          'INFO'
+        );
+      }
+      if (liveIntel.incorporationVehicle && (dockets.length > 0 || (liveIntel.legalSlappBankruptcy?.forumConcentration.length ?? 0) > 0)) {
+        pushToAgent(
+          'P7',
+          'Charter_Venue_Correlator',
+          liveIntel.entityName,
+          `Charter (${liveIntel.incorporationVehicle}) vs top litigation venue (${liveIntel.legalSlappBankruptcy?.forumConcentration[0]?.court || 'Federal'})`,
+          'INFO'
+        );
+      }
+      if (liveIntel.regulatoryAndLegalDockets.length > 0) {
+        pushToAgent(
+          'P8',
+          'MDL_Enforcement_Summary',
+          `REG_${liveIntel.regulatoryAndLegalDockets.length}`,
+          `Tracked ${liveIntel.regulatoryAndLegalDockets.length} regulatory/multi-forum docket(s): ${liveIntel.regulatoryAndLegalDockets.slice(0, 2).map((d) => d.forum).join(', ')}`,
+          'INFO'
+        );
+      }
+      if (
+        liveIntel.legalSlappBankruptcy &&
+        (liveIntel.legalSlappBankruptcy.courtListenerDocketsCount > 0 ||
+          liveIntel.legalSlappBankruptcy.slappAndArbitrationSignals.length > 0 ||
+          liveIntel.regulatoryAndLegalDockets.length > 0)
+      ) {
+        pushToAgent(
+          'P9',
+          'Litigation_Baserate_Calibrator',
+          liveIntel.entityName,
+          liveIntel.legalSlappBankruptcy.judicialVerdict,
+          'INFO'
+        );
       }
       break;
     }
