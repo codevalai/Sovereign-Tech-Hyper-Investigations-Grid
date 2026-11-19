@@ -902,6 +902,15 @@ export interface RecursivePivotDiscovery {
   details: Record<string, unknown>;
 }
 
+export interface Rfc3161AttemptDiagnostic {
+  endpoint: string;
+  status: 'ANCHORED' | 'HTTP_ERROR' | 'INVALID_DER' | 'TIMEOUT_OR_NETWORK_ERROR';
+  httpStatus?: number;
+  bytesLength?: number;
+  latencyMs: number;
+  error?: string;
+}
+
 export interface ExternalAnchorReceiptRecord {
   merkleRootHex: string;
   anchoredAtIso: string;
@@ -918,6 +927,15 @@ export interface ExternalAnchorReceiptRecord {
     uuid?: string;
     integratedTime?: number;
     errorNote?: string;
+  };
+  rfc3161?: {
+    tsaProvider: string;
+    status: 'ANCHORED_RFC3161' | 'UNREACHABLE_OFFLINE';
+    tokenBase64: string | null;
+    tokenSha256: string | null;
+    bytesLength: number;
+    errorNote?: string;
+    attempts?: Rfc3161AttemptDiagnostic[];
   };
 }
 
@@ -1008,10 +1026,286 @@ export interface CrossEntityOverlapEdge {
     | 'SHARED_LOBBYIST'
     | 'SHARED_SUBSIDIARY_OR_UBO'
     | 'FUZZY_ENTITY_OR_SHELL_MATCH'
-    | 'COUNTERPARTY_CONTAGION_LINK';
+    | 'COUNTERPARTY_CONTAGION_LINK'
+    | 'INFRA_DNA_SHARED_LINK';
   sharedValues: string[];
   strength: number;
   similarityScore?: number;
+}
+
+export type DorkSourceClass =
+  | 'gov_registry'
+  | 'web_archive'
+  | 'search_index'
+  | 'infra_dns'
+  | 'document_meta';
+
+export interface DorkArtifactRecord {
+  id: string;
+  squadTags: string[];
+  sourceEngine:
+    | 'duckduckgo_html'
+    | 'wayback_cdx'
+    | 'common_crawl'
+    | 'internet_archive'
+    | 'federal_register';
+  sourceClass: DorkSourceClass;
+  query: string;
+  title: string;
+  url: string;
+  snippet: string;
+  timestamp?: string;
+  sha256: string;
+  ipfsCidV1: string;
+  hopDepth: number;
+  corroborated: boolean;
+  quarantined: boolean;
+  quarantineReason?: string;
+  promptTrapsStripped: number;
+}
+
+export interface StealthEditDiffRecord {
+  path: string;
+  oldestTimestamp: string;
+  newestTimestamp: string;
+  oldestUrl: string;
+  newestUrl: string;
+  oldestSha256: string;
+  newestSha256: string;
+  addedLinesCount: number;
+  removedLinesCount: number;
+  addedSample: string[];
+  removedSample: string[];
+  highRiskKeywordsAdded: string[];
+}
+
+export interface MinedArtifactAttemptRecord {
+  url: string;
+  resolvedFetchUrl: string;
+  viaWaybackId: boolean;
+  status: 'MINED' | 'SKIPPED' | 'ERROR';
+  httpStatus?: number;
+  byteLength?: number;
+  format?: MinedArtifactMetadataRecord['format'];
+  reason?: string;
+}
+
+export interface MinedArtifactMetadataRecord {
+  sourceUrl: string;
+  contentType: string;
+  format: 'PDF' | 'DOCX_OFFICE' | 'XML_OR_TEXT' | 'OTHER';
+  byteLength: number;
+  sha256: string;
+  ipfsCidV1: string;
+  author?: string;
+  creator?: string;
+  producer?: string;
+  creationDate?: string;
+  modDate?: string;
+  embeddedUrls: string[];
+  extractedEntities: string[];
+  extractedDomains: string[];
+  viaWaybackId?: boolean;
+}
+
+export interface RecursiveDorkMutationSummary {
+  hopDepth: number;
+  seedEntity: string;
+  seedSource: 'hop1_dork' | 'mined_pdf_author' | 'mined_pdf_entity' | 'private_counterparty';
+  synthesizedQuery: string;
+  squadTags: string[];
+  hitsFound: number;
+}
+
+export interface InfraDnaProfileRecord {
+  domain: string;
+  collectedAtUtc: string;
+  faviconSha256?: string;
+  faviconMmh3?: number;
+  analyticsIds: string[];
+  spfIncludes: string[];
+  cspOrigins: string[];
+  subdomainsFingerprinted: Array<{
+    subdomain: string;
+    faviconMmh3?: number;
+    analyticsIds: string[];
+  }>;
+}
+
+export interface SilentDeletionAlertRecord {
+  alertId: string;
+  targetEntity: string;
+  url: string;
+  sourceEngine: string;
+  firstSeenUtc: string;
+  detectedAtUtc: string;
+  previousHttpStatus: number;
+  currentHttpStatus: number;
+  originalSha256: string;
+  severity: 'HIGH' | 'CRITICAL';
+  alertSha256: string;
+  ed25519SignatureBase64: string;
+  ed25519PublicKeyPem: string;
+}
+
+export interface ExtremeDorkingAndDnaBundle {
+  target: string;
+  domain: string;
+  collectedAtUtc: string;
+  totalArtifacts: number;
+  promotedArtifactsCount: number;
+  quarantinedArtifactsCount: number;
+  unverifiedWatchlistCount: number;
+  observedSourceClasses: DorkSourceClass[];
+  discoveredSubdomains: string[];
+  discoveredAgencies: string[];
+  engineStats: Record<string, { status: 'ok' | 'error'; count: number; latencyMs: number; error?: string }>;
+  artifacts: DorkArtifactRecord[];
+  stealthEditDiffs: StealthEditDiffRecord[];
+  minedDocuments: MinedArtifactMetadataRecord[];
+  minedAttemptLog?: MinedArtifactAttemptRecord[];
+  recursiveLoop: {
+    maxDepth: number;
+    hopsExecuted: number;
+    mutations: RecursiveDorkMutationSummary[];
+    newArtifactsCount: number;
+  };
+  infraDna: InfraDnaProfileRecord;
+  silentDeletionAlerts: SilentDeletionAlertRecord[];
+  standingSnapshotsPersisted: number;
+}
+
+export type TemporalEventStream =
+  | 'WAYBACK_STEALTH_EDIT'
+  | 'SILENT_DELETION_ALERT'
+  | 'COURTLISTENER_DOCKET'
+  | 'FEDERAL_REGISTER'
+  | 'SENATE_LDA_LOBBYING'
+  | 'SEC_FORM_D'
+  | 'SEC_FILING'
+  | 'USASPENDING_AWARD'
+  | 'EPA_ECHO'
+  | 'CLINICAL_TRIAL_MUTATION';
+
+export interface TemporalCausalEvent {
+  id: string;
+  stream: TemporalEventStream;
+  isoDate: string;
+  timestampMs: number;
+  title: string;
+  summary: string;
+  url?: string;
+  amountUsd?: number;
+}
+
+export interface TemporalCausalCluster {
+  clusterId: string;
+  typology:
+    | 'STEALTH_EDIT_BEFORE_LAWSUIT'
+    | 'SILENT_DELETION_AFTER_REGULATORY_NOTICE'
+    | 'LOBBYING_SURGE_AROUND_RULEMAKING'
+    | 'FORM_D_SYNC_WITH_FEDERAL_AWARD'
+    | 'SEC_FILING_SYNC_WITH_REGULATORY_ACTION'
+    | 'CLINICAL_MUTATION_CORRELATED_WITH_FILING'
+    | 'CROSS_STREAM_TEMPORAL_SYNCHRONY';
+  severity: 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  causalityScore: number;
+  deltaDays: number;
+  startDate: string;
+  endDate: string;
+  streamsInvolved: [TemporalEventStream, TemporalEventStream];
+  narrative: string;
+  events: [TemporalCausalEvent, TemporalCausalEvent];
+}
+
+export interface SenateLdaDetailedRecord {
+  filingUuid: string;
+  filingYear: number;
+  filingPeriod: string;
+  dtPosted: string;
+  clientName: string;
+  registrantName: string;
+  amountUsd: number;
+  governmentEntities: string[];
+  issueCodes: string[];
+  specificIssuesSummary: string;
+  revolvingDoorLobbyists: Array<{
+    name: string;
+    coveredPosition: string;
+  }>;
+  url: string;
+}
+
+export interface SecCounterpartyXbrlSummary {
+  entityName: string;
+  cik: string;
+  ticker?: string;
+  role?: 'PRIMARY_TARGET' | 'COUNTERPARTY';
+  fiscalYear: number | null;
+  fiscalEndDate?: string;
+  revenueUsd: number | null;
+  netIncomeUsd: number | null;
+  totalAssetsUsd: number | null;
+  receivablesUsd: number | null;
+  operatingCashFlowUsd: number | null;
+  benfordSampleSize: number;
+  benfordChiSq: number | null;
+  companyFactsUrl: string;
+}
+
+export interface HttpResilienceTelemetry {
+  totalRequests: number;
+  freshCacheHits: number;
+  conditional304Hits: number;
+  networkFetches: number;
+  rateLimitedWaits: number;
+  cachedEntriesCount: number;
+}
+
+export interface TemporalCausalityAndLobbyingBundle {
+  targetEntity: string;
+  windowDays: number;
+  totalNormalizedEvents: number;
+  eventsByStream: Record<string, number>;
+  clusters: TemporalCausalCluster[];
+  events: TemporalCausalEvent[];
+  highestSeverity: 'NONE' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  verdict: string;
+  analyzedAtIso: string;
+  senateLdaDetailed: {
+    totalSpendUsd: number;
+    filingsCount: number;
+    revolvingDoorCount: number;
+    targetedAgencies: string[];
+    filings: SenateLdaDetailedRecord[];
+  };
+  counterpartyXbrl: SecCounterpartyXbrlSummary[];
+  httpResilience: HttpResilienceTelemetry;
+}
+
+export interface ContagionSpiderNodeResult {
+  entityName: string;
+  domain: string;
+  source: 'EXPLICIT_SEED' | 'SUBSIDIARY' | 'COUNTERPARTY_CONTAGION' | 'SHARED_DNA_DOMAIN';
+  httpHardeningScore: number | null;
+  faviconMmh3?: number;
+  analyticsIdsCount: number;
+  spfIncludesCount: number;
+  cspOriginsCount: number;
+  rdapRegistrar: string | null;
+  persistedToVault: boolean;
+}
+
+export interface ContagionSpiderResult {
+  rootEntity: string;
+  maxEntities: number;
+  spideredCount: number;
+  spideredNodes: ContagionSpiderNodeResult[];
+  totalVaultNodes: number;
+  totalVaultEdges: number;
+  infraDnaLinksDetected: number;
+  durationMs: number;
+  completedAtIso: string;
 }
 
 export interface CrossEntityCorrelationReport {
@@ -1157,6 +1451,8 @@ export interface LiveBusinessIntelligence {
   zeroDayFraud?: ZeroDayAnomalyReport;
   subsidiarySwarm?: SubsidiaryAndSwarmSynthesis;
   privateDiscovery?: PrivateDiscoveryReport;
+  extremeDorkingAndDna?: ExtremeDorkingAndDnaBundle;
+  temporalCausalityAndLobbying?: TemporalCausalityAndLobbyingBundle;
   probeTelemetry?: ProbeExecutionRecord[];
   bftCorroboration?: BftCorroborationSummary;
   blockchainAnchor?: BlockchainTimestampAnchor;
@@ -1179,6 +1475,19 @@ export interface InvestigationScope {
   realtimeFeedEvents?: LiveFeedEvent[];
 }
 
+export interface SignalDensityMetrics {
+  active_specialists: number;
+  zero_hit_specialists: number;
+  compiler_agents_active: number;
+  total_agents: number;
+  unique_evidence_citations_count: number;
+  total_evidence_assignments_count: number;
+  intra_squad_duplication_ratio: number;
+  raw_squad_bytes: number;
+  compression_savings_pct: number;
+  tsa_anchor_status: 'ANCHORED_RFC3161' | 'UNREACHABLE_OFFLINE' | 'PENDING_FINALIZATION';
+}
+
 export interface InvestigationResult {
   investigationId: string;
   scope: InvestigationScope;
@@ -1197,6 +1506,13 @@ export interface InvestigationResult {
   graphEdgesCount: number;
   groundingSources?: LiveGroundingSource[];
   isLiveGrounded?: boolean;
+  rfc3161Status?: 'ANCHORED_RFC3161' | 'UNREACHABLE_OFFLINE' | 'PENDING_FINALIZATION';
+  rfc3161TokenBase64?: string | null;
+  rfc3161TsaProvider?: string | null;
+  rfc3161TokenSha256?: string | null;
+  rfc3161Attempts?: Rfc3161AttemptDiagnostic[];
+  rfc3161ErrorNote?: string | null;
+  signalDensityMetrics?: SignalDensityMetrics;
   zipBlob?: Blob;
   zipSizeFormatted?: string;
 }

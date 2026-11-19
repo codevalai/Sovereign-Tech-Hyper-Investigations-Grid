@@ -418,6 +418,10 @@ export function create160AgentSwarm(
   }));
 }
 
+export function isCompilerAgent(agent: Pick<AgentTask, 'id' | 'role'>): boolean {
+  return /^[A-P]10$/i.test(agent.id) || agent.role === 'summary_writer' || /_compiler$/i.test(agent.role);
+}
+
 export const create120AgentSwarm = create160AgentSwarm;
 export const create80AgentSwarm = create160AgentSwarm;
 export const create50AgentSwarm = create160AgentSwarm;

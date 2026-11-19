@@ -400,22 +400,88 @@ export default function App() {
               (
                 anchorPayload: {
                   watchdog?: WatchdogStatusState;
+                  rfc3161?: {
+                    status?: string;
+                    tsaProvider?: string;
+                    rfc3161TokenSha256?: string | null;
+                    rfc3161TokenBase64?: string | null;
+                    errorNote?: string;
+                    attempts?: import('./types/investigation').Rfc3161AttemptDiagnostic[];
+                  };
                   externalAnchor?: {
                     opentimestamps?: { status: string; calendarUrl?: string | null; otsBytesLength?: number };
                     sigstoreRekor?: { status: string; logIndex?: number | null };
+                    rfc3161?: {
+                      tsaProvider: string;
+                      status: string;
+                      tokenBase64: string | null;
+                      tokenSha256: string | null;
+                      bytesLength: number;
+                      errorNote?: string;
+                      attempts?: import('./types/investigation').Rfc3161AttemptDiagnostic[];
+                    };
                   };
                 } | null
               ) => {
                 if (anchorPayload?.watchdog) {
                   setCustodyStatus(anchorPayload.watchdog);
                 }
-                if (anchorPayload?.externalAnchor) {
-                  const ots = anchorPayload.externalAnchor.opentimestamps;
-                  const rekor = anchorPayload.externalAnchor.sigstoreRekor;
+                const tsaTokenBase64 =
+                  anchorPayload?.externalAnchor?.rfc3161?.tokenBase64 ||
+                  anchorPayload?.rfc3161?.rfc3161TokenBase64 ||
+                  null;
+                const tsaTokenSha256 =
+                  anchorPayload?.externalAnchor?.rfc3161?.tokenSha256 ||
+                  anchorPayload?.rfc3161?.rfc3161TokenSha256 ||
+                  null;
+                const tsaProvider =
+                  anchorPayload?.externalAnchor?.rfc3161?.tsaProvider ||
+                  anchorPayload?.rfc3161?.tsaProvider ||
+                  'https://freetsa.org/tsr';
+                const tsaStatus: 'ANCHORED_RFC3161' | 'UNREACHABLE_OFFLINE' =
+                  tsaTokenBase64 && tsaTokenSha256 ? 'ANCHORED_RFC3161' : 'UNREACHABLE_OFFLINE';
+                const tsaAttempts =
+                  anchorPayload?.externalAnchor?.rfc3161?.attempts ||
+                  anchorPayload?.rfc3161?.attempts ||
+                  [];
+                const tsaErrorNote =
+                  anchorPayload?.externalAnchor?.rfc3161?.errorNote ||
+                  anchorPayload?.rfc3161?.errorNote ||
+                  null;
+
+                if (anchorPayload?.externalAnchor || anchorPayload?.rfc3161 || tsaTokenBase64) {
+                  const ots = anchorPayload?.externalAnchor?.opentimestamps;
+                  const rekor = anchorPayload?.externalAnchor?.sigstoreRekor;
                   addLog(
-                    `[EXTERNAL-ANCHOR] OpenTimestamps=${ots?.status || 'UNAVAILABLE'}${ots?.otsBytesLength ? ` (${ots.otsBytesLength}B .ots)` : ''} · Sigstore Rekor=${rekor?.status || 'UNAVAILABLE'}${rekor?.logIndex != null ? ` (#${rekor.logIndex})` : ''}`
+                    `[EXTERNAL-ANCHOR] OpenTimestamps=${ots?.status || 'UNAVAILABLE'}${ots?.otsBytesLength ? ` (${ots.otsBytesLength}B .ots)` : ''} · Sigstore Rekor=${rekor?.status || 'UNAVAILABLE'}${rekor?.logIndex != null ? ` (#${rekor.logIndex})` : ''} · RFC3161-TSA=${tsaStatus}${tsaTokenSha256 ? ` (MERKLE_ROOT.tsr SHA256:${tsaTokenSha256.slice(0, 12)})` : ` (${tsaAttempts.length} TSA tier(s) attempted)`}`
                   );
                 }
+
+                const patchAnchorFields = (item: InvestigationResult): InvestigationResult => ({
+                  ...item,
+                  rfc3161Status: tsaStatus,
+                  rfc3161TokenBase64: tsaTokenBase64,
+                  rfc3161TsaProvider: tsaProvider,
+                  rfc3161TokenSha256: tsaTokenSha256,
+                  rfc3161Attempts: tsaAttempts,
+                  rfc3161ErrorNote: tsaErrorNote,
+                  signalDensityMetrics: item.signalDensityMetrics
+                    ? { ...item.signalDensityMetrics, tsa_anchor_status: tsaStatus }
+                    : item.signalDensityMetrics,
+                });
+
+                setLastResult((prev) =>
+                  prev && prev.investigationId === result.investigationId
+                    ? patchAnchorFields(prev)
+                    : prev
+                );
+                setSavedHistory((prev) =>
+                  prev.map((item) =>
+                    item.investigationId === result.investigationId
+                      ? patchAnchorFields(item)
+                      : item
+                  )
+                );
                 setVaultRefreshCounter((c) => c + 1);
               }
             )

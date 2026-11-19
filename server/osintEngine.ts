@@ -26,10 +26,23 @@ import {
   jaroWinklerSimilarity,
   probeStealthEditsAndAgentTraps,
 } from '../src/forensics/stealthAndAdversarialProbe.ts';
-import { safeForensicFetch } from './adversarialShield.ts';
+import {
+  evaluateRedTeamCorroboration,
+  safeForensicFetch,
+} from './adversarialShield.ts';
 import { fetchLiveBitcoinMainnetTip } from './blockchainAnchor.ts';
-import { runDeepLiveProbes } from './deepLiveProbes.ts';
+import {
+  probeSecEdgarCompanyFactsXbrl,
+  probeSenateLdaDetailedLobbying,
+  runDeepLiveProbes,
+} from './deepLiveProbes.ts';
 import { liveDaemon } from './liveIngestionDaemon.ts';
+import { runExtremeDorkSuite } from './extremeDorkEngine.ts';
+import { mineDiscoveredDocumentsBatchWithAudit } from './deepArtifactMiner.ts';
+import { runClosedLoopRecursiveDorkMutation } from './recursiveDorkLoop.ts';
+import { extractInfraDna } from './infraDnaFingerprinter.ts';
+import { analyzeCrossStreamTemporalCausality } from './temporalCausalityEngine.ts';
+import { getHttpResilienceStats } from './httpResilience.ts';
 import {
   detectUnknownFraudAnomalies,
   type KnownFraudTypologyHit,
@@ -43,6 +56,10 @@ import {
   type SubsidiaryAndSwarmSynthesis,
 } from '../src/engine/subsidiaryAndSwarmMapper.ts';
 import { discoverPrivateEntityFootprint } from '../src/engine/privateEntityDiscovery.ts';
+import type {
+  ExtremeDorkingAndDnaBundle,
+  TemporalCausalityAndLobbyingBundle,
+} from '../src/types/investigation.ts';
 
 export interface LiveSearchParams {
   query: string;
@@ -3343,6 +3360,30 @@ export async function runLiveOsintInvestigation(
     })
   );
 
+  // Launch v22.0 Extreme Zero-Key Dorking Engine (5 Keyless Engines + Wayback Stealth-Edit Diffing) concurrently
+  const resolvedPrimaryDomain = (() => {
+    try {
+      return candidateWebsite ? new URL(candidateWebsite).hostname.replace(/^www\./i, '').toLowerCase() : '';
+    } catch {
+      return '';
+    }
+  })();
+
+  const extremeDorkPromise = trackProbe(
+    {
+      probeId: 'extreme_dork_suite',
+      sourceName: 'Extreme Zero-Key Dork Engine (DDG Operators / Wayback CDX / Common Crawl / IA / FedReg + Stealth Diffs)',
+      phase: 'Phase 2',
+      squads: ['A', 'B', 'D', 'E', 'F', 'L', 'M', 'N', 'P'],
+    },
+    () => runExtremeDorkSuite(searchBase, resolvedPrimaryDomain),
+    (rep) => ({
+      recordsFound: rep.totalArtifacts + rep.stealthEditDiffs.length,
+      summary: `${rep.totalArtifacts} dork hit(s) · ${rep.discoveredSubdomains.length} archive subdomain(s) · ${rep.stealthEditDiffs.length} Wayback policy diff(s)`,
+      url: rep.artifacts[0]?.url,
+    })
+  );
+
   emitStage(
     'Phase 2: SEC EDGAR Submissions & Form D, USASpending, Senate LDA Lobbying, Federal Register & Official Site',
     35,
@@ -3498,12 +3539,13 @@ export async function runLiveOsintInvestigation(
     (sec?.isPublicEquityIssuer && sec.tickers[0]) ||
     (yahoo?.symbol && !yahoo.symbol.includes(' ') ? yahoo.symbol : undefined);
 
-  // Resolve recursive GLEIF Level-2 tree & v19.0 Private-Entity Shadow Discovery before Phase 3/4
-  const [gleifSubTree, privateDiscovery] = await Promise.all([
+  // Resolve recursive GLEIF Level-2 tree, v19.0 Private-Entity Shadow Discovery & v22.0 Extreme Dork Suite before Phase 3/4
+  const [gleifSubTree, privateDiscovery, extremeDorkHop1] = await Promise.all([
     gleifSubTreePromise,
     privateDiscoveryPromise,
+    extremeDorkPromise,
   ]);
-  const subsidiaryPivotDomains = deriveSubsidiaryPivotDomains(gleifSubTree, resolvedSiteUrl);
+  const baseSubsidiaryPivotDomains = deriveSubsidiaryPivotDomains(gleifSubTree, resolvedSiteUrl);
   if (gleifSubTree.length > 0) {
     registriesQueried.push('GLEIF Level-2 Recursive Subsidiary & Opacity Exception Tree');
   }
@@ -3513,6 +3555,33 @@ export async function runLiveOsintInvestigation(
     );
   }
 
+  // Leap 1 (Deep Artifact Metadata Mining) + Leap 3 (Invisible Infrastructure DNA) in parallel with Phase 2C/3
+  const dorkDomain = resolvedPrimaryDomain || cyberProbe.telemetry.primaryDomain || '';
+  const candidateDocumentUrls = [
+    ...extremeDorkHop1.artifacts.map((a) => a.url),
+    ...webHits.map((w) => w.url),
+  ];
+  const mergedArchiveAndCtSubdomains = Array.from(
+    new Set([
+      ...cyberProbe.telemetry.ctSubdomains,
+      ...extremeDorkHop1.discoveredSubdomains,
+    ])
+  ).slice(0, 60);
+  const subsidiaryPivotDomains = Array.from(
+    new Set([
+      ...baseSubsidiaryPivotDomains,
+      ...extremeDorkHop1.discoveredSubdomains.slice(0, 8),
+    ])
+  );
+
+  const xbrlCandidates: Array<{ entityName: string; cik?: string; role: 'PRIMARY_TARGET' | 'COUNTERPARTY' }> = [
+    ...(sec?.cik ? [{ entityName: sec.legalName || searchBase, cik: sec.cik, role: 'PRIMARY_TARGET' as const }] : []),
+    ...privateDiscovery.discoveredCounterparties.slice(0, 4).map((cp) => ({
+      entityName: cp,
+      role: 'COUNTERPARTY' as const,
+    })),
+  ];
+
   const [
     insiderLabor,
     adversarialInfra,
@@ -3521,6 +3590,10 @@ export async function runLiveOsintInvestigation(
     darkPoolCrypto,
     legalSlappBankruptcy,
     deepProbeOut,
+    minedDocumentsBatch,
+    infraDnaProfile,
+    senateLdaDetailed,
+    counterpartyXbrlOut,
   ] = await Promise.all([
     trackProbe(
       { probeId: 'insider_labor', sourceName: 'SEC Form 4/8-K + CFPB Complaints + OSHA/NLRB', phase: 'Phase 2C', squads: ['K'] },
@@ -3583,14 +3656,93 @@ export async function runLiveOsintInvestigation(
       wikiTitle: wiki?.title || wd?.wikiTitle || coreName || query,
       websiteUrl: resolvedSiteUrl,
       resolvedIps: cyberProbe.telemetry.resolvedIps,
-      ctSubdomains: cyberProbe.telemetry.ctSubdomains,
+      ctSubdomains: mergedArchiveAndCtSubdomains,
       subsidiaryPivotDomains,
       existingCves: cyberProbe.telemetry.disclosedCves.map((c) => c.cveId),
       tickerSymbol: primaryTickerForQuote,
       onProbeComplete: (rec) => recordProbe(rec),
     }),
+    trackProbe(
+      { probeId: 'deep_artifact_miner', sourceName: 'Deep Public Document Metadata Miner (Live + Wayback id_ PDF/DOCX)', phase: 'Phase 3', squads: ['A', 'D', 'F'] },
+      () => mineDiscoveredDocumentsBatchWithAudit(candidateDocumentUrls, { domain: dorkDomain, maxDocs: 8 }),
+      (res) => {
+        const docs = res.documents;
+        const wbCount = docs.filter((d) => d.viaWaybackId).length;
+        return {
+          recordsFound: docs.length,
+          summary:
+            docs.length > 0
+              ? `${docs.length}/${res.attemptedUrls.length} PDF/DOCX mined (${wbCount} via Wayback id_ · ${docs.filter((d) => d.author || d.creator).length} with Author/Creator)`
+              : `Attempted ${res.attemptedUrls.length} candidate URL(s); 0 parseable PDF/DOCX binaries under 8 MB cap`,
+          url: docs[0]?.sourceUrl || res.attemptedUrls[0]?.resolvedFetchUrl,
+        };
+      }
+    ),
+    trackProbe(
+      { probeId: 'infra_dna_fingerprinter', sourceName: 'Invisible Infrastructure DNA (Favicon MMH3, GTM/GA, Recursive SPF & CSP)', phase: 'Phase 3', squads: ['C', 'G'] },
+      () => extractInfraDna(dorkDomain, extremeDorkHop1.discoveredSubdomains.slice(0, 3)),
+      (dna) => ({
+        recordsFound:
+          (dna.faviconSha256 ? 1 : 0) + dna.analyticsIds.length + dna.spfIncludes.length + dna.cspOrigins.length,
+        summary: dna.domain
+          ? `Favicon MMH3=${dna.faviconMmh3 ?? 'N/A'} · ${dna.analyticsIds.length} Analytics IDs · ${dna.spfIncludes.length} SPF · ${dna.cspOrigins.length} CSP`
+          : 'No target domain available for Infrastructure DNA extraction',
+        url: dna.domain ? `https://${dna.domain}` : undefined,
+      })
+    ),
+    trackProbe(
+      { probeId: 'senate_lda_detailed', sourceName: 'U.S. Senate LDA v1 Quarterly Dollar-Flows & Revolving Door', phase: 'Phase 3', squads: ['F'] },
+      () => probeSenateLdaDetailedLobbying(searchBase),
+      (lda) => ({
+        recordsFound: lda.filingsCount,
+        summary:
+          lda.filingsCount > 0
+            ? `${lda.filingsCount} LDA filing(s) · $${Math.round(lda.totalSpendUsd).toLocaleString('en-US')} spend · ${lda.revolvingDoorCount} revolving-door official(s)`
+            : 'Zero direct U.S. Senate LDA lobbying filings matched for target',
+        url: lda.filings[0]?.url,
+      })
+    ),
+    trackProbe(
+      { probeId: 'sec_xbrl_counterparties', sourceName: 'SEC EDGAR CompanyFacts XBRL (Target & Public Counterparties)', phase: 'Phase 3', squads: ['J'] },
+      () => probeSecEdgarCompanyFactsXbrl(xbrlCandidates),
+      (out) => ({
+        recordsFound: out.summaries.length,
+        summary:
+          out.summaries.length > 0
+            ? `${out.summaries.length} XBRL GAAP ledger(s) audited (${out.summaries.map((s) => s.ticker || `CIK${s.cik.slice(-6)}`).join(', ')})`
+            : 'No public SEC XBRL CompanyFacts CIK matched for target/counterparties',
+        url: out.summaries[0]?.companyFactsUrl,
+      })
+    ),
   ]);
   const deepAttackSurface = deepProbeOut.telemetry;
+
+  const minedDocuments = minedDocumentsBatch.documents;
+  const minedAttemptLog = minedDocumentsBatch.attemptedUrls;
+
+  // Leap 2 (Closed-Loop Recursive Dork Mutation, bounded Hop 2-3) & Leap 4 (Standing Dork Silent-Deletion Check)
+  const knownStandingUrls = liveDaemon.getKnownStandingDorkUrls(searchBase);
+  const [recursiveDorkLoop, silentDeletionAlerts] = await Promise.all([
+    trackProbe(
+      { probeId: 'recursive_dork_loop', sourceName: 'Closed-Loop Recursive Dork Mutation (Hops 2-3 Bounded)', phase: 'Phase 4', squads: ['B', 'D', 'F', 'P'] },
+      () =>
+        runClosedLoopRecursiveDorkMutation({
+          target: searchBase,
+          hop1Payload: extremeDorkHop1,
+          minedDocuments,
+          seedCounterparties: privateDiscovery.discoveredCounterparties,
+          knownUrls: knownStandingUrls,
+          maxDepth: 3,
+          maxMutatedQueries: 6,
+        }),
+      (loop) => ({
+        recordsFound: loop.newArtifacts.length,
+        summary: `Executed ${loop.hopsExecuted} hop(s) · ${loop.mutations.length} mutated queries · ${loop.newArtifacts.length} net-new artifact(s)`,
+        url: loop.newArtifacts[0]?.url,
+      })
+    ),
+    liveDaemon.checkStandingDorksForSilentDeletions(searchBase, 4).catch(() => []),
+  ]);
 
   if (deepAttackSurface.shodanHosts.length > 0) {
     registriesQueried.push('Shodan InternetDB Live IP Ports, CPEs & CVEs');
@@ -4545,6 +4697,26 @@ export async function runLiveOsintInvestigation(
   ]);
   const statutoryRootSourcesCount = groundingSources.filter((s) => statutorySet.has(s.sourceType)).length;
   const untrustedIngressCount = Math.max(0, groundingSources.length - statutoryRootSourcesCount);
+  // Leap 5: Automated Red-Team 2-Source-Class Corroboration & Quarantine Gate across all Hop 1-3 dork artifacts
+  const mergedDorkArtifacts = [...extremeDorkHop1.artifacts, ...recursiveDorkLoop.newArtifacts];
+  const rdapDomainAgeDays = (() => {
+    const regIso = deepAttackSurface.rdapAndDnssec?.registeredDate || siteMeta?.domainRegisteredDate;
+    if (!regIso) return null;
+    const ms = Date.parse(regIso);
+    if (!Number.isFinite(ms)) return null;
+    return Math.max(0, Math.floor((Date.now() - ms) / 86_400_000));
+  })();
+  const domainAgesDaysByHost: Record<string, number> = {};
+  if (dorkDomain && typeof rdapDomainAgeDays === 'number') {
+    domainAgesDaysByHost[dorkDomain] = rdapDomainAgeDays;
+  }
+  const redTeamStats = evaluateRedTeamCorroboration(mergedDorkArtifacts, {
+    targetDomainAgeDays: rdapDomainAgeDays,
+    domainAgesDaysByHost,
+    hasStatutoryRootEvidence: statutoryRootSourcesCount > 0,
+  });
+  const dorkPromptTraps = mergedDorkArtifacts.reduce((acc, a) => acc + (a.promptTrapsStripped || 0), 0);
+
   const bftCorroboration: BftCorroborationSummary = {
     statutoryRootSourcesCount,
     untrustedIngressCount,
@@ -4552,11 +4724,11 @@ export async function runLiveOsintInvestigation(
       groundingSources.length > 0
         ? Number(Math.min(1, statutoryRootSourcesCount / Math.max(1, Math.ceil(groundingSources.length * 0.5))).toFixed(3))
         : 0,
-    quarantinedSingleSourceClaims: 0,
-    sanitizedPromptTrapsCount,
+    quarantinedSingleSourceClaims: redTeamStats.unverifiedWatchlistCount + redTeamStats.quarantinedCount,
+    sanitizedPromptTrapsCount: sanitizedPromptTrapsCount + dorkPromptTraps,
     streamBombTruncationsCount,
     quorumRule:
-      'Quorum >= 2 independent sources OR >= 1 STATUTORY_ROOT (SEC/GLEIF/EPA/CourtListener/OFAC) required for UNTRUSTED_INGRESS promotion.',
+      'Quorum >= 2 independent source classes OR >= 1 STATUTORY_ROOT (SEC/GLEIF/EPA/CourtListener/OFAC/Federal Register) required; single-source or <90d RDAP hits quarantined.',
   };
 
   const blockchainAnchor: BlockchainTimestampAnchor | undefined = btcTip
@@ -4879,8 +5051,198 @@ export async function runLiveOsintInvestigation(
     // Non-fatal persistence guard
   }
 
+  // v22.0: Persist Standing Dork Snapshots, Infra DNA Fingerprint, Raw Dork Payloads & Agency Contagion Edges into SQLite WAL
+  let standingSnapshotsPersisted = 0;
+  try {
+    standingSnapshotsPersisted = liveDaemon.recordStandingDorkSnapshots(entityName, mergedDorkArtifacts);
+    if (infraDnaProfile.domain) {
+      liveDaemon.recordInfraDnaFingerprint(entityName, infraDnaProfile);
+    }
+    const minedExternalDomains = Array.from(
+      new Set(minedDocuments.flatMap((d) => d.extractedDomains))
+    ).filter((dom) => dom !== dorkDomain);
+    if (extremeDorkHop1.discoveredAgencies.length > 0 || minedExternalDomains.length > 0) {
+      liveDaemon.recordDorkAgencyContagionEdges(
+        entityName,
+        extremeDorkHop1.discoveredAgencies,
+        minedExternalDomains
+      );
+    }
+    liveDaemon.persistRawDorkPayload(entityName, dorkDomain, 'extreme_dork_payload', {
+      totalArtifacts: mergedDorkArtifacts.length,
+      promotedArtifactsCount: redTeamStats.promotedCount,
+      quarantinedArtifactsCount: redTeamStats.quarantinedCount,
+      unverifiedWatchlistCount: redTeamStats.unverifiedWatchlistCount,
+      engineStats: extremeDorkHop1.engineStats,
+      discoveredSubdomains: extremeDorkHop1.discoveredSubdomains,
+      discoveredAgencies: extremeDorkHop1.discoveredAgencies,
+      artifacts: mergedDorkArtifacts.slice(0, 80),
+      recursiveLoop: {
+        maxDepth: recursiveDorkLoop.maxDepth,
+        hopsExecuted: recursiveDorkLoop.hopsExecuted,
+        mutations: recursiveDorkLoop.mutations,
+        newArtifactsCount: recursiveDorkLoop.newArtifacts.length,
+      },
+    });
+  } catch {
+    // Non-fatal SQLite WAL persistence guard
+  }
+
+  const extremeDorkingAndDna: ExtremeDorkingAndDnaBundle = {
+    target: entityName,
+    domain: dorkDomain,
+    collectedAtUtc: extremeDorkHop1.collectedAtUtc,
+    totalArtifacts: mergedDorkArtifacts.length,
+    promotedArtifactsCount: redTeamStats.promotedCount,
+    quarantinedArtifactsCount: redTeamStats.quarantinedCount,
+    unverifiedWatchlistCount: redTeamStats.unverifiedWatchlistCount,
+    observedSourceClasses: redTeamStats.observedSourceClasses,
+    discoveredSubdomains: extremeDorkHop1.discoveredSubdomains,
+    discoveredAgencies: extremeDorkHop1.discoveredAgencies,
+    engineStats: extremeDorkHop1.engineStats,
+    artifacts: mergedDorkArtifacts,
+    stealthEditDiffs: extremeDorkHop1.stealthEditDiffs,
+    minedDocuments,
+    minedAttemptLog,
+    recursiveLoop: {
+      maxDepth: recursiveDorkLoop.maxDepth,
+      hopsExecuted: recursiveDorkLoop.hopsExecuted,
+      mutations: recursiveDorkLoop.mutations,
+      newArtifactsCount: recursiveDorkLoop.newArtifacts.length,
+    },
+    infraDna: infraDnaProfile,
+    silentDeletionAlerts,
+    standingSnapshotsPersisted,
+  };
+
+  // v23.0 Cross-Stream Temporal Causality Engine (Δt <= 14d sliding-window synchrony across all dated streams)
+  const federalRegisterTemporalDocs = [
+    ...fedRegisterDocs.map((d) => ({
+      title: d.title,
+      documentNumber: d.documentNumber || '',
+      publicationDate: d.publicationDate,
+      agencies: d.agencies,
+      url: d.url,
+    })),
+    ...mergedDorkArtifacts
+      .filter((a) => a.sourceEngine === 'federal_register' && a.timestamp)
+      .map((a) => ({
+        title: a.title,
+        documentNumber: a.id,
+        publicationDate: a.timestamp!,
+        agencies: extremeDorkHop1.discoveredAgencies.slice(0, 2),
+        url: a.url,
+      })),
+  ];
+
+  const temporalCausalityReport = analyzeCrossStreamTemporalCausality({
+    targetEntity: entityName,
+    windowDays: 14,
+    stealthEditDiffs: extremeDorkHop1.stealthEditDiffs,
+    silentDeletionAlerts,
+    courtDockets: legalSlappBankruptcy.courtDockets.map((d) => ({
+      caseName: d.caseName,
+      court: d.court,
+      docketNumber: d.docketNumber || '',
+      dateFiled: d.dateFiled,
+      url: d.url,
+    })),
+    federalRegisterDocs: federalRegisterTemporalDocs,
+    detailedLdaFilings: senateLdaDetailed.filings,
+    secFormDOfferings: [
+      ...formDOfferings.map((f) => ({
+        entityName: f.entityName,
+        form: f.form,
+        filedAt: f.filedAt,
+        url: f.url,
+      })),
+      ...privateDiscovery.signals
+        .filter((s) => s.source === 'SEC_EFTS_FORM_D')
+        .map((s) => ({
+          entityName: s.entityName,
+          form: 'D',
+          filedAt: s.date,
+          url: s.url,
+        })),
+    ],
+    secFilings: (sec?.recentFilings || []).slice(0, 15).map((f) => ({
+      form: f.form,
+      filingDate: f.filingDate,
+      description: f.description,
+      url: f.url,
+    })),
+    federalAwards: usaAwards.map((a) => ({
+      program: `${a.agency}: ${a.description || a.awardId}`.slice(0, 140),
+      amount: `$${Math.round(a.amount || 0).toLocaleString('en-US')}`,
+      year: a.startDate || '',
+      url: `https://www.usaspending.gov/search`,
+    })),
+    epaFacilities: environmentalEpa.facilities.map((fac) => ({
+      facilityName: fac.facilityName,
+      penaltiesUsd: fac.penaltiesUsd,
+      complianceStatus:
+        fac.cwaViolations + fac.caaViolations + fac.rcraViolations > 0
+          ? `${fac.cwaViolations + fac.caaViolations + fac.rcraViolations} statute violations`
+          : 'Active Registry',
+      lastInspectionDate: fac.lastInspectionDate,
+      sourceUrl: fac.sourceUrl,
+    })),
+    clinicalSilentMutations: (privateDiscovery.clinicalSilentMutations || []).map((m) => ({
+      nctId: m.nctId,
+      briefTitle: m.briefTitle,
+      previousStatus: m.previousStatus,
+      currentStatus: m.currentStatus,
+      detectedAtIso: m.detectedAtIso,
+      studyUrl: m.studyUrl,
+    })),
+  });
+
+  try {
+    if (temporalCausalityReport.events.length > 0) {
+      liveDaemon.recordTemporalEvents(entityName, temporalCausalityReport.events);
+    }
+  } catch {
+    // Non-fatal SQLite WAL guard
+  }
+
+  const httpResilienceStats = getHttpResilienceStats();
+  const temporalCausalityAndLobbying: TemporalCausalityAndLobbyingBundle = {
+    targetEntity: entityName,
+    analyzedAtIso: temporalCausalityReport.analyzedAtIso,
+    windowDays: temporalCausalityReport.windowDays,
+    totalNormalizedEvents: temporalCausalityReport.totalNormalizedEvents,
+    eventsByStream: temporalCausalityReport.eventsByStream,
+    highestSeverity: temporalCausalityReport.highestSeverity,
+    events: temporalCausalityReport.events,
+    clusters: temporalCausalityReport.clusters,
+    senateLdaDetailed: {
+      totalSpendUsd: senateLdaDetailed.totalSpendUsd,
+      filingsCount: senateLdaDetailed.filingsCount,
+      revolvingDoorCount: senateLdaDetailed.revolvingDoorCount,
+      targetedAgencies: senateLdaDetailed.targetedAgencies,
+      filings: senateLdaDetailed.filings,
+    },
+    counterpartyXbrl: counterpartyXbrlOut.summaries,
+    httpResilience: httpResilienceStats,
+    verdict: temporalCausalityReport.verdict,
+  };
+
   registriesQueried.push('Zero-Day Unknown-Fraud Detector (6-Domain Typology + 5 Unsupervised Invariants)');
   registriesQueried.push('MITRE ATLAS v2026.10 Agentic Swarm & Cyber Correlator');
+  registriesQueried.push('Extreme Zero-Key Dorking (5 Engines + Wayback Stealth-Edit Diffing + Hops 2-3 Mutation)');
+  registriesQueried.push('Cross-Stream Temporal Causality Engine (Δt <= 14d Multi-Stream Synchrony Detector)');
+  if (senateLdaDetailed.filingsCount > 0) {
+    registriesQueried.push('U.S. Senate LDA v1 Statutory Lobbying Dollar-Flow & Revolving-Door Audit');
+  }
+  if (counterpartyXbrlOut.summaries.length > 0) {
+    registriesQueried.push('SEC EDGAR Direct CompanyFacts XBRL Counterparty Forensics');
+  }
+  if (minedDocuments.length > 0) {
+    registriesQueried.push('Deep Public Artifact Metadata Miner (PDF/DOCX XMP & Author Ripping)');
+  }
+  if (infraDnaProfile.domain) {
+    registriesQueried.push('Invisible Infrastructure DNA Fingerprinter (Favicon MMH3, GTM/GA, Recursive SPF)');
+  }
 
   const rawPayloads: Record<string, unknown> = {
     shadow_finance_payload: {
@@ -4909,6 +5271,41 @@ export async function runLiveOsintInvestigation(
     zero_day_anomaly_payload: zeroDayFraud,
     subsidiary_swarm_payload: subsidiarySwarm,
     private_entity_discovery_payload: privateDiscovery,
+    extreme_dork_payload: {
+      target: extremeDorkingAndDna.target,
+      domain: extremeDorkingAndDna.domain,
+      collectedAtUtc: extremeDorkingAndDna.collectedAtUtc,
+      totalArtifacts: extremeDorkingAndDna.totalArtifacts,
+      promotedArtifactsCount: extremeDorkingAndDna.promotedArtifactsCount,
+      quarantinedArtifactsCount: extremeDorkingAndDna.quarantinedArtifactsCount,
+      unverifiedWatchlistCount: extremeDorkingAndDna.unverifiedWatchlistCount,
+      observedSourceClasses: extremeDorkingAndDna.observedSourceClasses,
+      discoveredSubdomains: extremeDorkingAndDna.discoveredSubdomains,
+      discoveredAgencies: extremeDorkingAndDna.discoveredAgencies,
+      engineStats: extremeDorkingAndDna.engineStats,
+      recursiveLoop: extremeDorkingAndDna.recursiveLoop,
+      standingSnapshotsPersisted: extremeDorkingAndDna.standingSnapshotsPersisted,
+      silentDeletionAlerts: extremeDorkingAndDna.silentDeletionAlerts,
+      artifacts: extremeDorkingAndDna.artifacts,
+    },
+    stealth_edit_diffs: {
+      target: extremeDorkingAndDna.target,
+      domain: extremeDorkingAndDna.domain,
+      collectedAtUtc: extremeDorkingAndDna.collectedAtUtc,
+      diffsCount: extremeDorkingAndDna.stealthEditDiffs.length,
+      diffs: extremeDorkingAndDna.stealthEditDiffs,
+    },
+    mined_artifact_metadata: {
+      target: extremeDorkingAndDna.target,
+      collectedAtUtc: extremeDorkingAndDna.collectedAtUtc,
+      attemptedCount: (extremeDorkingAndDna.minedAttemptLog || []).length,
+      minedCount: extremeDorkingAndDna.minedDocuments.length,
+      waybackStreamedCount: extremeDorkingAndDna.minedDocuments.filter((d) => d.viaWaybackId).length,
+      attemptedUrls: extremeDorkingAndDna.minedAttemptLog || [],
+      documents: extremeDorkingAndDna.minedDocuments,
+    },
+    infra_dna_payload: extremeDorkingAndDna.infraDna,
+    temporal_causality_payload: temporalCausalityAndLobbying,
   };
 
   emitStage(
@@ -5055,6 +5452,8 @@ export async function runLiveOsintInvestigation(
     zeroDayFraud,
     subsidiarySwarm,
     privateDiscovery,
+    extremeDorkingAndDna,
+    temporalCausalityAndLobbying,
     probeTelemetry,
     bftCorroboration,
     blockchainAnchor,

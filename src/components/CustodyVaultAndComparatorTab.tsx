@@ -4,6 +4,7 @@ import {
   ArrowRight,
   Database,
   GitCompare,
+  Network,
   RefreshCw,
   ShieldCheck,
   ShieldAlert,
@@ -13,7 +14,9 @@ import {
   fetchApexVaultGraph,
   fetchCrossEntityCorrelations,
   fetchIntegrityVaultStatus,
+  runContagionSpider,
   runLivingDeltaCheck,
+  runStandingDorkDeletionSweep,
   type ApexVaultGraphResponse,
   type IntegrityVaultStatusResponse,
 } from '../services/liveInvestigationService';
@@ -21,6 +24,7 @@ import type {
   CrossEntityCorrelationReport,
   LivingDeltaPatchRecord,
   PersistedInvestigationSummary,
+  SilentDeletionAlertRecord,
 } from '../types/investigation';
 import { WebGpuVaultGraph } from './WebGpuVaultGraph';
 
@@ -37,6 +41,7 @@ const OVERLAP_LABELS: Record<string, string> = {
   SHARED_SUBSIDIARY_OR_UBO: 'Shared Subsidiary or UBO Entity',
   FUZZY_ENTITY_OR_SHELL_MATCH: 'Fuzzy Corporate / Shell Entity Match (Jaro-Winkler)',
   COUNTERPARTY_CONTAGION_LINK: 'Public-to-Private Counterparty Contagion (SEC 10-K/8-K/Form D)',
+  INFRA_DNA_SHARED_LINK: 'Shared Invisible Infrastructure DNA (Favicon MMH3 / Analytics / SPF)',
 };
 
 export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTabProps> = ({
@@ -47,7 +52,10 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
   const [correlation, setCorrelation] = useState<CrossEntityCorrelationReport | null>(null);
   const [apexGraph, setApexGraph] = useState<ApexVaultGraphResponse | null>(null);
   const [livingDeltas, setLivingDeltas] = useState<LivingDeltaPatchRecord[]>([]);
+  const [silentDeletions, setSilentDeletions] = useState<SilentDeletionAlertRecord[]>([]);
   const [deltaRunningId, setDeltaRunningId] = useState<string | null>(null);
+  const [dorkSweepRunning, setDorkSweepRunning] = useState(false);
+  const [spiderRunning, setSpiderRunning] = useState(false);
   const [deltaFeedback, setDeltaFeedback] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [compareA, setCompareA] = useState<string>('');
@@ -67,6 +75,9 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
       if (v?.livingDeltas) {
         setLivingDeltas(v.livingDeltas);
       }
+      if (v?.silentDeletionAlerts) {
+        setSilentDeletions(v.silentDeletionAlerts);
+      }
       if (c && c.entities.length >= 2) {
         setCompareA((prev) => prev || c.entities[0].investigationId);
         setCompareB((prev) => prev || c.entities[1].investigationId);
@@ -75,6 +86,39 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
       }
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleStandingDorkSweep = async () => {
+    setDorkSweepRunning(true);
+    setDeltaFeedback(null);
+    try {
+      const res = await runStandingDorkDeletionSweep(undefined, 10);
+      setSilentDeletions(res.allAlerts);
+      setDeltaFeedback(
+        `Standing Dork Sweep: ${res.standingDorkSnapshotsCount} tracked URLs · ${res.newAlerts.length} new silent deletion(s) detected (404/410)`
+      );
+    } catch (err) {
+      setDeltaFeedback(err instanceof Error ? err.message : 'Standing dork sweep failed');
+    } finally {
+      setDorkSweepRunning(false);
+    }
+  };
+
+  const handleRunContagionSpider = async () => {
+    setSpiderRunning(true);
+    setDeltaFeedback(null);
+    try {
+      const res = await runContagionSpider(entityA?.entityName || undefined, 3);
+      const names = res.spideredNodes.map((n) => n.entityName).join(', ') || 'none queued';
+      setDeltaFeedback(
+        `Autonomous Spider (${res.rootEntity}): ${res.spideredCount}/${res.maxEntities} entities probed (${names}) · ${res.infraDnaLinksDetected} shared Infra DNA links · Vault ${res.totalVaultNodes} nodes / ${res.totalVaultEdges} edges (${res.durationMs}ms)`
+      );
+      await loadAll();
+    } catch (err) {
+      setDeltaFeedback(err instanceof Error ? err.message : 'Autonomous contagion spider failed');
+    } finally {
+      setSpiderRunning(false);
     }
   };
 
@@ -143,15 +187,37 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
             </h2>
           </div>
 
-          <button
-            type="button"
-            onClick={() => void loadAll()}
-            disabled={loading}
-            className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-['Chakra_Petch'] font-bold text-xs uppercase tracking-wider flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
-          >
-            <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
-            <span>Verify Custody Chain</span>
-          </button>
+          <div className="flex flex-wrap items-center gap-2 shrink-0">
+            <button
+              type="button"
+              onClick={() => void handleRunContagionSpider()}
+              disabled={spiderRunning || loading}
+              className="px-3.5 py-2 rounded-lg bg-[#0B0E17] border border-emerald-500/40 hover:border-emerald-400 text-emerald-300 font-['Chakra_Petch'] font-bold text-xs uppercase tracking-wider flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <Network className={`w-3.5 h-3.5 ${spiderRunning ? 'animate-spin' : ''}`} />
+              <span>{spiderRunning ? 'Spidering Top 3...' : 'Spider Top 3 Counterparties'}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void handleStandingDorkSweep()}
+              disabled={dorkSweepRunning}
+              className="px-3.5 py-2 rounded-lg bg-[#0B0E17] border border-cyan-500/40 hover:border-cyan-400 text-cyan-300 font-['Chakra_Petch'] font-bold text-xs uppercase tracking-wider flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <Activity className={`w-3.5 h-3.5 ${dorkSweepRunning ? 'animate-spin' : ''}`} />
+              <span>{dorkSweepRunning ? 'Sweeping...' : `Sweep Standing Dorks (${vault?.standingDorkSnapshotsCount ?? 0})`}</span>
+            </button>
+
+            <button
+              type="button"
+              onClick={() => void loadAll()}
+              disabled={loading}
+              className="px-4 py-2 rounded-lg bg-amber-500 hover:bg-amber-400 text-slate-950 font-['Chakra_Petch'] font-bold text-xs uppercase tracking-wider flex items-center gap-2 whitespace-nowrap shrink-0 cursor-pointer disabled:opacity-50"
+            >
+              <RefreshCw className={`w-3.5 h-3.5 ${loading ? 'animate-spin' : ''}`} />
+              <span>Verify Custody Chain</span>
+            </button>
+          </div>
         </div>
 
         {/* Status Summary Row */}
@@ -192,7 +258,7 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
               {correlation?.overlaps.length ?? 0}
             </div>
             <div className="text-[11px] text-slate-500 mt-1">
-              ASN · CSP · Court · Lobbyist · UBO
+              ASN · CSP · Court · Lobbyist · Infra DNA ({vault?.infraDnaCount ?? 0})
             </div>
           </div>
 
@@ -206,6 +272,20 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
             </div>
           </div>
         </div>
+
+        {vault?.httpResilience && (
+          <div className="mt-3 pt-3 border-t border-slate-800/80 flex flex-wrap items-center justify-between gap-2 font-mono text-[11px] text-slate-400 tabular-nums">
+            <span>
+              HTTP Resilience WAL Cache: <strong className="text-slate-200">{vault.httpResilience.cachedEntriesCount}</strong> entries ·{' '}
+              <strong className="text-emerald-400">{vault.httpResilience.conditional304Hits}</strong> HTTP 304 revalidations ·{' '}
+              <strong className="text-cyan-300">{vault.httpResilience.freshCacheHits}</strong> fresh-TTL hits ·{' '}
+              <strong className="text-amber-300">{vault.httpResilience.rateLimitedWaits}</strong> token-bucket paces
+            </span>
+            <span className="text-slate-500">
+              {vault.httpResilience.networkFetches} live upstream fetches ({vault.httpResilience.totalRequests} total)
+            </span>
+          </div>
+        )}
       </div>
 
       {/* Cross-Entity Side-by-Side Live Comparator */}
@@ -514,7 +594,7 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
         {vault && vault.records.length > 0 && (
           <div className="pt-4 border-t border-slate-800 space-y-2">
             <div className="text-xs font-mono text-slate-400 font-semibold">
-              Ring-5 Append-Only Custody Chain · OpenTimestamps Bitcoin Calendar &amp; Sigstore Rekor ({vault.records.length} latest blocks)
+              Ring-5 Append-Only Custody Chain · OpenTimestamps · Sigstore Rekor · RFC 3161 TSA ({vault.records.length} latest blocks)
             </div>
             <div className="space-y-1.5 max-h-56 overflow-y-auto font-mono text-[11px] tabular-nums">
               {vault.records.map((rec) => {
@@ -545,6 +625,14 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
                         <span className="text-slate-600 mx-1.5">·</span>
                         <span className="text-emerald-400 font-semibold">
                           Rekor #{extAnchor.sigstoreRekor.logIndex}
+                        </span>
+                      </>
+                    )}
+                    {extAnchor?.rfc3161?.status === 'ANCHORED_RFC3161' && (
+                      <>
+                        <span className="text-slate-600 mx-1.5">·</span>
+                        <span className="text-amber-300 font-semibold">
+                          RFC3161 {extAnchor.rfc3161.bytesLength}B .tsr
                         </span>
                       </>
                     )}
@@ -593,6 +681,36 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
                     </div>
                   </div>
                   <div className="text-slate-400 shrink-0 font-semibold">{mut.severity}</div>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
+        {silentDeletions.length > 0 && (
+          <div className="pt-4 border-t border-slate-800 space-y-2">
+            <div className="text-xs font-mono text-rose-400 font-semibold">
+              Standing Dork Ed25519 Silent-Deletion Alerts — 200 OK → 404/410 ({silentDeletions.length})
+            </div>
+            <div className="space-y-1.5 max-h-48 overflow-y-auto font-mono text-[11px] tabular-nums">
+              {silentDeletions.map((del) => (
+                <div
+                  key={del.alertId}
+                  className="p-2.5 rounded bg-[#0B0E17] border border-rose-500/35 flex flex-col sm:flex-row sm:items-center justify-between gap-2"
+                >
+                  <div className="min-w-0">
+                    <span className="text-rose-300 font-semibold">{del.targetEntity}</span>
+                    <span className="text-slate-600 mx-1.5">·</span>
+                    <span className="text-amber-300">
+                      HTTP {del.previousHttpStatus} → {del.currentHttpStatus}
+                    </span>
+                    <span className="text-slate-600 mx-1.5">·</span>
+                    <span className="text-slate-400">{del.sourceEngine}</span>
+                    <div className="text-slate-300 truncate mt-0.5">{del.url}</div>
+                    <div className="text-slate-500 truncate mt-0.5">
+                      Alert SHA-256: {del.alertSha256.slice(0, 18)}... · Ed25519 Signed · {del.detectedAtUtc.slice(0, 19).replace('T', ' ')}Z
+                    </div>
+                  </div>
+                  <div className="text-rose-400 shrink-0 font-semibold">{del.severity}</div>
                 </div>
               ))}
             </div>

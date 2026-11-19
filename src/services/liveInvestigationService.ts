@@ -1,13 +1,16 @@
 import type {
   ClinicalTrialSilentMutationAlert,
+  ContagionSpiderResult,
   CrossEntityCorrelationReport,
   ExternalAnchorReceiptRecord,
+  HttpResilienceTelemetry,
   LiveBusinessIntelligence,
   LiveFeedEvent,
   LiveMarketQuote,
   LivingDeltaPatchRecord,
   PersistedInvestigationSummary,
   ProbeExecutionRecord,
+  SilentDeletionAlertRecord,
 } from '../types/investigation';
 
 export interface LiveInvestigationRequest {
@@ -196,13 +199,42 @@ export interface IntegrityVaultStatusResponse {
   >;
   livingDeltas?: LivingDeltaPatchRecord[];
   clinicalTrialMutations?: ClinicalTrialSilentMutationAlert[];
+  silentDeletionAlerts?: SilentDeletionAlertRecord[];
+  infraDnaCount?: number;
+  standingDorkSnapshotsCount?: number;
   counterpartyContagionEdgesCount?: number;
+  httpResilience?: HttpResilienceTelemetry;
 }
 
 export async function fetchIntegrityVaultStatus(): Promise<IntegrityVaultStatusResponse | null> {
   const res = await fetch('/api/integrity/status');
   if (!res.ok) return null;
   return (await res.json()) as IntegrityVaultStatusResponse;
+}
+
+export interface StandingDorkSweepResponse {
+  ok: boolean;
+  checkedTarget: string;
+  newAlerts: SilentDeletionAlertRecord[];
+  allAlerts: SilentDeletionAlertRecord[];
+  standingDorkSnapshotsCount: number;
+  error?: string;
+}
+
+export async function runStandingDorkDeletionSweep(
+  targetEntity?: string,
+  maxChecks = 10
+): Promise<StandingDorkSweepResponse> {
+  const res = await fetch('/api/dorks/standing-check', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ targetEntity, maxChecks }),
+  });
+  const data = (await res.json().catch(() => ({}))) as StandingDorkSweepResponse;
+  if (!res.ok || !data.ok) {
+    throw new Error(data.error || `Standing dork sweep failed (${res.status})`);
+  }
+  return data;
 }
 
 export interface ApexVaultGraphResponse {
@@ -224,6 +256,8 @@ export interface ApexVaultGraphResponse {
     archivedTargets: number;
     counterpartyEdges: number;
     clinicalMutations: number;
+    silentDeletions?: number;
+    infraDnaFingerprints?: number;
   };
 }
 
@@ -260,4 +294,23 @@ export async function fetchLivingDeltas(limit = 30): Promise<LivingDeltaPatchRec
   if (!res.ok) return [];
   const data = (await res.json()) as { items?: LivingDeltaPatchRecord[] };
   return Array.isArray(data.items) ? data.items : [];
+}
+
+export async function runContagionSpider(
+  rootEntity?: string,
+  maxEntities = 3
+): Promise<ContagionSpiderResult> {
+  const res = await fetch('/api/investigate/spider', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ rootEntity, maxEntities }),
+  });
+  const data = (await res.json().catch(() => ({}))) as ContagionSpiderResult & {
+    ok?: boolean;
+    error?: string;
+  };
+  if (!res.ok || data.ok === false) {
+    throw new Error(data.error || `Autonomous contagion spider failed (${res.status})`);
+  }
+  return data;
 }

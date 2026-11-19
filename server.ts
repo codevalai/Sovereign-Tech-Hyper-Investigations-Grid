@@ -6,6 +6,8 @@ import { runLiveOsintInvestigation } from './server/osintEngine.ts';
 import { fetchLiveLeaderboardMarketSync, runLightweightDeltaReprobe } from './server/deepLiveProbes.ts';
 import { liveDaemon } from './server/liveIngestionDaemon.ts';
 import { computeIpfsCidV1FromSha256Hex } from './server/adversarialShield.ts';
+import { runBoundedContagionSpider } from './server/contagionSpider.ts';
+import { getHttpResilienceStats } from './server/httpResilience.ts';
 import { anchorMerkleRootExternally } from './src/crypto/externalAnchor.ts';
 import { computeSignedDeltaPatch, type LivingSnapshot } from './src/engine/livingDossierDelta.ts';
 import type { LiveFeedEvent, PersistedInvestigationSummary } from './src/types/investigation.ts';
@@ -190,8 +192,63 @@ async function startServer() {
       externalAnchors: liveDaemon.getExternalAnchorReceipts(50),
       livingDeltas: liveDaemon.getLivingDeltaPatches(50),
       clinicalTrialMutations: liveDaemon.getClinicalTrialMutations(50),
+      silentDeletionAlerts: liveDaemon.getSilentDeletionAlerts(50),
+      infraDnaCount: liveDaemon.getInfraDnaFingerprints(200).length,
+      standingDorkSnapshotsCount: liveDaemon.getStandingDorkSnapshotsCount(),
       counterpartyContagionEdgesCount: liveDaemon.getCounterpartyContagionEdges(500).length,
+      httpResilience: getHttpResilienceStats(),
     });
+  });
+
+  app.post('/api/investigate/spider', async (req, res) => {
+    try {
+      const body = (req.body || {}) as {
+        rootEntity?: string;
+        explicitCandidates?: string[];
+        maxEntities?: number;
+      };
+      const maxEntities =
+        typeof body.maxEntities === 'number' && Number.isFinite(body.maxEntities)
+          ? Math.max(1, Math.min(3, Math.floor(body.maxEntities)))
+          : 3;
+      const result = await runBoundedContagionSpider({
+        rootEntity: typeof body.rootEntity === 'string' ? body.rootEntity.trim() : undefined,
+        explicitCandidates: Array.isArray(body.explicitCandidates)
+          ? body.explicitCandidates.map(String)
+          : undefined,
+        maxEntities,
+      });
+      res.json(result);
+    } catch (err: unknown) {
+      res.status(502).json({
+        ok: false,
+        error: err instanceof Error ? err.message : 'Bounded autonomous contagion spider failed.',
+      });
+    }
+  });
+
+  app.post('/api/dorks/standing-check', async (req, res) => {
+    try {
+      const body = (req.body || {}) as { targetEntity?: string; maxChecks?: number };
+      const targetEntity = typeof body.targetEntity === 'string' && body.targetEntity.trim()
+        ? body.targetEntity.trim()
+        : undefined;
+      const maxChecks = typeof body.maxChecks === 'number' && Number.isFinite(body.maxChecks)
+        ? Math.max(1, Math.min(body.maxChecks, 15))
+        : 10;
+      const newAlerts = await liveDaemon.checkStandingDorksForSilentDeletions(targetEntity, maxChecks);
+      res.json({
+        ok: true,
+        checkedTarget: targetEntity || 'ALL_STANDING_SNAPSHOTS',
+        newAlerts,
+        allAlerts: liveDaemon.getSilentDeletionAlerts(50),
+        standingDorkSnapshotsCount: liveDaemon.getStandingDorkSnapshotsCount(),
+      });
+    } catch (err: unknown) {
+      res.status(502).json({
+        error: err instanceof Error ? err.message : 'Standing dork silent-deletion sweep failed.',
+      });
+    }
   });
 
   app.get('/api/vault/apex-graph', (_req, res) => {

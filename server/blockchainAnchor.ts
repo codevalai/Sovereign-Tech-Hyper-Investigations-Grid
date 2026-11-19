@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { safeForensicFetch } from './adversarialShield.ts';
+import { submitRfc3161TsaAnchor, type Rfc3161AttemptDiagnostic } from '../src/crypto/externalAnchor.ts';
 
 export interface BitcoinTipAnchor {
   bitcoinBlockHash: string;
@@ -14,6 +15,8 @@ export interface Rfc3161TimestampReceipt {
   rfc3161TokenBase64: string | null;
   rfc3161TokenSha256: string | null;
   httpStatus: number;
+  errorNote?: string;
+  attempts?: Rfc3161AttemptDiagnostic[];
 }
 
 /**
@@ -95,53 +98,22 @@ function buildRfc3161TimeStampReqDer(sha256Hex: string): Buffer {
 }
 
 /**
- * Submits a SHA-256 digest (e.g. dossier merkle_root) to zero-key public RFC 3161 TSAs.
+ * Submits a SHA-256 digest (e.g. dossier merkle_root) through the 3-tier keyless RFC 3161 TSA waterfall
+ * (FreeTSA -> DigiCert -> Starfield, 15s timeout per endpoint).
  */
 export async function submitRfc3161TimestampRequest(
   sha256Hex: string
 ): Promise<Rfc3161TimestampReceipt> {
-  const derReq = buildRfc3161TimeStampReqDer(sha256Hex);
-  const endpoints = [
-    'https://freetsa.org/tsr',
-    'http://timestamp.digicert.com',
-  ];
-
-  for (const endpoint of endpoints) {
-    try {
-      const res = await fetch(endpoint, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/timestamp-query',
-          Accept: 'application/timestamp-reply',
-          'User-Agent': 'SovereignForensicMatrix/16.0',
-        },
-        body: new Uint8Array(derReq),
-        signal: AbortSignal.timeout(4500),
-      });
-      if (res.ok) {
-        const arr = new Uint8Array(await res.arrayBuffer());
-        // Valid DER TimeStampResp starts with SEQUENCE (0x30) and non-trivial length (> 32B)
-        if (arr.length > 32 && arr[0] === 0x30) {
-          const buf = Buffer.from(arr);
-          return {
-            status: 'ANCHORED_RFC3161',
-            tsaProvider: endpoint,
-            rfc3161TokenBase64: buf.toString('base64'),
-            rfc3161TokenSha256: crypto.createHash('sha256').update(buf).digest('hex'),
-            httpStatus: res.status,
-          };
-        }
-      }
-    } catch {
-      // Try next public TSA endpoint
-    }
-  }
-
+  const res = await submitRfc3161TsaAnchor(sha256Hex);
+  const okAttempt = res.attempts.find((a) => a.status === 'ANCHORED');
+  const lastAttempt = res.attempts[res.attempts.length - 1];
   return {
-    status: 'UNREACHABLE_OFFLINE',
-    tsaProvider: endpoints[0],
-    rfc3161TokenBase64: null,
-    rfc3161TokenSha256: null,
-    httpStatus: 0,
+    status: res.status,
+    tsaProvider: res.tsaProvider,
+    rfc3161TokenBase64: res.tokenBase64,
+    rfc3161TokenSha256: res.tokenSha256,
+    httpStatus: okAttempt?.httpStatus ?? lastAttempt?.httpStatus ?? 0,
+    errorNote: res.errorNote,
+    attempts: res.attempts,
   };
 }

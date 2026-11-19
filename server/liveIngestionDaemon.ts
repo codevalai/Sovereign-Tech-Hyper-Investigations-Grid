@@ -11,11 +11,15 @@ import type {
   ClinicalTrialSilentMutationAlert,
   CrossEntityCorrelationReport,
   CrossEntityOverlapEdge,
+  DorkArtifactRecord,
   ExternalAnchorReceiptRecord,
+  InfraDnaProfileRecord,
   LiveFeedEvent,
   LivingDeltaPatchRecord,
   PersistedInvestigationSummary,
   PrivateEntitySignal,
+  SilentDeletionAlertRecord,
+  TemporalCausalEvent,
 } from '../src/types/investigation.ts';
 
 export interface CustodyChainRecord {
@@ -217,6 +221,72 @@ class SovereignRealtimeDaemon {
         ed25519_public_key_pem TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_trial_mut_time ON clinical_trial_mutations(detected_at_iso DESC);
+
+      CREATE TABLE IF NOT EXISTS standing_dork_snapshots (
+        url TEXT PRIMARY KEY,
+        target_entity TEXT NOT NULL,
+        source_engine TEXT NOT NULL,
+        source_class TEXT NOT NULL,
+        first_seen_utc TEXT NOT NULL,
+        last_seen_utc TEXT NOT NULL,
+        last_http_status INTEGER NOT NULL DEFAULT 200,
+        sha256 TEXT NOT NULL,
+        ipfs_cid_v1 TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_standing_dork_target ON standing_dork_snapshots(target_entity);
+
+      CREATE TABLE IF NOT EXISTS silent_deletion_alerts (
+        alert_id TEXT PRIMARY KEY,
+        target_entity TEXT NOT NULL,
+        url TEXT NOT NULL,
+        source_engine TEXT NOT NULL,
+        first_seen_utc TEXT NOT NULL,
+        detected_at_utc TEXT NOT NULL,
+        previous_http_status INTEGER NOT NULL,
+        current_http_status INTEGER NOT NULL,
+        original_sha256 TEXT NOT NULL,
+        severity TEXT NOT NULL,
+        alert_sha256 TEXT NOT NULL,
+        ed25519_signature_base64 TEXT NOT NULL,
+        ed25519_public_key_pem TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_silent_del_time ON silent_deletion_alerts(detected_at_utc DESC);
+
+      CREATE TABLE IF NOT EXISTS infra_dna_fingerprints (
+        target_entity TEXT PRIMARY KEY,
+        domain TEXT NOT NULL,
+        favicon_sha256 TEXT,
+        favicon_mmh3 INTEGER,
+        analytics_ids_json TEXT NOT NULL DEFAULT '[]',
+        spf_includes_json TEXT NOT NULL DEFAULT '[]',
+        csp_origins_json TEXT NOT NULL DEFAULT '[]',
+        captured_at_iso TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS raw_dork_payloads (
+        payload_id TEXT PRIMARY KEY,
+        target_entity TEXT NOT NULL,
+        domain TEXT NOT NULL,
+        payload_kind TEXT NOT NULL,
+        payload_json TEXT NOT NULL,
+        sha256 TEXT NOT NULL,
+        captured_at_iso TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_raw_dork_target ON raw_dork_payloads(target_entity, captured_at_iso DESC);
+
+      CREATE TABLE IF NOT EXISTS temporal_events (
+        event_id TEXT PRIMARY KEY,
+        target_entity TEXT NOT NULL,
+        stream TEXT NOT NULL,
+        iso_date TEXT NOT NULL,
+        timestamp_ms INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        url TEXT,
+        amount_usd REAL,
+        captured_at_iso TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_temporal_events_target_ts ON temporal_events(target_entity, timestamp_ms DESC);
     `);
 
     // Non-destructive schema evolution for existing SQLite databases (preserves 100% of prior rows)
@@ -226,6 +296,11 @@ class SovereignRealtimeDaemon {
       `ALTER TABLE investigations_archive ADD COLUMN rdap_statuses_json TEXT NOT NULL DEFAULT '[]'`,
       `ALTER TABLE investigations_archive ADD COLUMN dnssec_validated INTEGER`,
       `ALTER TABLE investigations_archive ADD COLUMN hsts_preload_status TEXT`,
+      `ALTER TABLE external_anchor_receipts ADD COLUMN rfc3161_tsa_provider TEXT`,
+      `ALTER TABLE external_anchor_receipts ADD COLUMN rfc3161_status TEXT`,
+      `ALTER TABLE external_anchor_receipts ADD COLUMN rfc3161_token_base64 TEXT`,
+      `ALTER TABLE external_anchor_receipts ADD COLUMN rfc3161_token_sha256 TEXT`,
+      `ALTER TABLE external_anchor_receipts ADD COLUMN rfc3161_bytes_length INTEGER NOT NULL DEFAULT 0`,
     ];
     for (const ddl of additiveColumns) {
       try {
@@ -1027,8 +1102,9 @@ class SovereignRealtimeDaemon {
       `INSERT OR REPLACE INTO external_anchor_receipts (
         merkle_root, investigation_id, entity_name, anchored_at_iso,
         ots_calendar_url, ots_status, ots_commitment_base64, ots_bytes_length,
-        rekor_endpoint, rekor_status, rekor_log_index, rekor_uuid, rekor_integrated_time, rekor_error_note
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        rekor_endpoint, rekor_status, rekor_log_index, rekor_uuid, rekor_integrated_time, rekor_error_note,
+        rfc3161_tsa_provider, rfc3161_status, rfc3161_token_base64, rfc3161_token_sha256, rfc3161_bytes_length
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       receipt.merkleRootHex,
       investigationId,
@@ -1043,7 +1119,12 @@ class SovereignRealtimeDaemon {
       receipt.sigstoreRekor.logIndex ?? null,
       receipt.sigstoreRekor.uuid ?? null,
       receipt.sigstoreRekor.integratedTime ?? null,
-      receipt.sigstoreRekor.errorNote ?? null
+      receipt.sigstoreRekor.errorNote ?? null,
+      receipt.rfc3161?.tsaProvider ?? null,
+      receipt.rfc3161?.status ?? null,
+      receipt.rfc3161?.tokenBase64 ?? null,
+      receipt.rfc3161?.tokenSha256 ?? null,
+      receipt.rfc3161?.bytesLength ?? 0
     );
   }
 
@@ -1074,6 +1155,15 @@ class SovereignRealtimeDaemon {
         integratedTime: r.rekor_integrated_time != null ? Number(r.rekor_integrated_time) : undefined,
         errorNote: r.rekor_error_note ? String(r.rekor_error_note) : undefined,
       },
+      rfc3161: r.rfc3161_status
+        ? {
+            tsaProvider: String(r.rfc3161_tsa_provider || 'https://freetsa.org/tsr'),
+            status: String(r.rfc3161_status) as 'ANCHORED_RFC3161' | 'UNREACHABLE_OFFLINE',
+            tokenBase64: r.rfc3161_token_base64 ? String(r.rfc3161_token_base64) : null,
+            tokenSha256: r.rfc3161_token_sha256 ? String(r.rfc3161_token_sha256) : null,
+            bytesLength: Number(r.rfc3161_bytes_length || 0),
+          }
+        : undefined,
     }));
   }
 
@@ -1264,6 +1354,63 @@ class SovereignRealtimeDaemon {
             overlapType: 'COUNTERPARTY_CONTAGION_LINK',
             sharedValues: sharedCp.slice(0, 6),
             strength: Math.min(1, 0.5 + sharedCp.length * 0.15),
+          });
+        }
+      }
+    }
+
+    // Invisible Infrastructure DNA cross-entity correlation (Favicon SHA256/MMH3, GTM/GA/FBPIXEL, shared SPF/CSP chains)
+    const infraRows = this.getInfraDnaFingerprints(200);
+    const genericSpfCsp = new Set([
+      '_spf.google.com',
+      'spf.protection.outlook.com',
+      'sendgrid.net',
+      'mailgun.org',
+      'amazonses.com',
+      'fonts.googleapis.com',
+      'fonts.gstatic.com',
+      'www.google-analytics.com',
+      'www.googletagmanager.com',
+    ]);
+    for (let i = 0; i < infraRows.length; i++) {
+      for (let j = i + 1; j < infraRows.length; j++) {
+        const a = infraRows[i];
+        const b = infraRows[j];
+        if (a.targetEntity.toLowerCase() === b.targetEntity.toLowerCase()) continue;
+        const sharedSignals: string[] = [];
+        if (a.faviconSha256 && b.faviconSha256 && a.faviconSha256 === b.faviconSha256) {
+          sharedSignals.push(`Favicon SHA256 ${a.faviconSha256.slice(0, 12)}`);
+        } else if (
+          typeof a.faviconMmh3 === 'number' &&
+          typeof b.faviconMmh3 === 'number' &&
+          a.faviconMmh3 === b.faviconMmh3
+        ) {
+          sharedSignals.push(`Favicon MMH3 ${a.faviconMmh3}`);
+        }
+        const sharedAnalytics = intersect(a.analyticsIds, b.analyticsIds);
+        for (const id of sharedAnalytics.slice(0, 4)) {
+          sharedSignals.push(`Analytics ${id}`);
+        }
+        const nonGenericSpfA = a.spfIncludes.filter((s) => !genericSpfCsp.has(s.toLowerCase()));
+        const nonGenericSpfB = b.spfIncludes.filter((s) => !genericSpfCsp.has(s.toLowerCase()));
+        const sharedSpf = intersect(nonGenericSpfA, nonGenericSpfB);
+        if (sharedSpf.length >= 2) {
+          sharedSignals.push(...sharedSpf.slice(0, 3).map((s) => `SPF ${s}`));
+        }
+        const nonGenericCspA = a.cspOrigins.filter((s) => !genericSpfCsp.has(s.toLowerCase()));
+        const nonGenericCspB = b.cspOrigins.filter((s) => !genericSpfCsp.has(s.toLowerCase()));
+        const sharedCsp = intersect(nonGenericCspA, nonGenericCspB);
+        if (sharedCsp.length >= 2) {
+          sharedSignals.push(...sharedCsp.slice(0, 3).map((s) => `CSP ${s}`));
+        }
+
+        if (sharedSignals.length > 0) {
+          overlaps.push({
+            entityA: a.targetEntity,
+            entityB: b.targetEntity,
+            overlapType: 'INFRA_DNA_SHARED_LINK',
+            sharedValues: sharedSignals.slice(0, 6),
+            strength: Math.min(1, 0.65 + sharedSignals.length * 0.12),
           });
         }
       }
@@ -1541,6 +1688,8 @@ class SovereignRealtimeDaemon {
       archivedTargets: number;
       counterpartyEdges: number;
       clinicalMutations: number;
+      silentDeletions: number;
+      infraDnaFingerprints: number;
     };
   } {
     const archive = this.getInvestigationArchive(80);
@@ -1646,6 +1795,9 @@ class SovereignRealtimeDaemon {
       addEdge(cpid, tid, `COUNTERPARTY_${cp.source}`, 1.25);
     }
 
+    const silentDeletions = this.getSilentDeletionAlerts(50);
+    const infraDnaCount = this.getInfraDnaFingerprints(200).length;
+
     return {
       nodes: Array.from(nodeMap.values()),
       edges,
@@ -1653,8 +1805,416 @@ class SovereignRealtimeDaemon {
         archivedTargets: targets.length,
         counterpartyEdges: cpEdges.length,
         clinicalMutations: clinicalMuts.length,
+        silentDeletions: silentDeletions.length,
+        infraDnaFingerprints: infraDnaCount,
       },
     };
+  }
+
+  // =========================================================================
+  // v22.0: Standing Dork Snapshots, Ed25519 Silent Deletion Alerts, Infra DNA
+  // =========================================================================
+
+  public persistRawDorkPayload(
+    targetEntity: string,
+    domain: string,
+    payloadKind: string,
+    payload: unknown
+  ): string {
+    this.initDatabase();
+    const db = this.db!;
+    const nowIso = new Date().toISOString();
+    const json = JSON.stringify(payload);
+    const sha256 = crypto.createHash('sha256').update(json).digest('hex');
+    const payloadId = `${payloadKind}-${sha256.slice(0, 16)}`;
+    db.prepare(
+      `INSERT OR REPLACE INTO raw_dork_payloads (
+        payload_id, target_entity, domain, payload_kind, payload_json, sha256, captured_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(payloadId, targetEntity, domain || '', payloadKind, json, sha256, nowIso);
+    return payloadId;
+  }
+
+  public getKnownStandingDorkUrls(targetEntity: string): Set<string> {
+    this.initDatabase();
+    const db = this.db!;
+    const rows = db
+      .prepare(`SELECT url FROM standing_dork_snapshots WHERE LOWER(target_entity) = LOWER(?) LIMIT 500`)
+      .all(targetEntity) as Array<Record<string, unknown>>;
+    return new Set(rows.map((r) => String(r.url || '')).filter(Boolean));
+  }
+
+  public getStandingDorkSnapshotsCount(): number {
+    this.initDatabase();
+    const row = this.db!.prepare(`SELECT COUNT(*) AS cnt FROM standing_dork_snapshots`).get() as
+      | Record<string, unknown>
+      | undefined;
+    return Number(row?.cnt ?? 0);
+  }
+
+  public recordStandingDorkSnapshots(
+    targetEntity: string,
+    artifacts: ReadonlyArray<DorkArtifactRecord>
+  ): number {
+    this.initDatabase();
+    const db = this.db!;
+    const nowIso = new Date().toISOString();
+    const selectExisting = db.prepare(`SELECT first_seen_utc FROM standing_dork_snapshots WHERE url = ? LIMIT 1`);
+    const upsert = db.prepare(
+      `INSERT OR REPLACE INTO standing_dork_snapshots (
+        url, target_entity, source_engine, source_class, first_seen_utc, last_seen_utc,
+        last_http_status, sha256, ipfs_cid_v1
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    let count = 0;
+    for (const art of artifacts.slice(0, 80)) {
+      if (!art.url || !art.url.startsWith('http') || art.quarantined) continue;
+      const existing = selectExisting.get(art.url) as Record<string, unknown> | undefined;
+      const firstSeen = existing?.first_seen_utc ? String(existing.first_seen_utc) : nowIso;
+      upsert.run(
+        art.url,
+        targetEntity,
+        art.sourceEngine,
+        art.sourceClass,
+        firstSeen,
+        nowIso,
+        200,
+        art.sha256,
+        art.ipfsCidV1
+      );
+      count++;
+    }
+    return count;
+  }
+
+  public recordSilentDeletionAlert(input: {
+    targetEntity: string;
+    url: string;
+    sourceEngine: string;
+    firstSeenUtc: string;
+    previousHttpStatus: number;
+    currentHttpStatus: number;
+    originalSha256: string;
+  }): SilentDeletionAlertRecord {
+    this.initDatabase();
+    const db = this.db!;
+    const detectedAtUtc = new Date().toISOString();
+    const severity: SilentDeletionAlertRecord['severity'] =
+      input.currentHttpStatus === 410 || /\.gov|sec\.gov|federalregister\.gov|\/terms|\/privacy|\/legal|\.pdf$/i.test(input.url)
+        ? 'CRITICAL'
+        : 'HIGH';
+
+    const payload = {
+      targetEntity: input.targetEntity,
+      url: input.url,
+      sourceEngine: input.sourceEngine,
+      firstSeenUtc: input.firstSeenUtc,
+      detectedAtUtc,
+      previousHttpStatus: input.previousHttpStatus,
+      currentHttpStatus: input.currentHttpStatus,
+      originalSha256: input.originalSha256,
+      severity,
+    };
+
+    const alertSha256 = crypto.createHash('sha256').update(JSON.stringify(payload)).digest('hex');
+    const { privateKey, publicKey } = crypto.generateKeyPairSync('ed25519');
+    const ed25519SignatureBase64 = crypto
+      .sign(null, Buffer.from(alertSha256, 'utf8'), privateKey)
+      .toString('base64');
+    const ed25519PublicKeyPem = publicKey.export({ type: 'spki', format: 'pem' }).toString();
+    const alertId = `sdel-${alertSha256.slice(0, 14)}`;
+
+    const alert: SilentDeletionAlertRecord = {
+      alertId,
+      ...payload,
+      alertSha256,
+      ed25519SignatureBase64,
+      ed25519PublicKeyPem,
+    };
+
+    db.prepare(
+      `INSERT OR REPLACE INTO silent_deletion_alerts (
+        alert_id, target_entity, url, source_engine, first_seen_utc, detected_at_utc,
+        previous_http_status, current_http_status, original_sha256, severity,
+        alert_sha256, ed25519_signature_base64, ed25519_public_key_pem
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      alert.alertId,
+      alert.targetEntity,
+      alert.url,
+      alert.sourceEngine,
+      alert.firstSeenUtc,
+      alert.detectedAtUtc,
+      alert.previousHttpStatus,
+      alert.currentHttpStatus,
+      alert.originalSha256,
+      alert.severity,
+      alert.alertSha256,
+      alert.ed25519SignatureBase64,
+      alert.ed25519PublicKeyPem
+    );
+
+    db.prepare(`UPDATE standing_dork_snapshots SET last_http_status = ?, last_seen_utc = ? WHERE url = ?`).run(
+      input.currentHttpStatus,
+      detectedAtUtc,
+      input.url
+    );
+
+    return alert;
+  }
+
+  public async checkStandingDorksForSilentDeletions(
+    targetEntity?: string,
+    maxChecks = 6
+  ): Promise<SilentDeletionAlertRecord[]> {
+    this.initDatabase();
+    const db = this.db!;
+    const cap = Math.max(1, Math.min(maxChecks, 15));
+    const rows = (
+      targetEntity
+        ? db
+            .prepare(
+              `SELECT * FROM standing_dork_snapshots
+               WHERE LOWER(target_entity) = LOWER(?) AND last_http_status = 200
+               ORDER BY last_seen_utc ASC LIMIT ?`
+            )
+            .all(targetEntity, cap)
+        : db
+            .prepare(
+              `SELECT * FROM standing_dork_snapshots
+               WHERE last_http_status = 200
+               ORDER BY last_seen_utc ASC LIMIT ?`
+            )
+            .all(cap)
+    ) as Array<Record<string, unknown>>;
+
+    const alerts: SilentDeletionAlertRecord[] = [];
+    const checkOne = async (row: Record<string, unknown>) => {
+      const url = String(row.url || '');
+      if (!url.startsWith('http')) return;
+      try {
+        const res = await fetch(url, {
+          method: 'HEAD',
+          signal: AbortSignal.timeout(4500),
+          headers: { 'User-Agent': 'SovereignOSINTStandingMonitor/22.0' },
+        });
+        if (res.status === 404 || res.status === 410) {
+          alerts.push(
+            this.recordSilentDeletionAlert({
+              targetEntity: String(row.target_entity),
+              url,
+              sourceEngine: String(row.source_engine),
+              firstSeenUtc: String(row.first_seen_utc),
+              previousHttpStatus: Number(row.last_http_status || 200),
+              currentHttpStatus: res.status,
+              originalSha256: String(row.sha256 || ''),
+            })
+          );
+        } else if (res.status >= 200 && res.status < 400) {
+          db.prepare(`UPDATE standing_dork_snapshots SET last_seen_utc = ? WHERE url = ?`).run(
+            new Date().toISOString(),
+            url
+          );
+        }
+      } catch {
+        // Network timeout or transient error does not constitute a verified 404/410 deletion
+      }
+    };
+
+    await Promise.allSettled(rows.map((r) => checkOne(r)));
+    return alerts;
+  }
+
+  public getSilentDeletionAlerts(limit = 50): SilentDeletionAlertRecord[] {
+    this.initDatabase();
+    const db = this.db!;
+    const rows = db
+      .prepare(`SELECT * FROM silent_deletion_alerts ORDER BY detected_at_utc DESC LIMIT ?`)
+      .all(Math.max(1, Math.min(limit, 200))) as Array<Record<string, unknown>>;
+
+    return rows.map((r) => ({
+      alertId: String(r.alert_id),
+      targetEntity: String(r.target_entity),
+      url: String(r.url),
+      sourceEngine: String(r.source_engine),
+      firstSeenUtc: String(r.first_seen_utc),
+      detectedAtUtc: String(r.detected_at_utc),
+      previousHttpStatus: Number(r.previous_http_status),
+      currentHttpStatus: Number(r.current_http_status),
+      originalSha256: String(r.original_sha256),
+      severity: String(r.severity) as SilentDeletionAlertRecord['severity'],
+      alertSha256: String(r.alert_sha256),
+      ed25519SignatureBase64: String(r.ed25519_signature_base64),
+      ed25519PublicKeyPem: String(r.ed25519_public_key_pem),
+    }));
+  }
+
+  public recordInfraDnaFingerprint(targetEntity: string, profile: InfraDnaProfileRecord): void {
+    this.initDatabase();
+    const db = this.db!;
+    db.prepare(
+      `INSERT OR REPLACE INTO infra_dna_fingerprints (
+        target_entity, domain, favicon_sha256, favicon_mmh3,
+        analytics_ids_json, spf_includes_json, csp_origins_json, captured_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`
+    ).run(
+      targetEntity,
+      profile.domain,
+      profile.faviconSha256 ?? null,
+      typeof profile.faviconMmh3 === 'number' ? profile.faviconMmh3 : null,
+      JSON.stringify(profile.analyticsIds || []),
+      JSON.stringify(profile.spfIncludes || []),
+      JSON.stringify(profile.cspOrigins || []),
+      profile.collectedAtUtc || new Date().toISOString()
+    );
+  }
+
+  public getInfraDnaFingerprints(limit = 100): Array<InfraDnaProfileRecord & { targetEntity: string }> {
+    this.initDatabase();
+    const db = this.db!;
+    const rows = db
+      .prepare(`SELECT * FROM infra_dna_fingerprints ORDER BY captured_at_iso DESC LIMIT ?`)
+      .all(Math.max(1, Math.min(limit, 300))) as Array<Record<string, unknown>>;
+
+    const parseArr = (raw: unknown): string[] => {
+      try {
+        const parsed = JSON.parse(String(raw || '[]'));
+        return Array.isArray(parsed) ? parsed.map(String) : [];
+      } catch {
+        return [];
+      }
+    };
+
+    return rows.map((r) => ({
+      targetEntity: String(r.target_entity),
+      domain: String(r.domain),
+      collectedAtUtc: String(r.captured_at_iso),
+      faviconSha256: r.favicon_sha256 ? String(r.favicon_sha256) : undefined,
+      faviconMmh3: typeof r.favicon_mmh3 === 'number' ? r.favicon_mmh3 : undefined,
+      analyticsIds: parseArr(r.analytics_ids_json),
+      spfIncludes: parseArr(r.spf_includes_json),
+      cspOrigins: parseArr(r.csp_origins_json),
+      subdomainsFingerprinted: [],
+    }));
+  }
+
+  public recordDorkAgencyContagionEdges(
+    targetEntity: string,
+    agencies: ReadonlyArray<string>,
+    externalDomains: ReadonlyArray<string>
+  ): number {
+    this.initDatabase();
+    const db = this.db!;
+    const nowIso = new Date().toISOString();
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO counterparty_contagion_edges (
+        edge_id, target_entity, counterparty_entity, source, form_type,
+        record_id, filing_date, url, evidence_sha256, captured_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+
+    const targetNorm = targetEntity.trim().toLowerCase();
+    let inserted = 0;
+
+    for (const agency of agencies.slice(0, 12)) {
+      const clean = agency.trim();
+      if (!clean || clean.toLowerCase() === targetNorm) continue;
+      const sha = crypto.createHash('sha256').update(`${targetNorm}|FEDERAL_REGISTER_AGENCY|${clean}`).digest('hex');
+      stmt.run(
+        sha.slice(0, 24),
+        targetEntity,
+        clean,
+        'FEDERAL_REGISTER_DORK',
+        'NOTICE_RULE',
+        clean.slice(0, 48),
+        nowIso.slice(0, 10),
+        'https://www.federalregister.gov',
+        sha,
+        nowIso
+      );
+      inserted++;
+    }
+
+    for (const dom of externalDomains.slice(0, 10)) {
+      const clean = dom.trim().toLowerCase();
+      if (!clean || clean.length < 4) continue;
+      const sha = crypto.createHash('sha256').update(`${targetNorm}|DORK_EXTERNAL_DOMAIN|${clean}`).digest('hex');
+      stmt.run(
+        sha.slice(0, 24),
+        targetEntity,
+        clean,
+        'EXTREME_DORK_DOMAIN',
+        'DOCUMENT_OR_ARCHIVE',
+        clean,
+        nowIso.slice(0, 10),
+        `https://${clean}`,
+        sha,
+        nowIso
+      );
+      inserted++;
+    }
+
+    return inserted;
+  }
+
+  public recordTemporalEvents(
+    targetEntity: string,
+    events: ReadonlyArray<TemporalCausalEvent>
+  ): number {
+    this.initDatabase();
+    const db = this.db!;
+    const nowIso = new Date().toISOString();
+    const stmt = db.prepare(
+      `INSERT OR REPLACE INTO temporal_events (
+        event_id, target_entity, stream, iso_date, timestamp_ms,
+        title, summary, url, amount_usd, captured_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+    );
+    let count = 0;
+    for (const ev of events.slice(0, 200)) {
+      if (!ev.id || !ev.isoDate) continue;
+      stmt.run(
+        ev.id,
+        targetEntity,
+        ev.stream,
+        ev.isoDate,
+        ev.timestampMs,
+        ev.title.slice(0, 240),
+        ev.summary.slice(0, 360),
+        ev.url ?? null,
+        typeof ev.amountUsd === 'number' && Number.isFinite(ev.amountUsd) ? ev.amountUsd : null,
+        nowIso
+      );
+      count++;
+    }
+    return count;
+  }
+
+  public getTemporalEvents(targetEntity?: string, limit = 120): TemporalCausalEvent[] {
+    this.initDatabase();
+    const db = this.db!;
+    const cap = Math.max(1, Math.min(limit, 400));
+    const rows = (
+      targetEntity
+        ? db
+            .prepare(
+              `SELECT * FROM temporal_events WHERE LOWER(target_entity) = LOWER(?) ORDER BY timestamp_ms DESC LIMIT ?`
+            )
+            .all(targetEntity, cap)
+        : db.prepare(`SELECT * FROM temporal_events ORDER BY timestamp_ms DESC LIMIT ?`).all(cap)
+    ) as Array<Record<string, unknown>>;
+
+    return rows.map((r) => ({
+      id: String(r.event_id),
+      stream: String(r.stream) as TemporalCausalEvent['stream'],
+      isoDate: String(r.iso_date),
+      timestampMs: Number(r.timestamp_ms || 0),
+      title: String(r.title),
+      summary: String(r.summary),
+      url: r.url ? String(r.url) : undefined,
+      amountUsd: r.amount_usd != null ? Number(r.amount_usd) : undefined,
+    }));
   }
 }
 

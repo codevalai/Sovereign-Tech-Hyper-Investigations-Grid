@@ -1,6 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
   AlertTriangle,
+  Clock,
   ExternalLink,
   FileSearch,
   GitBranch,
@@ -30,7 +31,9 @@ type DetailTab =
   | 'pivots_zktls'
   | 'financial_bft'
   | 'zero_day_atlas'
-  | 'private_shadow';
+  | 'private_shadow'
+  | 'dorking_dna'
+  | 'temporal_causality';
 
 interface LiveCanvasNode {
   id: string;
@@ -290,6 +293,10 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
   const intel = result.scope.liveIntel;
   const [layerFilter, setLayerFilter] = useState<GraphLayerFilter>('all');
   const [detailTab, setDetailTab] = useState<DetailTab>('attack_surface');
+  const [dorkFilter, setDorkFilter] = useState<'all' | 'promoted' | 'watchlist'>('all');
+  const [clusterSeverityFilter, setClusterSeverityFilter] = useState<
+    'ALL' | 'CRITICAL' | 'HIGH' | 'MEDIUM'
+  >('ALL');
   const [selectedNode, setSelectedNode] = useState<LiveCanvasNode | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
 
@@ -552,6 +559,80 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
         </div>
       </div>
 
+      {/* v24.0 Cross-Dossier Signal-Density & RFC 3161 TSA Strip */}
+      {result.signalDensityMetrics && (
+        <div className="px-3.5 py-2.5 rounded-lg bg-[#0B0E17] border border-slate-800 flex flex-wrap items-center justify-between gap-x-4 gap-y-1.5 font-mono text-[11px] tabular-nums">
+          <div className="flex flex-wrap items-center gap-x-2.5 gap-y-1 text-slate-300">
+            <span className="text-slate-400 uppercase tracking-wider text-[10px]">
+              Signal Density
+            </span>
+            <span className="text-slate-700">·</span>
+            <span>
+              <span className="text-emerald-400 font-semibold">
+                {result.signalDensityMetrics.active_specialists}
+              </span>{' '}
+              active specialists
+            </span>
+            <span className="text-slate-700">·</span>
+            <span>
+              <span className="text-slate-200 font-semibold">
+                {result.signalDensityMetrics.zero_hit_specialists}
+              </span>{' '}
+              zero-hit attestations
+            </span>
+            <span className="text-slate-700">·</span>
+            <span>
+              <span className="text-cyan-400 font-semibold">
+                {result.signalDensityMetrics.unique_evidence_citations_count}
+              </span>{' '}
+              unique citations
+            </span>
+            <span className="text-slate-700">·</span>
+            <span>
+              Intra-Squad Dup:{' '}
+              <span
+                className={`font-semibold ${
+                  result.signalDensityMetrics.intra_squad_duplication_ratio < 0.15
+                    ? 'text-emerald-400'
+                    : 'text-amber-400'
+                }`}
+              >
+                {(result.signalDensityMetrics.intra_squad_duplication_ratio * 100).toFixed(1)}%
+              </span>
+            </span>
+            <span className="text-slate-700">·</span>
+            <span className="text-slate-400">
+              Compression {result.signalDensityMetrics.compression_savings_pct.toFixed(1)}%
+            </span>
+          </div>
+          <div className="flex items-center gap-2 text-slate-400">
+            <Lock className="w-3.5 h-3.5 text-amber-400" />
+            <span>RFC 3161 TSA:</span>
+            <span
+              className={`font-semibold ${
+                (result.rfc3161Status || result.signalDensityMetrics.tsa_anchor_status) ===
+                'ANCHORED_RFC3161'
+                  ? 'text-emerald-400'
+                  : (result.rfc3161Status || result.signalDensityMetrics.tsa_anchor_status) ===
+                    'PENDING_FINALIZATION'
+                  ? 'text-amber-400'
+                  : 'text-rose-400'
+              }`}
+            >
+              {result.rfc3161Status || result.signalDensityMetrics.tsa_anchor_status}
+            </span>
+            {result.rfc3161TokenSha256 && (
+              <>
+                <span className="text-slate-700">·</span>
+                <span className="text-slate-300">
+                  MERKLE_ROOT.tsr ({result.rfc3161TokenSha256.slice(0, 10)})
+                </span>
+              </>
+            )}
+          </div>
+        </div>
+      )}
+
       {/* Interactive Live Entity Graph Canvas */}
       <div className="border-t border-slate-800 pt-5 space-y-3">
         <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
@@ -646,6 +727,16 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                 id: 'private_shadow',
                 label: `Private Shadow (${intel.privateDiscovery?.totalSignals ?? 0}) & Contagion`,
                 icon: FileSearch,
+              },
+              {
+                id: 'dorking_dna',
+                label: `Dorking (${intel.extremeDorkingAndDna?.totalArtifacts ?? 0}), Stealth Diffs & Infra DNA`,
+                icon: Globe,
+              },
+              {
+                id: 'temporal_causality',
+                label: `Temporal Causality (${intel.temporalCausalityAndLobbying?.clusters.length ?? 0}) & Lobbying`,
+                icon: Clock,
               },
               { id: 'attention', label: 'Attention · Common Crawl · DEX', icon: Radio },
               { id: 'financial_bft', label: 'Forensic Accounting & BFT Quorum', icon: Scale },
@@ -1609,6 +1700,587 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
             </div>
           </div>
         )}
+
+        {detailTab === 'dorking_dna' && (() => {
+          const edna = intel.extremeDorkingAndDna;
+          const visibleArtifacts = (edna?.artifacts || []).filter((a) => {
+            if (dorkFilter === 'promoted') return a.corroborated && !a.quarantined;
+            if (dorkFilter === 'watchlist') return !a.corroborated || a.quarantined;
+            return true;
+          });
+          return (
+            <div className="space-y-4 font-mono text-xs">
+              {edna ? (
+                <>
+                  {/* Compact KPI Summary Strip */}
+                  <div className="grid grid-cols-2 sm:grid-cols-5 gap-2.5 tabular-nums">
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <span className="text-[11px] text-slate-500 block">Dork Hits (H1-H{edna.recursiveLoop.hopsExecuted})</span>
+                      <strong className="text-base text-slate-100">{edna.totalArtifacts}</strong>
+                      <span className="block text-[11px] text-emerald-400">
+                        {edna.promotedArtifactsCount} corroborated
+                      </span>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <span className="text-[11px] text-slate-500 block">Watchlist / Quarantined</span>
+                      <strong className="text-base text-amber-400">
+                        {edna.unverifiedWatchlistCount + edna.quarantinedArtifactsCount}
+                      </strong>
+                      <span className="block text-[11px] text-slate-500">
+                        {edna.observedSourceClasses.length} source class(es)
+                      </span>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <span className="text-[11px] text-slate-500 block">Wayback Stealth Diffs</span>
+                      <strong className="text-base text-rose-300">{edna.stealthEditDiffs.length}</strong>
+                      <span className="block text-[11px] text-slate-500">
+                        {edna.silentDeletionAlerts.length} silent deletion(s)
+                      </span>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <span className="text-[11px] text-slate-500 block">Mined PDF/DOCX</span>
+                      <strong className="text-base text-cyan-300">{edna.minedDocuments.length}</strong>
+                      <span className="block text-[11px] text-slate-500">
+                        {edna.minedDocuments.filter((d) => d.author || d.creator).length} with Author/XMP
+                      </span>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <span className="text-[11px] text-slate-500 block">Infra DNA MMH3</span>
+                      <strong className="text-base text-slate-100 truncate block">
+                        {typeof edna.infraDna.faviconMmh3 === 'number' ? edna.infraDna.faviconMmh3 : 'N/A'}
+                      </strong>
+                      <span className="block text-[11px] text-slate-500">
+                        {edna.infraDna.analyticsIds.length} analytics · {edna.infraDna.spfIncludes.length} SPF
+                      </span>
+                    </div>
+                  </div>
+
+                  {/* Row 1: 5-Engine Dorking + Red-Team Gate & Closed-Loop Recursive Mutation */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                        <span className="font-semibold text-slate-200">
+                          5-Engine Zero-Key Dork Ledger ({visibleArtifacts.length})
+                        </span>
+                        <div className="flex items-center gap-1 text-[11px]">
+                          {(['all', 'promoted', 'watchlist'] as const).map((mode) => (
+                            <button
+                              key={mode}
+                              type="button"
+                              onClick={() => setDorkFilter(mode)}
+                              className={`px-2 py-0.5 rounded border cursor-pointer transition-colors ${
+                                dorkFilter === mode
+                                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 font-semibold'
+                                  : 'bg-slate-900/60 border-slate-800 text-slate-400 hover:text-slate-200'
+                              }`}
+                            >
+                              {mode === 'all' ? 'All' : mode === 'promoted' ? 'Corroborated' : 'Watchlist'}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      <div className="text-[11px] text-slate-400 flex flex-wrap gap-x-3 gap-y-1 tabular-nums">
+                        {Object.entries(edna.engineStats).map(([eng, st]) => (
+                          <span key={eng}>
+                            {eng}: <strong className={st.status === 'ok' ? 'text-emerald-400' : 'text-rose-400'}>{st.count}</strong> ({st.latencyMs}ms)
+                          </span>
+                        ))}
+                      </div>
+
+                      {visibleArtifacts.length > 0 ? (
+                        <div className="space-y-2 max-h-64 overflow-y-auto text-[11px]">
+                          {visibleArtifacts.slice(0, 25).map((art) => (
+                            <div key={art.id} className="pb-2 border-b border-slate-800/60 last:border-0">
+                              <div className="flex items-center justify-between gap-2">
+                                <a
+                                  href={art.url}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-cyan-300 hover:underline font-semibold truncate"
+                                >
+                                  {art.title}
+                                </a>
+                                <span
+                                  className={`shrink-0 font-semibold ${
+                                    art.quarantined
+                                      ? 'text-rose-400'
+                                      : art.corroborated
+                                      ? 'text-emerald-400'
+                                      : 'text-amber-400'
+                                  }`}
+                                >
+                                  {art.quarantined ? 'QUARANTINED' : art.corroborated ? 'CORROBORATED' : 'WATCHLIST'}
+                                </span>
+                              </div>
+                              <div className="text-slate-400 truncate mt-0.5">{art.snippet}</div>
+                              <div className="text-slate-500 tabular-nums mt-0.5">
+                                {art.sourceEngine} · H{art.hopDepth} · {art.sourceClass} · Squads {art.squadTags.join(',')} · CID {art.ipfsCidV1.slice(0, 14)}
+                              </div>
+                              {art.quarantineReason && (
+                                <div className="text-amber-300/90 mt-0.5">{art.quarantineReason}</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-500">No dork artifacts match this filter.</p>
+                      )}
+                    </div>
+
+                    {/* Wayback Stealth-Edit Diffs & Closed-Loop Hops 2-3 */}
+                    <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-3">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <span className="font-semibold text-slate-200">
+                          Wayback Policy Stealth-Edit Diffs ({edna.stealthEditDiffs.length})
+                        </span>
+                        <span className="text-slate-500 tabular-nums">
+                          {edna.standingSnapshotsPersisted} standing URLs tracked
+                        </span>
+                      </div>
+
+                      {edna.stealthEditDiffs.length > 0 ? (
+                        <div className="space-y-2.5 max-h-40 overflow-y-auto text-[11px]">
+                          {edna.stealthEditDiffs.map((diff) => (
+                            <div key={diff.path} className="pb-2 border-b border-slate-800/60 last:border-0">
+                              <div className="flex items-center justify-between gap-2">
+                                <a
+                                  href={diff.newestUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-amber-300 hover:underline font-semibold"
+                                >
+                                  {diff.path} ({diff.oldestTimestamp.slice(0, 8)} → {diff.newestTimestamp.slice(0, 8)})
+                                </a>
+                                <span className="text-slate-400 tabular-nums">
+                                  +{diff.addedLinesCount} / -{diff.removedLinesCount} lines
+                                </span>
+                              </div>
+                              {diff.highRiskKeywordsAdded.length > 0 && (
+                                <div className="text-rose-400 font-semibold mt-0.5">
+                                  High-risk clauses introduced: {diff.highRiskKeywordsAdded.join(', ')}
+                                </div>
+                              )}
+                              {diff.addedSample[0] && (
+                                <div className="text-slate-400 truncate mt-0.5">+ {diff.addedSample[0]}</div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-500 text-[11px]">
+                          No multi-digest policy changes surfaced on Wayback CDX across /terms, /privacy, /security, /legal, or /tos.
+                        </p>
+                      )}
+
+                      <div className="pt-2 border-t border-slate-800 space-y-1.5">
+                        <div className="flex items-center justify-between text-[11px]">
+                          <span className="text-slate-300 font-semibold">
+                            Closed-Loop Recursive Dork Mutations (Hops 2-3)
+                          </span>
+                          <span className="text-slate-500 tabular-nums">
+                            {edna.recursiveLoop.mutations.length} queries · +{edna.recursiveLoop.newArtifactsCount} hits
+                          </span>
+                        </div>
+                        {edna.recursiveLoop.mutations.length > 0 ? (
+                          <div className="space-y-1.5 max-h-32 overflow-y-auto text-[11px]">
+                            {edna.recursiveLoop.mutations.map((m, i) => (
+                              <div key={`${m.seedEntity}-${i}`} className="pb-1 border-b border-slate-800/60 last:border-0">
+                                <div className="flex items-center justify-between gap-2">
+                                  <span className="text-slate-200 font-semibold truncate">
+                                    H{m.hopDepth} · {m.seedEntity} ({m.seedSource})
+                                  </span>
+                                  <span className="text-emerald-400 shrink-0 tabular-nums">+{m.hitsFound}</span>
+                                </div>
+                                <div className="text-slate-500 truncate">{m.synthesizedQuery}</div>
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-[11px] text-slate-500">
+                            No secondary LLC or PDF-author seeds required Hop 2-3 expansion on this run.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Row 2: Deep Public Artifact Metadata Miner & Invisible Infrastructure DNA */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-2.5">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <span className="font-semibold text-slate-200">
+                          Deep Artifact Metadata Miner — PDF / DOCX ({edna.minedDocuments.length})
+                        </span>
+                        <span className="text-slate-500">Author · XMP · Entities</span>
+                      </div>
+                      {edna.minedDocuments.length > 0 ? (
+                        <div className="space-y-2 max-h-48 overflow-y-auto text-[11px]">
+                          {edna.minedDocuments.map((doc) => (
+                            <div key={doc.sha256} className="pb-2 border-b border-slate-800/60 last:border-0">
+                              <div className="flex items-center justify-between gap-2">
+                                <a
+                                  href={doc.sourceUrl}
+                                  target="_blank"
+                                  rel="noopener noreferrer"
+                                  className="text-cyan-300 hover:underline font-semibold truncate"
+                                >
+                                  {doc.format} · {doc.sourceUrl.split('/').pop() || doc.sourceUrl}
+                                </a>
+                                <span className="text-slate-500 shrink-0 tabular-nums">
+                                  {(doc.byteLength / 1024).toFixed(1)} KB
+                                </span>
+                              </div>
+                              <div className="text-slate-300 mt-0.5">
+                                Author: <strong>{doc.author || 'N/A'}</strong> · Creator: {doc.creator || 'N/A'} · Producer: {doc.producer || 'N/A'}
+                              </div>
+                              {(doc.extractedEntities.length > 0 || doc.extractedDomains.length > 0) && (
+                                <div className="text-amber-300/90 truncate mt-0.5">
+                                  Extracted: {[...doc.extractedEntities.slice(0, 3), ...doc.extractedDomains.slice(0, 3)].join(' · ')}
+                                </div>
+                              )}
+                              <div className="text-slate-500 tabular-nums">
+                                SHA-256: {doc.sha256.slice(0, 16)}... · CID: {doc.ipfsCidV1.slice(0, 16)}...
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+                      ) : (
+                        <p className="text-slate-500 text-[11px]">
+                          No public PDF/DOCX binaries surfaced under the 8 MB zero-key cap on this run.
+                        </p>
+                      )}
+                    </div>
+
+                    <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-2.5">
+                      <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                        <span className="font-semibold text-slate-200">
+                          Invisible Infrastructure DNA ({edna.infraDna.domain || 'N/A'})
+                        </span>
+                        <span className="text-slate-500">Shell Correlator</span>
+                      </div>
+                      <div className="space-y-1.5 text-[11px] tabular-nums">
+                        <div className="text-slate-300 truncate">
+                          <span className="text-slate-500">Favicon SHA-256:</span> {edna.infraDna.faviconSha256 || 'Unavailable'}
+                        </div>
+                        <div className="text-slate-300">
+                          <span className="text-slate-500">Shodan MMH3-32:</span>{' '}
+                          <strong className="text-amber-300">
+                            {typeof edna.infraDna.faviconMmh3 === 'number' ? edna.infraDna.faviconMmh3 : 'Unavailable'}
+                          </strong>
+                        </div>
+                        <div className="text-slate-300">
+                          <span className="text-slate-500">Analytics IDs (GTM/GA/FB):</span>{' '}
+                          {edna.infraDna.analyticsIds.length > 0 ? edna.infraDna.analyticsIds.join(' · ') : 'None detected'}
+                        </div>
+                        <div className="text-slate-300">
+                          <span className="text-slate-500">Recursive SPF SaaS Chain ({edna.infraDna.spfIncludes.length}):</span>{' '}
+                          {edna.infraDna.spfIncludes.length > 0 ? edna.infraDna.spfIncludes.slice(0, 8).join(' · ') : 'None resolved'}
+                        </div>
+                        <div className="text-slate-300">
+                          <span className="text-slate-500">CSP Shadow Origins ({edna.infraDna.cspOrigins.length}):</span>{' '}
+                          {edna.infraDna.cspOrigins.length > 0 ? edna.infraDna.cspOrigins.slice(0, 8).join(' · ') : 'None declared'}
+                        </div>
+                        {edna.discoveredSubdomains.length > 0 && (
+                          <div className="pt-1.5 border-t border-slate-800 text-slate-400">
+                            Archive Subdomains ({edna.discoveredSubdomains.length}): {edna.discoveredSubdomains.slice(0, 6).join(' · ')}
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 text-slate-400">
+                  Run a live zero-key investigation to execute the 5-Engine Extreme Dorking Suite, Wayback Stealth-Edit Diffing, PDF/DOCX Metadata Miner, and Invisible Infrastructure DNA Fingerprinter.
+                </div>
+              )}
+            </div>
+          );
+        })()}
+
+        {detailTab === 'temporal_causality' && (() => {
+          const tc = intel.temporalCausalityAndLobbying;
+          const allClusters = tc?.clusters || [];
+          const filteredClusters =
+            clusterSeverityFilter === 'ALL'
+              ? allClusters
+              : allClusters.filter((c) => c.severity === clusterSeverityFilter);
+          const streamCount = tc ? Object.keys(tc.eventsByStream || {}).length : 0;
+          const lda = tc?.senateLdaDetailed;
+          const xbrlList = tc?.counterpartyXbrl || [];
+          const hr = tc?.httpResilience;
+          const fmtUsd = (val: number | null | undefined): string => {
+            if (val === null || val === undefined || !Number.isFinite(val)) return 'N/A';
+            const abs = Math.abs(val);
+            if (abs >= 1e9) return `$${(val / 1e9).toFixed(2)}B`;
+            if (abs >= 1e6) return `$${(val / 1e6).toFixed(2)}M`;
+            if (abs >= 1e3) return `$${(val / 1e3).toFixed(1)}K`;
+            return `$${Math.round(val).toLocaleString('en-US')}`;
+          };
+
+          return (
+            <div className="space-y-4 font-mono text-xs">
+              {tc ? (
+                <>
+                  {/* Top Summary Metrics Bar */}
+                  <div className="grid grid-cols-2 lg:grid-cols-6 gap-2.5 tabular-nums">
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <div className="text-[11px] text-slate-400">Normalized Events</div>
+                      <div className="text-base font-bold text-slate-100 mt-0.5">
+                        {tc.totalNormalizedEvents}
+                      </div>
+                      <div className="text-[11px] text-slate-500">{streamCount} active streams</div>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <div className="text-[11px] text-slate-400">Δt ≤ {tc.windowDays}d Clusters</div>
+                      <div className="text-base font-bold text-amber-400 mt-0.5">
+                        {allClusters.length}
+                      </div>
+                      <div className="text-[11px] text-slate-500">Peak: {tc.highestSeverity}</div>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <div className="text-[11px] text-slate-400">Senate LDA Spend</div>
+                      <div className="text-base font-bold text-cyan-300 mt-0.5">
+                        {fmtUsd(lda?.totalSpendUsd ?? 0)}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {lda?.filingsCount ?? 0} statutory filings
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <div className="text-[11px] text-slate-400">Revolving-Door Officials</div>
+                      <div className="text-base font-bold text-rose-400 mt-0.5">
+                        {lda?.revolvingDoorCount ?? 0}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {(lda?.targetedAgencies.length ?? 0)} agencies targeted
+                      </div>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <div className="text-[11px] text-slate-400">SEC XBRL Entities</div>
+                      <div className="text-base font-bold text-emerald-400 mt-0.5">
+                        {xbrlList.length}
+                      </div>
+                      <div className="text-[11px] text-slate-500">CompanyFacts GAAP</div>
+                    </div>
+                    <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
+                      <div className="text-[11px] text-slate-400">HTTP 304 / TTL Cache</div>
+                      <div className="text-base font-bold text-slate-100 mt-0.5">
+                        {(hr?.conditional304Hits ?? 0) + (hr?.freshCacheHits ?? 0)}
+                      </div>
+                      <div className="text-[11px] text-slate-500">
+                        {hr?.cachedEntriesCount ?? 0} WAL · {hr?.rateLimitedWaits ?? 0} paced
+                      </div>
+                    </div>
+                  </div>
+
+                  {/* Verdict Banner */}
+                  <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800 text-slate-300 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                    <span>{tc.verdict}</span>
+                    <span className="text-[11px] text-slate-500 shrink-0 tabular-nums">
+                      Analyzed {tc.analyzedAtIso.slice(0, 19).replace('T', ' ')}Z
+                    </span>
+                  </div>
+
+                  {/* Two-Column Main Breakdown */}
+                  <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+                    {/* Left: Cross-Stream Temporal Synchrony Clusters */}
+                    <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-3">
+                      <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
+                        <span className="font-semibold text-slate-200">
+                          Cross-Stream Temporal Synchrony Clusters (Δt ≤ {tc.windowDays}d)
+                        </span>
+                        <div className="flex items-center gap-1">
+                          {(['ALL', 'CRITICAL', 'HIGH', 'MEDIUM'] as const).map((sev) => (
+                            <button
+                              key={sev}
+                              type="button"
+                              onClick={() => setClusterSeverityFilter(sev)}
+                              className={`px-2 py-0.5 rounded text-[10px] border cursor-pointer transition-colors ${
+                                clusterSeverityFilter === sev
+                                  ? 'bg-amber-500/15 border-amber-500/40 text-amber-300 font-semibold'
+                                  : 'bg-[#111827] border-slate-800 text-slate-400 hover:text-slate-200'
+                              }`}
+                            >
+                              {sev}
+                            </button>
+                          ))}
+                        </div>
+                      </div>
+
+                      {filteredClusters.length > 0 ? (
+                        <div className="space-y-2.5 max-h-96 overflow-y-auto pr-1">
+                          {filteredClusters.map((c) => {
+                            const sevColor =
+                              c.severity === 'CRITICAL'
+                                ? 'text-rose-400 border-rose-500/35'
+                                : c.severity === 'HIGH'
+                                  ? 'text-amber-300 border-amber-500/35'
+                                  : 'text-cyan-300 border-slate-800';
+                            return (
+                              <div
+                                key={c.clusterId}
+                                className={`p-3 rounded bg-[#111827]/70 border ${sevColor.split(' ')[1]} space-y-1.5`}
+                              >
+                                <div className="flex flex-wrap items-center justify-between gap-2">
+                                  <span className={`font-semibold ${sevColor.split(' ')[0]}`}>
+                                    {c.typology}
+                                  </span>
+                                  <span className="text-[11px] text-slate-400 tabular-nums">
+                                    {c.severity} · Δt={c.deltaDays}d · Score {c.causalityScore}
+                                  </span>
+                                </div>
+                                <div className="text-[11px] text-slate-400 tabular-nums">
+                                  {c.startDate} → {c.endDate} · {c.streamsInvolved[0]} ↔ {c.streamsInvolved[1]}
+                                </div>
+                                <p className="text-[11px] text-slate-200 leading-relaxed">
+                                  {c.narrative}
+                                </p>
+                                <div className="pt-1 border-t border-slate-800/80 space-y-1 text-[11px]">
+                                  {c.events.map((ev) => (
+                                    <div key={ev.id} className="flex items-center justify-between gap-2">
+                                      <span className="text-slate-400 truncate">
+                                        [{ev.isoDate}] {ev.stream}: {ev.title}
+                                      </span>
+                                      {ev.url && (
+                                        <a
+                                          href={ev.url}
+                                          target="_blank"
+                                          rel="noopener noreferrer"
+                                          className="text-amber-400 hover:underline shrink-0"
+                                        >
+                                          Source ↗
+                                        </a>
+                                      )}
+                                    </div>
+                                  ))}
+                                </div>
+                              </div>
+                            );
+                          })}
+                        </div>
+                      ) : (
+                        <p className="text-slate-500 text-[11px]">
+                          No cross-stream synchrony clusters matched filter "{clusterSeverityFilter}" within the {tc.windowDays}-day sliding window.
+                        </p>
+                      )}
+                    </div>
+
+                    {/* Right: Senate LDA v1 Dollar-Flows (Squad F) + SEC CompanyFacts XBRL (Squad J) */}
+                    <div className="space-y-4">
+                      {/* Senate LDA v1 */}
+                      <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-2.5">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                          <span className="font-semibold text-slate-200">
+                            U.S. Senate LDA v1 Lobbying &amp; Revolving Door (Squad F)
+                          </span>
+                          <span className="text-slate-500 tabular-nums">
+                            {fmtUsd(lda?.totalSpendUsd ?? 0)}
+                          </span>
+                        </div>
+                        {lda && lda.targetedAgencies.length > 0 && (
+                          <div className="text-[11px] text-slate-400">
+                            Targeted Agencies: <span className="text-slate-200">{lda.targetedAgencies.slice(0, 8).join(' · ')}</span>
+                          </div>
+                        )}
+                        {lda && lda.filings.length > 0 ? (
+                          <div className="space-y-2 max-h-52 overflow-y-auto text-[11px] tabular-nums">
+                            {lda.filings.slice(0, 10).map((f) => (
+                              <div key={f.filingUuid} className="pb-2 border-b border-slate-800/60 last:border-0">
+                                <div className="flex items-center justify-between gap-2">
+                                  <a
+                                    href={f.url}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="text-cyan-300 hover:underline font-semibold truncate"
+                                  >
+                                    {f.registrantName} ({f.filingYear} {f.filingPeriod})
+                                  </a>
+                                  <span className="text-amber-300 font-semibold shrink-0">
+                                    {fmtUsd(f.amountUsd)}
+                                  </span>
+                                </div>
+                                <div className="text-slate-400 mt-0.5 truncate">
+                                  Issues: {f.issueCodes.join(', ') || 'General'} · Agencies: {f.governmentEntities.slice(0, 4).join(', ') || 'Unspecified'}
+                                </div>
+                                {f.revolvingDoorLobbyists.length > 0 && (
+                                  <div className="text-rose-300 mt-0.5">
+                                    Revolving Door: {f.revolvingDoorLobbyists.slice(0, 3).map((r) => `${r.name} (${r.coveredPosition})`).join(' · ')}
+                                  </div>
+                                )}
+                              </div>
+                            ))}
+                          </div>
+                        ) : (
+                          <p className="text-slate-500 text-[11px]">
+                            Zero direct U.S. Senate LDA v1 quarterly filings matched "{tc.targetEntity}".
+                          </p>
+                        )}
+                      </div>
+
+                      {/* SEC EDGAR CompanyFacts XBRL Counterparty Forensics */}
+                      <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-2.5">
+                        <div className="flex items-center justify-between border-b border-slate-800 pb-2">
+                          <span className="font-semibold text-slate-200">
+                            SEC EDGAR CompanyFacts XBRL Forensics (Squad J)
+                          </span>
+                          <span className="text-slate-500">GAAP · Benford D2</span>
+                        </div>
+                        {xbrlList.length > 0 ? (
+                          <div className="space-y-2 max-h-52 overflow-y-auto text-[11px] tabular-nums">
+                            {xbrlList.map((x) => {
+                              const arRevPct =
+                                x.receivablesUsd && x.revenueUsd && x.revenueUsd > 0
+                                  ? `${((x.receivablesUsd / x.revenueUsd) * 100).toFixed(1)}%`
+                                  : 'N/A';
+                              const benfordHigh = x.benfordChiSq !== null && x.benfordChiSq > 21.67;
+                              return (
+                                <div key={x.cik} className="pb-2 border-b border-slate-800/60 last:border-0">
+                                  <div className="flex items-center justify-between gap-2">
+                                    <a
+                                      href={x.companyFactsUrl}
+                                      target="_blank"
+                                      rel="noopener noreferrer"
+                                      className="text-emerald-300 hover:underline font-semibold truncate"
+                                    >
+                                      {x.entityName} (CIK {x.cik})
+                                    </a>
+                                    <span className="text-slate-400 shrink-0">
+                                      FY {x.fiscalYear ?? 'Latest'}
+                                    </span>
+                                  </div>
+                                  <div className="text-slate-300 mt-0.5">
+                                    Rev {fmtUsd(x.revenueUsd)} · NetInc {fmtUsd(x.netIncomeUsd)} · Assets {fmtUsd(x.totalAssetsUsd)} · AR/Rev {arRevPct}
+                                  </div>
+                                  <div className="text-slate-400 mt-0.5">
+                                    OCF {fmtUsd(x.operatingCashFlowUsd)} · Benford D2 χ²:{' '}
+                                    <span className={benfordHigh ? 'text-rose-400 font-semibold' : 'text-slate-200'}>
+                                      {x.benfordChiSq !== null ? x.benfordChiSq.toFixed(2) : 'N/A'}
+                                    </span>{' '}
+                                    (n={x.benfordSampleSize})
+                                  </div>
+                                </div>
+                              );
+                            })}
+                          </div>
+                        ) : (
+                          <p className="text-slate-500 text-[11px]">
+                            No public SEC CIK CompanyFacts records resolved for this entity or its discovered counterparties.
+                          </p>
+                        )}
+                      </div>
+                    </div>
+                  </div>
+                </>
+              ) : (
+                <div className="p-4 rounded-lg bg-[#0B0E17] border border-slate-800 text-slate-400">
+                  Run a live zero-key investigation to execute the 10-Stream Temporal Causality Engine (Δt ≤ 14d), U.S. Senate LDA v1 Revolving-Door Audit, and SEC EDGAR CompanyFacts XBRL Forensics.
+                </div>
+              )}
+            </div>
+          );
+        })()}
       </div>
     </div>
   );

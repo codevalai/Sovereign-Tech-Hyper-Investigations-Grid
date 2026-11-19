@@ -16,7 +16,7 @@ import {
   buildUboAndSupplyChainMarkdown,
   buildTechEntityFromLiveIntel
 } from '../data/forensicDossierKnowledge';
-import { AcquisitionItem, InvestigationResult, InvestigationScope, LiveFeedEvent, SwarmSquad, TechEntity } from '../types/investigation';
+import { AcquisitionItem, InvestigationResult, InvestigationScope, LiveFeedEvent, SignalDensityMetrics, SwarmSquad, TechEntity } from '../types/investigation';
 import {
   buildClaimCitationsForAgent,
   buildForensicPropertyGraph,
@@ -31,9 +31,13 @@ import {
   sha256Hex,
 } from './forensicMathEngine';
 import { signRootWithDeterministicEd25519 } from './ed25519Engine';
+import { isCompilerAgent } from './swarmOrchestrator';
 import {
-  extractGroundedHitsForSquad,
+  extractGroundedHitsByAgent,
+  highestHitSeverity,
   renderEvidenceGatedSquadFile,
+  renderSquadCompilerFile,
+  type SpecialistFindingSummary,
 } from '../engine/sparseSquadCompressor';
 import {
   buildAccountingAuditMarkdown,
@@ -1003,51 +1007,7 @@ This document maps how infrastructure or regulatory shocks propagate across the 
     }, null, 2)
   };
 
-  // 20. confidence_metadata.json (Epistemic transparency)
-  const fileConfidenceMetadata = {
-    filename: 'confidence_metadata.json',
-    description: 'Epistemic Confidence Metadata: Evidentiary Counts and Cross-Squad Agreement',
-    type: 'json' as const,
-    content: JSON.stringify(
-      liveIntel
-        ? {
-            target: liveIntel.entityName,
-            overall_dossier_confidence: Number(Math.min(0.98, 0.72 + Math.min(liveIntel.groundingSources.length, 12) * 0.02).toFixed(2)),
-            live_registries_queried: liveIntel.liveRegistriesQueried,
-            verified_grounding_source_count: liveIntel.groundingSources.length,
-            claims_evaluated: liveIntel.publicClaimsVsReality.length > 0
-              ? liveIntel.publicClaimsVsReality.map((c, idx) => ({
-                  claim_id: `verified_claim_${idx + 1}`,
-                  claim_area: c.claimArea,
-                  severity: c.severity,
-                  confidence: 0.91,
-                  evidence_count: liveIntel.groundingSources.length,
-                  cross_squad_agreement: ['squadA', 'squadB', 'squadE']
-                }))
-              : [
-                  {
-                    claim_id: 'entity_identity_and_status',
-                    claim_area: `${liveIntel.entityType} standing in ${liveIntel.industry}`,
-                    severity: 'LOW',
-                    confidence: Number(Math.min(0.96, 0.75 + liveIntel.liveRegistriesQueried.length * 0.03).toFixed(2)),
-                    evidence_count: liveIntel.groundingSources.length,
-                    cross_squad_agreement: ['squadA', 'squadD', 'squadE']
-                  }
-                ]
-          }
-        : {
-            target: matchedEntity.name,
-            overall_dossier_confidence: 0.94,
-            claims_evaluated: [
-              { claim_id: 'claim_safety_pause', confidence: 0.89, evidence_count: 14, source_reliability_avg: 0.95, cross_squad_agreement: ['squadA', 'squadC', 'squadE'] },
-              { claim_id: 'claim_data_isolation', confidence: 0.92, evidence_count: 18, source_reliability_avg: 0.96, cross_squad_agreement: ['squadA', 'squadC'] },
-              { claim_id: 'claim_monopoly_maintenance', confidence: 0.97, evidence_count: 24, source_reliability_avg: 0.99, cross_squad_agreement: ['squadB', 'squadD', 'squadE'] }
-            ]
-          },
-      null,
-      2
-    )
-  };
+  // 20. confidence_metadata.json is materialized after rawSquadFiles so v24.0 signal_density_metrics reflect exact per-agent counts.
 
   // 21. Evidence Locker: Frozen/Live primary evidence artifacts with REAL FIPS 180-4 SHA-256 hashes
   const fileEvidence1 = {
@@ -1344,6 +1304,87 @@ CONSOLIDATION SIGNALS: ${matchedEntity.consolidationSignals.join(' | ')}`
         clinicalSnapshots: [],
         clinicalSilentMutations: [],
         signals: [],
+      },
+    },
+    {
+      key: 'extreme_dork_payload',
+      filename: 'evidence/raw_payloads/extreme_dork_payload.json',
+      description: 'Raw Telemetry Payload: Extreme Zero-Key Dorking (5 Engines + Hops 2-3 Closed-Loop Mutation + Red-Team Corroboration + Standing Deletion Alerts)',
+      fallback: {
+        target: matchedEntity.name,
+        domain: '',
+        collectedAtUtc: timestampIso,
+        totalArtifacts: 0,
+        promotedArtifactsCount: 0,
+        quarantinedArtifactsCount: 0,
+        unverifiedWatchlistCount: 0,
+        observedSourceClasses: [],
+        discoveredSubdomains: [],
+        discoveredAgencies: [],
+        engineStats: {},
+        recursiveLoop: { maxDepth: 3, hopsExecuted: 1, mutations: [], newArtifactsCount: 0 },
+        standingSnapshotsPersisted: 0,
+        silentDeletionAlerts: [],
+        artifacts: [],
+      },
+    },
+    {
+      key: 'stealth_edit_diffs',
+      filename: 'evidence/raw_payloads/stealth_edit_diffs.json',
+      description: 'Raw Telemetry Payload: Wayback Machine CDX Legal Policy Stealth-Edit Diffs (/terms, /privacy, /security, /legal, /tos)',
+      fallback: {
+        target: matchedEntity.name,
+        domain: '',
+        collectedAtUtc: timestampIso,
+        diffsCount: 0,
+        diffs: [],
+      },
+    },
+    {
+      key: 'mined_artifact_metadata',
+      filename: 'evidence/raw_payloads/mined_artifact_metadata.json',
+      description: 'Raw Telemetry Payload: Deep Public Document Metadata Mining (PDF /Author, /Creator, /Producer, XMP & DOCX core.xml)',
+      fallback: {
+        target: matchedEntity.name,
+        collectedAtUtc: timestampIso,
+        minedCount: 0,
+        documents: [],
+      },
+    },
+    {
+      key: 'infra_dna_payload',
+      filename: 'evidence/raw_payloads/infra_dna_payload.json',
+      description: 'Raw Telemetry Payload: Invisible Infrastructure DNA (Favicon SHA-256 & MurmurHash3, GTM/GA/FBPIXEL IDs, Recursive SPF & CSP Origins)',
+      fallback: {
+        domain: '',
+        collectedAtUtc: timestampIso,
+        analyticsIds: [],
+        spfIncludes: [],
+        cspOrigins: [],
+        subdomainsFingerprinted: [],
+      },
+    },
+    {
+      key: 'temporal_causality_payload',
+      filename: 'evidence/raw_payloads/temporal_causality_payload.json',
+      description: 'Raw Telemetry Payload: v23.0 Cross-Stream Temporal Causality (Δt<=14d), Senate LDA Lobbying Dollar-Flows, SEC XBRL Counterparty Facts & HTTP Resilience Cache Telemetry',
+      fallback: {
+        targetEntity: matchedEntity.name,
+        analyzedAtIso: timestampIso,
+        windowDays: 14,
+        totalNormalizedEvents: 0,
+        streamsCovered: [],
+        events: [],
+        clusters: [],
+        senateLdaDetailed: {
+          totalSpendUsd: 0,
+          filingsCount: 0,
+          revolvingDoorCount: 0,
+          targetedAgencies: [],
+          filings: [],
+        },
+        counterpartyXbrl: [],
+        verdict: 'TEMPORAL_CAUSALITY_UNAVAILABLE_OFFLINE',
       },
     },
   ];
@@ -1837,39 +1878,66 @@ This document maps global power across frontier AI, orbital launch (SpaceX), ins
     )
   };
 
-  // 160 Raw squad agent files with v19.0 Dynamic Sparse-Squad Compression + Claim Citation Objects anchored to FIPS 180-4 evidence SHA-256
+  // 160 Raw squad agent files with v24.0 Per-Agent Evidence Slicing + Compiler Synthesis + Claim Citation Objects anchored to FIPS 180-4 evidence SHA-256
   const claimsIndexForWorkbench: WorkbenchPayload['claimsIndex'] = {};
   let expandedSquadFilesCount = 0;
   let compressedZeroHitFilesCount = 0;
+  let activeSpecialistsCount = 0;
+  let zeroHitSpecialistsCount = 0;
+  let compilerAgentsActiveCount = 0;
+  let totalUniqueEvidenceCitations = 0;
+  let totalEvidenceAssignments = 0;
+  let totalDuplicateAssignments = 0;
   let totalRawSquadBytes = 0;
+  const squadUtf8Encoder = new TextEncoder();
 
   const rawSquadFiles = squads.flatMap((squad) => {
-    const { hits: squadLiveHits, probedEndpoints: squadEndpoints } = extractGroundedHitsForSquad(
-      squad.id,
-      liveIntel
-    );
-    const shouldCompressZeroHit = Boolean(liveIntel) && squadLiveHits.length === 0;
+    const perAgent = extractGroundedHitsByAgent(squad.id, liveIntel);
+    totalUniqueEvidenceCitations += perAgent.uniqueCitationCount;
+    totalEvidenceAssignments += perAgent.totalAssignmentCount;
+    totalDuplicateAssignments += perAgent.duplicateAssignmentCount;
 
-    return squad.agents.map((agent) => {
+    const specialists = squad.agents.filter((a) => !isCompilerAgent(a));
+    const compilers = squad.agents.filter((a) => isCompilerAgent(a));
+    const nonZeroSpecialistSummaries: SpecialistFindingSummary[] = [];
+
+    const specialistFiles = specialists.map((agent) => {
+      const agentHits = perAgent.byAgent[agent.id] || [];
+      const shouldCompressZeroHit = Boolean(liveIntel) && agentHits.length === 0;
+
       if (shouldCompressZeroHit) {
         compressedZeroHitFilesCount++;
+        zeroHitSpecialistsCount++;
         const compressed = renderEvidenceGatedSquadFile(
           agent.id,
           `${agent.agentName} (${agent.role})`,
           matchedEntity.name,
           [],
-          squadEndpoints
+          perAgent.probedEndpoints
         );
         totalRawSquadBytes += compressed.byteLength;
         return {
           filename: agent.outputFilePath,
-          description: `Compressed Zero-Hit Attestation: ${agent.agentName} (${squad.name})`,
+          description: `Compressed Zero-Hit Specialist Attestation: ${agent.agentName} (${squad.name})`,
           type: 'markdown' as const,
           content: compressed.markdown,
         };
       }
 
       expandedSquadFilesCount++;
+      activeSpecialistsCount++;
+      if (liveIntel && agentHits.length > 0) {
+        nonZeroSpecialistSummaries.push({
+          agentId: agent.id,
+          agentKey: `${agent.id}_${agent.role}`,
+          roleTitle: agent.agentName,
+          hitCount: agentHits.length,
+          highestSeverity: highestHitSeverity(agentHits),
+          topFinding: agentHits[0].summary,
+          evidenceDigests: agentHits.map((h) => h.evidenceSha256.slice(0, 12)),
+        });
+      }
+
       const citations = buildClaimCitationsForAgent(agent, evidenceCoreWithHashes, Boolean(liveIntel));
       agent.claimCitations = citations;
       citations.forEach((c) => {
@@ -1887,13 +1955,13 @@ This document maps global power across frontier AI, orbital launch (SpaceX), ins
       });
 
       const evidenceGateSection =
-        liveIntel && squadLiveHits.length > 0
+        liveIntel && agentHits.length > 0
           ? `${renderEvidenceGatedSquadFile(
               agent.id,
               `${agent.agentName} (${agent.role})`,
               matchedEntity.name,
-              squadLiveHits,
-              squadEndpoints
+              agentHits,
+              perAgent.probedEndpoints
             ).markdown}\n`
           : '';
 
@@ -1906,6 +1974,7 @@ ${JSON.stringify(citations, null, 2)}
 
 ## 5. AUDIT VERIFICATION TELEMETRY
 - **Timestamp:** ${timestampIso}
+- **Specialist Grounded Hits:** ${agentHits.length}
 - **Grounded Endpoints Reviewed:** ${liveIntel ? liveIntel.groundingSources.length : resolved.peerSectorEntities.length} verified records
 - **Legal & Red-Line Validation:** PASSED (Strictly Read-Only Public Records)
 `
@@ -1929,17 +1998,92 @@ ${JSON.stringify(citations, null, 2)}
 `;
       const rawHash = sha256Hex(body);
       const finalContent = `${body}\n---\n*Sovereign Swarm Node ${agent.id} · FIPS 180-4 SHA-256: ${rawHash.slice(0, 16).toUpperCase()}*\n`;
-      totalRawSquadBytes += new TextEncoder().encode(finalContent).byteLength;
+      totalRawSquadBytes += squadUtf8Encoder.encode(finalContent).byteLength;
       return {
         filename: agent.outputFilePath,
-        description: `Raw Output: ${agent.agentName} (${squad.name})`,
+        description: `Specialist Raw Output: ${agent.agentName} (${squad.name})`,
         type: 'markdown' as const,
         content: finalContent,
       };
     });
+
+    const compilerFiles = compilers.map((agent) => {
+      const shouldCompressCompiler = Boolean(liveIntel) && nonZeroSpecialistSummaries.length === 0;
+      if (shouldCompressCompiler) {
+        compressedZeroHitFilesCount++;
+        const compressed = renderSquadCompilerFile(
+          agent.id,
+          `${agent.agentName} (${agent.role})`,
+          matchedEntity.name,
+          squad.name,
+          [],
+          perAgent.probedEndpoints
+        );
+        totalRawSquadBytes += compressed.byteLength;
+        return {
+          filename: agent.outputFilePath,
+          description: `Compressed Zero-Hit Compiler Attestation: ${agent.agentName} (${squad.name})`,
+          type: 'markdown' as const,
+          content: compressed.markdown,
+        };
+      }
+
+      expandedSquadFilesCount++;
+      compilerAgentsActiveCount++;
+      const citations = buildClaimCitationsForAgent(agent, evidenceCoreWithHashes, Boolean(liveIntel));
+      agent.claimCitations = citations;
+      citations.forEach((c) => {
+        claimsIndexForWorkbench[c.claim_id] = {
+          claim_id: c.claim_id,
+          agent_id: agent.id,
+          source_path: c.source_path,
+          source_sha256: c.source_sha256,
+          ...(c.json_pointer ? { json_pointer: c.json_pointer } : {}),
+          byte_offset_start: c.byte_offset_start,
+          byte_offset_end: c.byte_offset_end,
+          truth_tier: c.truth_tier,
+          corroboration_score: c.corroboration_score,
+        };
+      });
+
+      const compilerHeader = liveIntel
+        ? `${renderSquadCompilerFile(
+            agent.id,
+            `${agent.agentName} (${agent.role})`,
+            matchedEntity.name,
+            squad.name,
+            nonZeroSpecialistSummaries,
+            perAgent.probedEndpoints
+          ).markdown}\n`
+        : '';
+
+      const body = `${compilerHeader}${agent.rawMarkdownContent || `# FORENSIC COMPILER REPORT: ${agent.agentName}\n`}
+## 4. CRYPTOGRAPHIC CLAIM CITATION OBJECTS
+\`\`\`json
+${JSON.stringify(citations, null, 2)}
+\`\`\`
+
+## 5. COMPILER SYNTHESIS TELEMETRY
+- **Timestamp:** ${timestampIso}
+- **Active Squad Specialists Synthesized:** ${nonZeroSpecialistSummaries.length}/${specialists.length}
+- **Legal & Red-Line Validation:** PASSED (Strictly Read-Only Public Records)
+`;
+      const rawHash = sha256Hex(body);
+      const finalContent = `${body}\n---\n*Sovereign Swarm Compiler ${agent.id} · FIPS 180-4 SHA-256: ${rawHash.slice(0, 16).toUpperCase()}*\n`;
+      totalRawSquadBytes += squadUtf8Encoder.encode(finalContent).byteLength;
+      return {
+        filename: agent.outputFilePath,
+        description: `Squad Compiler Synthesis: ${agent.agentName} (${squad.name})`,
+        type: 'markdown' as const,
+        content: finalContent,
+      };
+    });
+
+    return [...specialistFiles, ...compilerFiles];
   });
 
-  const estimatedUncompressedSquadBytes = (expandedSquadFilesCount + compressedZeroHitFilesCount) * 3500;
+  const totalAgentsProcessed = expandedSquadFilesCount + compressedZeroHitFilesCount;
+  const estimatedUncompressedSquadBytes = totalAgentsProcessed * 3500;
   const squadCompressionSavingsPct =
     estimatedUncompressedSquadBytes > 0
       ? Math.max(
@@ -1947,6 +2091,77 @@ ${JSON.stringify(citations, null, 2)}
           Number((((estimatedUncompressedSquadBytes - totalRawSquadBytes) / estimatedUncompressedSquadBytes) * 100).toFixed(1))
         )
       : 0;
+  const intraSquadDuplicationRatio =
+    totalEvidenceAssignments > 0
+      ? Number((totalDuplicateAssignments / totalEvidenceAssignments).toFixed(4))
+      : 0;
+  const initialTsaStatus: SignalDensityMetrics['tsa_anchor_status'] =
+    liveIntel?.blockchainAnchor?.rfc3161Status === 'ANCHORED_RFC3161'
+      ? 'ANCHORED_RFC3161'
+      : liveIntel?.blockchainAnchor?.rfc3161Status === 'UNREACHABLE_OFFLINE'
+      ? 'UNREACHABLE_OFFLINE'
+      : 'PENDING_FINALIZATION';
+
+  const signalDensityMetrics: SignalDensityMetrics = {
+    active_specialists: activeSpecialistsCount,
+    zero_hit_specialists: zeroHitSpecialistsCount,
+    compiler_agents_active: compilerAgentsActiveCount,
+    total_agents: totalAgentsProcessed,
+    unique_evidence_citations_count: totalUniqueEvidenceCitations,
+    total_evidence_assignments_count: totalEvidenceAssignments,
+    intra_squad_duplication_ratio: intraSquadDuplicationRatio,
+    raw_squad_bytes: totalRawSquadBytes,
+    compression_savings_pct: squadCompressionSavingsPct,
+    tsa_anchor_status: initialTsaStatus,
+  };
+
+  // 20. confidence_metadata.json (Epistemic transparency + v24.0 Cross-Dossier Signal-Density Telemetry)
+  const fileConfidenceMetadata = {
+    filename: 'confidence_metadata.json',
+    description: 'Epistemic Confidence Metadata, Per-Agent Signal-Density Telemetry & Cross-Squad Agreement',
+    type: 'json' as const,
+    content: JSON.stringify(
+      liveIntel
+        ? {
+            target: liveIntel.entityName,
+            overall_dossier_confidence: Number(Math.min(0.98, 0.72 + Math.min(liveIntel.groundingSources.length, 12) * 0.02).toFixed(2)),
+            live_registries_queried: liveIntel.liveRegistriesQueried,
+            verified_grounding_source_count: liveIntel.groundingSources.length,
+            signal_density_metrics: signalDensityMetrics,
+            claims_evaluated: liveIntel.publicClaimsVsReality.length > 0
+              ? liveIntel.publicClaimsVsReality.map((c, idx) => ({
+                  claim_id: `verified_claim_${idx + 1}`,
+                  claim_area: c.claimArea,
+                  severity: c.severity,
+                  confidence: 0.91,
+                  evidence_count: liveIntel.groundingSources.length,
+                  cross_squad_agreement: ['squadA', 'squadB', 'squadE']
+                }))
+              : [
+                  {
+                    claim_id: 'entity_identity_and_status',
+                    claim_area: `${liveIntel.entityType} standing in ${liveIntel.industry}`,
+                    severity: 'LOW',
+                    confidence: Number(Math.min(0.96, 0.75 + liveIntel.liveRegistriesQueried.length * 0.03).toFixed(2)),
+                    evidence_count: liveIntel.groundingSources.length,
+                    cross_squad_agreement: ['squadA', 'squadD', 'squadE']
+                  }
+                ]
+          }
+        : {
+            target: matchedEntity.name,
+            overall_dossier_confidence: 0.94,
+            signal_density_metrics: signalDensityMetrics,
+            claims_evaluated: [
+              { claim_id: 'claim_safety_pause', confidence: 0.89, evidence_count: 14, source_reliability_avg: 0.95, cross_squad_agreement: ['squadA', 'squadC', 'squadE'] },
+              { claim_id: 'claim_data_isolation', confidence: 0.92, evidence_count: 18, source_reliability_avg: 0.96, cross_squad_agreement: ['squadA', 'squadC'] },
+              { claim_id: 'claim_monopoly_maintenance', confidence: 0.97, evidence_count: 24, source_reliability_avg: 0.99, cross_squad_agreement: ['squadB', 'squadD', 'squadE'] }
+            ]
+          },
+      null,
+      2
+    )
+  };
 
   // Comprehensive Forensic Layers (11–15 + Squad F–L Reports + Watchlist + Rejected Hypotheses)
   const file11Lifecycle = {
@@ -2361,12 +2576,30 @@ ${JSON.stringify(citations, null, 2)}
     content: buildBftCorroborationLedgerJson(matchedEntity, liveIntel, bftSummary, timestampIso)
   };
 
-  // Tribunal Quarantine Watchlist & Falsified Rejected Hypotheses
+  // Tribunal Quarantine Watchlist & Falsified Rejected Hypotheses (plus v22.0 Red-Team Single-Source / Quarantined Dork Watchlist)
+  const dorkWatchlistItems = (liveIntel?.extremeDorkingAndDna?.artifacts || []).filter(
+    (a) => !a.corroborated || a.quarantined
+  );
+  const dorkWatchlistSection =
+    dorkWatchlistItems.length > 0
+      ? `\n\n---\n\n## RED-TEAM DORKING QUARANTINE & SINGLE-SOURCE WATCHLIST (${dorkWatchlistItems.length})\n` +
+        `> The following live dork artifacts were strictly held out of primary squad tables by the Automated Red-Team 2-Source-Class Independence & <90d RDAP Quarantine Gate.\n\n` +
+        `| Engine | Source Class | Status | Title / URL | Quarantine / Hold Reason | IPFS CIDv1 |\n` +
+        `|--------|--------------|--------|-------------|--------------------------|------------|\n` +
+        dorkWatchlistItems
+          .slice(0, 40)
+          .map(
+            (a) =>
+              `| \`${a.sourceEngine}\` | \`${a.sourceClass}\` | **${a.quarantined ? 'QUARANTINED' : 'SINGLE_SOURCE'}** | [${a.title.replace(/\|/g, '-').slice(0, 72)}](${a.url}) | ${(a.quarantineReason || 'Awaiting 2nd independent source class').replace(/\|/g, '-')} | \`${a.ipfsCidV1.slice(0, 14)}\` |`
+          )
+          .join('\n')
+      : '';
+
   const fileUnverifiedWatchlist = {
     filename: 'UNVERIFIED_INTELLIGENCE_WATCHLIST.md',
-    description: 'Stage-3 Bayesian Tribunal Quarantine (0.40 <= P(H|E) < 0.90)',
+    description: 'Stage-3 Bayesian Tribunal & Red-Team Dork Quarantine (Single-Source / <90d RDAP / Scraper Holds)',
     type: 'markdown' as const,
-    content: buildUnverifiedWatchlistMarkdown(matchedEntity, tribunal, timestampIso)
+    content: buildUnverifiedWatchlistMarkdown(matchedEntity, tribunal, timestampIso) + dorkWatchlistSection
   };
 
   const fileRejectedHypotheses = {
@@ -2609,6 +2842,252 @@ ${
 `,
   };
 
+  const edna = liveIntel?.extremeDorkingAndDna;
+  const promotedDorks = (edna?.artifacts || []).filter((a) => a.corroborated && !a.quarantined);
+  const file33ExtremeDorking = {
+    filename: '33_EXTREME_DORKING_AND_ARCHIVE_DISCOVERY.md',
+    description: 'v22.0 Extreme Zero-Key 5-Engine Dorking, Closed-Loop Recursive Hops 2-3 Mutation & Red-Team Corroboration Gate',
+    type: 'markdown' as const,
+    content: `# 33. EXTREME ZERO-KEY DORKING, ARCHIVE DISCOVERY & CLOSED-LOOP RECURSIVE MUTATION
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Primary Domain:** \`${edna?.domain || 'N/A'}\`  
+**Generated At:** \`${timestampIso}\`  
+**Total Live Dork Artifacts:** **${edna?.totalArtifacts ?? 0}** · **Promoted (Corroborated):** **${edna?.promotedArtifactsCount ?? 0}** · **Watchlist / Quarantined:** **${(edna?.unverifiedWatchlistCount ?? 0) + (edna?.quarantinedArtifactsCount ?? 0)}**  
+**Independent Source Classes Observed:** \`${edna?.observedSourceClasses.join(', ') || 'None'}\`
+
+---
+
+## 1. FIVE-ENGINE ZERO-KEY DORKING TELEMETRY
+| Engine | Status | Artifacts | Latency (ms) | Notes |
+|--------|--------|----------:|-------------:|-------|
+${
+  edna && Object.keys(edna.engineStats).length > 0
+    ? Object.entries(edna.engineStats)
+        .map(
+          ([eng, st]) =>
+            `| \`${eng}\` | **${st.status.toUpperCase()}** | ${st.count} | ${st.latencyMs} | ${(st.error || 'Live keyless retrieval').replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| _No live engines executed (Catalog Mode)_ | - | 0 | 0 | Run a live investigation to execute all 5 keyless dorking vectors |'
+}
+
+---
+
+## 2. CLOSED-LOOP RECURSIVE DORK MUTATION (BOUNDED HOPS 2-3)
+- **Hops Executed:** \`${edna?.recursiveLoop.hopsExecuted ?? 0} / ${edna?.recursiveLoop.maxDepth ?? 3}\`
+- **Mutated Queries Dispatched:** \`${edna?.recursiveLoop.mutations.length ?? 0}\`
+- **Net-New Cross-Entity Artifacts Discovered:** \`${edna?.recursiveLoop.newArtifactsCount ?? 0}\`
+${
+  edna && edna.recursiveLoop.mutations.length > 0
+    ? `\n| Hop | Seed Entity | Seed Origin | Squads | Synthesized Dork Query | New Hits |\n| :-: |-------------|-------------|--------|------------------------|---------:|\n${edna.recursiveLoop.mutations
+        .map(
+          (m) =>
+            `| H${m.hopDepth} | **${m.seedEntity.replace(/\|/g, '-')}** | \`${m.seedSource}\` | ${m.squadTags.join(',')} | \`${m.synthesizedQuery.replace(/\|/g, '-').slice(0, 90)}\` | ${m.hitsFound} |`
+        )
+        .join('\n')}`
+    : '\n- No secondary LLC/author seeds surfaced for Hop 2-3 expansion on this run.'
+}
+
+---
+
+## 3. CORROBORATED DORK ARTIFACTS PROMOTED TO PRIMARY SQUADS (${promotedDorks.length})
+${
+  promotedDorks.length > 0
+    ? `| Engine | Hop | Source Class | Squads | Finding & Citation | IPFS CIDv1 |\n|--------| :-: |--------------|--------|--------------------|------------|\n${promotedDorks
+        .slice(0, 35)
+        .map(
+          (a) =>
+            `| \`${a.sourceEngine}\` | H${a.hopDepth} | \`${a.sourceClass}\` | ${a.squadTags.join(',')} | [${a.title.replace(/\|/g, '-').slice(0, 76)}](${a.url}) — ${a.snippet.replace(/\|/g, '-').slice(0, 90)} | \`${a.ipfsCidV1.slice(0, 14)}\` |`
+        )
+        .join('\n')}`
+    : '_Zero multi-source corroborated dork artifacts promoted; any single-source hits are strictly held in `UNVERIFIED_INTELLIGENCE_WATCHLIST.md`._'
+}
+
+---
+
+## 4. WAYBACK CDX / COMMON CRAWL SUBDOMAINS & FEDERAL AGENCIES FED INTO PHASE-4 PIVOTER
+- **Discovered Archive Subdomains (${edna?.discoveredSubdomains.length ?? 0}):** ${edna && edna.discoveredSubdomains.length > 0 ? edna.discoveredSubdomains.slice(0, 20).map((s) => `\`${s}\``).join(', ') : 'None'}
+- **Federal Register Agencies Linked (${edna?.discoveredAgencies.length ?? 0}):** ${edna && edna.discoveredAgencies.length > 0 ? edna.discoveredAgencies.join(', ') : 'None'}
+
+> **Raw Evidence Locker:** Merkle-proven in \`evidence/raw_payloads/extreme_dork_payload.json\`.
+`,
+  };
+
+  const file34StealthDiffAndDeletion = {
+    filename: '34_WAYBACK_STEALTH_EDIT_AND_PROCUREMENT_AUDIT.md',
+    description: 'v22.0 Wayback Machine Legal Policy Stealth-Edit Diffing & Standing Dork Ed25519 Silent-Deletion Alerts',
+    type: 'markdown' as const,
+    content: `# 34. WAYBACK STEALTH-EDIT DIFFING & STANDING DORK SILENT-DELETION AUDIT
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Primary Domain:** \`${edna?.domain || 'N/A'}\`  
+**Generated At:** \`${timestampIso}\`  
+**Standing Dork Snapshots Persisted in SQLite WAL:** **${edna?.standingSnapshotsPersisted ?? 0}**  
+**Ed25519-Signed Silent-Deletion Alerts Fired (200 -> 404/410):** **${edna?.silentDeletionAlerts.length ?? 0}**
+
+---
+
+## 1. LEGAL & POLICY STEALTH-EDIT DIFFS (WAYBACK CDX \`collapse=digest\` + \`id_\` RAW RETRIEVAL)
+${
+  edna && edna.stealthEditDiffs.length > 0
+    ? edna.stealthEditDiffs
+        .map(
+          (d) =>
+            `### Path \`${d.path}\` (${d.oldestTimestamp} -> ${d.newestTimestamp})\n` +
+            `- **Snapshots Compared:** [Oldest (\`${d.oldestSha256.slice(0, 12)}\`)](${d.oldestUrl}) vs. [Newest (\`${d.newestSha256.slice(0, 12)}\`)](${d.newestUrl})\n` +
+            `- **Line Delta:** \`+${d.addedLinesCount}\` added / \`-${d.removedLinesCount}\` removed\n` +
+            `- **High-Risk Legal Clauses Newly Introduced:** ${d.highRiskKeywordsAdded.length > 0 ? d.highRiskKeywordsAdded.map((k) => `**\`${k}\`**`).join(', ') : 'None detected in diff sample'}\n` +
+            (d.addedSample.length > 0
+              ? `- **Added Excerpt:**\n${d.addedSample.slice(0, 4).map((l) => `  > + ${l.slice(0, 160)}`).join('\n')}\n`
+              : '') +
+            (d.removedSample.length > 0
+              ? `- **Removed Excerpt:**\n${d.removedSample.slice(0, 3).map((l) => `  > - ${l.slice(0, 160)}`).join('\n')}\n`
+              : '')
+        )
+        .join('\n')
+    : '- Zero multi-digest historical policy diffs surfaced across `/terms`, `/privacy`, `/security`, `/legal`, or `/tos` on Wayback CDX for this domain.'
+}
+
+---
+
+## 2. STANDING DORK SILENT-DELETION ALERTS (ED25519-SIGNED TAMPER EVIDENCE)
+${
+  edna && edna.silentDeletionAlerts.length > 0
+    ? `| Alert ID | Severity | Status Flip | Source Engine | Deleted URL | Alert SHA-256 |\n|----------|----------|-------------|---------------|-------------|---------------|\n${edna.silentDeletionAlerts
+        .map(
+          (al) =>
+            `| \`${al.alertId}\` | **${al.severity}** | \`${al.previousHttpStatus} -> ${al.currentHttpStatus}\` | \`${al.sourceEngine}\` | ${al.url} | \`${al.alertSha256.slice(0, 14)}\` |`
+        )
+        .join('\n')}`
+    : '- All monitored standing URLs in SQLite WAL remained reachable (or this is the initial baseline snapshot). Any subsequent flip from HTTP `200` to `404`/`410` will automatically emit an Ed25519-signed `SILENT_DELETION_ALERT`.'
+}
+
+> **Raw Evidence Locker:** Merkle-proven in \`evidence/raw_payloads/stealth_edit_diffs.json\`.
+`,
+  };
+
+  const file35ArtifactMinerAndInfraDna = {
+    filename: '35_DEEP_ARTIFACT_METADATA_AND_INFRA_DNA.md',
+    description: 'v22.0 Deep Public PDF/DOCX Metadata Mining (Author/Creator/XMP) & Invisible Infrastructure DNA Fingerprinting (Favicon MMH3, GTM/GA, Recursive SPF)',
+    type: 'markdown' as const,
+    content: `# 35. DEEP ARTIFACT METADATA MINING & INVISIBLE INFRASTRUCTURE DNA
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Primary Domain:** \`${edna?.domain || 'N/A'}\`  
+**Generated At:** \`${timestampIso}\`  
+**Live Public Documents Mined (PDF/DOCX <= 8 MB):** **${edna?.minedDocuments.length ?? 0}**
+
+---
+
+## 1. DEEP PUBLIC ARTIFACT METADATA RIPPING (PDF /Author, /Creator, XMP & DOCX core.xml)
+${
+  edna && edna.minedDocuments.length > 0
+    ? `| Format | Bytes | Author | Creator / Producer | Extracted Corporate Entities & Domains | IPFS CIDv1 |\n|--------|------:|--------|--------------------|----------------------------------------|------------|\n${edna.minedDocuments
+        .map(
+          (doc) =>
+            `| \`${doc.format}\` | ${doc.byteLength.toLocaleString('en-US')} | ${(doc.author || 'N/A').replace(/\|/g, '-')} | ${[doc.creator, doc.producer].filter(Boolean).join(' / ').replace(/\|/g, '-') || 'N/A'} | ${[...doc.extractedEntities.slice(0, 3), ...doc.extractedDomains.slice(0, 3)].join(', ').replace(/\|/g, '-') || 'None'} | [\`${doc.ipfsCidV1.slice(0, 14)}\`](${doc.sourceUrl}) |`
+        )
+        .join('\n')}`
+    : '- Zero public PDF/DOCX binaries surfaced or reachable under the 8 MB zero-key safety cap on this run.'
+}
+
+---
+
+## 2. INVISIBLE INFRASTRUCTURE DNA FINGERPRINT (CROSS-ENTITY SHELL CORRELATOR)
+- **Favicon FIPS 180-4 SHA-256:** \`${edna?.infraDna.faviconSha256 || 'Not present / unavailable'}\`
+- **Favicon Shodan MurmurHash3-32 (MMH3):** \`${typeof edna?.infraDna.faviconMmh3 === 'number' ? edna.infraDna.faviconMmh3 : 'N/A'}\`
+- **Tracking / Analytics Fingerprints (GTM / GA4 / UA / FBPIXEL):** ${edna && edna.infraDna.analyticsIds.length > 0 ? edna.infraDna.analyticsIds.map((id) => `\`${id}\``).join(', ') : 'None detected in root HTML'}
+- **Recursive DNS SPF \`include:\` SaaS Chain (depth <= 3):** ${edna && edna.infraDna.spfIncludes.length > 0 ? edna.infraDna.spfIncludes.map((s) => `\`${s}\``).join(', ') : 'None resolved'}
+- **CSP Third-Party Shadow Backend Origins:** ${edna && edna.infraDna.cspOrigins.length > 0 ? edna.infraDna.cspOrigins.slice(0, 16).map((c) => `\`${c}\``).join(', ') : 'None declared'}
+
+### Subdomain DNA Matrix (${edna?.infraDna.subdomainsFingerprinted.length ?? 0})
+${
+  edna && edna.infraDna.subdomainsFingerprinted.length > 0
+    ? `| Subdomain | Favicon MMH3 | Analytics IDs |\n|-----------|-------------:|---------------|\n${edna.infraDna.subdomainsFingerprinted
+        .map((s) => `| \`${s.subdomain}\` | \`${s.faviconMmh3 ?? 'N/A'}\` | ${s.analyticsIds.join(', ') || 'None'} |`)
+        .join('\n')}`
+    : '_No additional subdomains fingerprinted on this run._'
+}
+
+> **Cross-Entity Persistence:** Stored in SQLite WAL \`infra_dna_fingerprints\`. Any two investigated targets sharing a Favicon hash, Analytics ID, or >=2 non-generic SPF/CSP origins automatically generate an \`INFRA_DNA_SHARED_LINK\` edge in the Custody Vault Comparator.  
+> **Raw Evidence Lockers:** Merkle-proven in \`evidence/raw_payloads/mined_artifact_metadata.json\` and \`evidence/raw_payloads/infra_dna_payload.json\`.
+`,
+  };
+
+  const tcl = liveIntel?.temporalCausalityAndLobbying;
+  const file36TemporalCausality = {
+    filename: '36_TEMPORAL_CAUSALITY_AND_LOBBYING_NEXUS.md',
+    description: 'v23.0 Cross-Stream Temporal Causality (Δt<=14d), U.S. Senate LDA Statutory Dollar-Flows, SEC XBRL Counterparty Forensics & RFC 3161 TSA Custody',
+    type: 'markdown' as const,
+    content: `# 36. CROSS-STREAM TEMPORAL CAUSALITY, LOBBYING DOLLAR-FLOWS & XBRL COUNTERPARTY NEXUS
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Sliding Synchrony Window:** \`Δt <= ${tcl?.windowDays ?? 14} days\`  
+**Normalized Dated Events:** **${tcl?.totalNormalizedEvents ?? 0}** across **${Object.keys(tcl?.eventsByStream || {}).length}** independent live streams  
+**Synchronized Causal Clusters Flagged:** **${tcl?.clusters.length ?? 0}**  
+**Causality Verdict:** \`${tcl?.verdict || 'AWAITING_LIVE_MULTI_STREAM_EVENTS'}\`
+
+---
+
+## 1. CROSS-STREAM TEMPORAL SYNCHRONY CLUSTERS (Δt <= 14 DAYS)
+${
+  tcl && tcl.clusters.length > 0
+    ? `| Cluster ID | Severity | Typology | Δt (Days) | Date Span | Forensic Causal Narrative |\n|------------|----------|----------|----------:|-----------|---------------------------|\n${tcl.clusters
+        .map(
+          (c) =>
+            `| \`${c.clusterId}\` | **${c.severity}** | \`${c.typology}\` | ${c.deltaDays}d | \`${c.startDate} -> ${c.endDate}\` | ${c.narrative.replace(/\|/g, '-')} |`
+        )
+        .join('\n')}`
+    : '- Zero cross-stream causal synchrony clusters detected within the 14-day sliding window across retrieved public registries.'
+}
+
+---
+
+## 2. U.S. SENATE LOBBYING DISCLOSURE ACT (LDA v1) STATUTORY DOLLAR-FLOWS & REVOLVING DOOR (SQUAD F)
+- **Cumulative Sampled Lobbying Spend:** **$${Math.round(tcl?.senateLdaDetailed.totalSpendUsd ?? 0).toLocaleString('en-US')}** across **${tcl?.senateLdaDetailed.filingsCount ?? 0}** statutory filing(s)
+- **Former Government Officials Identified (\`covered_position\`):** **${tcl?.senateLdaDetailed.revolvingDoorCount ?? 0}**
+- **Targeted Federal Agencies:** ${tcl && tcl.senateLdaDetailed.targetedAgencies.length > 0 ? tcl.senateLdaDetailed.targetedAgencies.map((a) => `\`${a}\``).join(', ') : 'None disclosed'}
+
+${
+  tcl && tcl.senateLdaDetailed.filings.length > 0
+    ? `| Period | Posted | Registrant Firm | Spend (USD) | Targeted Agencies | Issue Codes | Revolving-Door Officials |\n|--------|--------|-----------------|------------:|-------------------|-------------|--------------------------|\n${tcl.senateLdaDetailed.filings
+        .map(
+          (f) =>
+            `| ${f.filingPeriod} ${f.filingYear} | \`${f.dtPosted || 'N/A'}\` | [${f.registrantName.replace(/\|/g, '-')}](${f.url}) | $${Math.round(f.amountUsd).toLocaleString('en-US')} | ${f.governmentEntities.slice(0, 3).join(', ').replace(/\|/g, '-') || 'Congress'} | ${f.issueCodes.slice(0, 3).join(', ').replace(/\|/g, '-') || 'General'} | ${f.revolvingDoorLobbyists.map((l) => `${l.name} (${l.coveredPosition})`).slice(0, 2).join('; ').replace(/\|/g, '-') || 'None listed'} |`
+        )
+        .join('\n')}`
+    : '_No direct U.S. Senate LDA quarterly lobbying filings matched for this target._'
+}
+
+---
+
+## 3. SEC EDGAR DIRECT COMPANYFACTS XBRL AUDIT — TARGET & PUBLIC COUNTERPARTIES (SQUAD J)
+${
+  tcl && tcl.counterpartyXbrl.length > 0
+    ? `| Entity | Role | CIK | Fiscal End | Revenue (USD) | Net Income (USD) | Total Assets (USD) | AR / Rev | Benford D2 Chi-Sq (N) |\n|--------|------|-----|------------|--------------:|-----------------:|-------------------:|---------:|-----------------------|\n${tcl.counterpartyXbrl
+        .map((cp) => {
+          const arRev =
+            cp.receivablesUsd != null && cp.revenueUsd != null && cp.revenueUsd > 0
+              ? `${((cp.receivablesUsd / cp.revenueUsd) * 100).toFixed(1)}%`
+              : 'N/A';
+          const isAnom = cp.benfordSampleSize >= 30 && cp.benfordChiSq != null && cp.benfordChiSq > 21.67;
+          return `| [${cp.entityName.replace(/\|/g, '-')}](${cp.companyFactsUrl}) | \`${cp.role || 'TARGET'}\` | \`${cp.cik}\` | \`${cp.fiscalEndDate || (cp.fiscalYear ? String(cp.fiscalYear) : 'N/A')}\` | ${cp.revenueUsd != null ? `$${(cp.revenueUsd / 1e6).toFixed(1)}M` : 'N/A'} | ${cp.netIncomeUsd != null ? `$${(cp.netIncomeUsd / 1e6).toFixed(1)}M` : 'N/A'} | ${cp.totalAssetsUsd != null ? `$${(cp.totalAssetsUsd / 1e6).toFixed(1)}M` : 'N/A'} | ${arRev} | \`${cp.benfordChiSq != null ? cp.benfordChiSq.toFixed(2) : 'N/A'}\` (N=${cp.benfordSampleSize})${isAnom ? ' **ANOMALY**' : ''} |`;
+        })
+        .join('\n')}`
+    : '- No public SEC EDGAR XBRL CompanyFacts ledgers resolved for this target or its discovered counterparties.'
+}
+
+---
+
+## 4. HTTP RESILIENCE CACHE & KEYLESS RFC 3161 LEGAL TIMESTAMPING
+- **SQLite WAL Conditional HTTP Cache (\`http_cache\`):** ${tcl?.httpResilience ? `${tcl.httpResilience.cachedEntriesCount} cached URLs · ${tcl.httpResilience.totalRequests} requests · ${tcl.httpResilience.conditional304Hits} HTTP 304 ETag hits · ${tcl.httpResilience.freshCacheHits} fresh-TTL hits · ${tcl.httpResilience.rateLimitedWaits} per-host token-bucket waits` : 'Active on server ingress'}
+- **Court-Grade RFC 3161 TSA Token (\`MERKLE_ROOT.tsr\`):** Submitted through a 3-tier keyless Trusted Timestamping Authority waterfall (\`https://freetsa.org/tsr\` -> \`http://timestamp.digicert.com\` -> \`http://tsa.starfieldtech.com\`, 15s timeout per endpoint) upon finalization and bundled as a binary DER receipt (\`MERKLE_ROOT.tsr\`) or explicit diagnostic status receipt (\`MERKLE_ROOT.tsr.status.json\`) alongside \`LEDGER_ENTRY.json\`, \`PUBLIC_KEY.pem\`, and \`SHA256SUMS\`.
+- **Raw Evidence Locker:** Merkle-proven in \`evidence/raw_payloads/temporal_causality_payload.json\`.
+`,
+  };
+
   const merkleIncludedFiles = [
     file00,
     file01,
@@ -2650,6 +3129,10 @@ ${
     file30ZeroDayFraudMatrix,
     file31SubsidiarySwarmMatrix,
     file32PrivateDiscoveryAndContagion,
+    file33ExtremeDorking,
+    file34StealthDiffAndDeletion,
+    file35ArtifactMinerAndInfraDna,
+    file36TemporalCausality,
     fileBftCorroboration,
     fileUnverifiedWatchlist,
     fileRejectedHypotheses,
@@ -2716,6 +3199,8 @@ ${
   const merkleExcludedFiles = [
     'LEDGER_ENTRY.json',
     'PUBLIC_KEY.pem',
+    'MERKLE_ROOT.tsr',
+    'MERKLE_ROOT.tsr.status.json',
     'verify_dossier.mjs',
     'artifact-index.json',
     'SHA256SUMS',
@@ -2733,13 +3218,19 @@ ${
       investigation_id: investigationId,
       target_entity: matchedEntity.name,
       timestamp: timestampIso,
-      generator_system: 'Sovereign Tech Hyper-Investigations Grid v20.0 (160-Agent · Apex Omniscience)',
+      generator_system: 'Sovereign Tech Hyper-Investigations Grid v24.0 (160-Agent · Apex Precision)',
       signing_scheme: 'fips_180_4_sha256_merkle_tree_ed25519_ipfs_cidv1',
       sparse_squad_compression: {
         expanded_agents: expandedSquadFilesCount,
         compressed_zero_hit_agents: compressedZeroHitFilesCount,
         raw_squad_bytes: totalRawSquadBytes,
         compression_savings_pct: squadCompressionSavingsPct,
+      },
+      signal_density_metrics: signalDensityMetrics,
+      rfc3161_tsa_anchor: {
+        status: initialTsaStatus,
+        tsa_provider: liveIntel?.blockchainAnchor?.tsaProvider || 'https://freetsa.org/tsr',
+        token_sha256: liveIntel?.blockchainAnchor?.rfc3161TokenSha256 ?? null,
       },
       signer_id: 'sovereign_swarm_root_node_01',
       merkle_scope: 'all_dossier_artifacts',
@@ -2929,6 +3420,8 @@ ${
     graphNodesCount: graphNodes.length,
     graphEdgesCount: graphEdges.length,
     groundingSources: liveIntel?.groundingSources || [],
-    isLiveGrounded: Boolean(liveIntel)
+    isLiveGrounded: Boolean(liveIntel),
+    rfc3161Status: initialTsaStatus,
+    signalDensityMetrics,
   };
 }

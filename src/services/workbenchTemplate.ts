@@ -1128,6 +1128,36 @@ if (ledger.bitcoin_anchor && ledger.bitcoin_anchor.bitcoinBlockHash) {
   }
 }
 
+// 5c. Verify RFC 3161 Legal Timestamping Receipt (MERKLE_ROOT.tsr or MERKLE_ROOT.tsr.status.json)
+const tsrPath = path.join(rootDir, 'MERKLE_ROOT.tsr');
+const tsrStatusPath = path.join(rootDir, 'MERKLE_ROOT.tsr.status.json');
+if (fs.existsSync(tsrPath)) {
+  const tsrBuf = fs.readFileSync(tsrPath);
+  const tsrSha256 = sha256Hex(tsrBuf);
+  const sumSha = verifiedHashesByPath.get('MERKLE_ROOT.tsr');
+  if (tsrBuf.length <= 64 || tsrBuf[0] !== 0x30) {
+    fail('MERKLE_ROOT.tsr is not a valid ASN.1 DER TimeStampResp (' + tsrBuf.length + ' bytes)');
+  } else if (!sumSha || sumSha !== tsrSha256) {
+    fail('MERKLE_ROOT.tsr is missing or mismatched in SHA256SUMS');
+  } else if (ledger.rfc3161_tsa_anchor && ledger.rfc3161_tsa_anchor.token_sha256 && ledger.rfc3161_tsa_anchor.token_sha256 !== tsrSha256) {
+    fail('MERKLE_ROOT.tsr SHA-256 does not match LEDGER_ENTRY.json rfc3161_tsa_anchor.token_sha256');
+  } else {
+    pass('RFC 3161 DER receipt MERKLE_ROOT.tsr verified (' + tsrBuf.length + 'B · SHA256:' + tsrSha256.slice(0, 12) + ')');
+  }
+} else if (fs.existsSync(tsrStatusPath)) {
+  try {
+    const statusObj = JSON.parse(fs.readFileSync(tsrStatusPath, 'utf8'));
+    const sumSha = verifiedHashesByPath.get('MERKLE_ROOT.tsr.status.json');
+    if (!sumSha) {
+      fail('MERKLE_ROOT.tsr.status.json is not bound in SHA256SUMS');
+    } else {
+      pass('RFC 3161 TSA diagnostic receipt MERKLE_ROOT.tsr.status.json verified (status=' + (statusObj.status || 'UNREACHABLE_OFFLINE') + ', attempts=' + (Array.isArray(statusObj.attempts) ? statusObj.attempts.length : 0) + ')');
+    }
+  } catch (err) {
+    fail('Invalid MERKLE_ROOT.tsr.status.json: ' + err.message);
+  }
+}
+
 if (failures > 0) {
   console.error('\\nVERIFICATION FAILED with ' + failures + ' error(s).');
   process.exit(1);

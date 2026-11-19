@@ -1,6 +1,8 @@
 import { safeForensicFetch } from './adversarialShield.ts';
+import { resilientFetch } from './httpResilience.ts';
 import { fetchWithZkTlsProvenance } from '../src/crypto/zkTlsProver.ts';
 import { AutonomousPivotQueue, type PivotEvent } from '../src/engine/recursivePivoter.ts';
+import { computeSecondDigitBenfordChiSq } from '../src/engine/unknownFraudDetector.ts';
 import type { LivingSnapshot } from '../src/engine/livingDossierDelta.ts';
 import type {
   CommonCrawlSnapshot,
@@ -16,6 +18,8 @@ import type {
   PublicAttentionTelemetry,
   RdapAndDnssecRecord,
   RecursivePivotDiscovery,
+  SecCounterpartyXbrlSummary,
+  SenateLdaDetailedRecord,
   ShodanInternetDbHost,
   SoftwareSupplyChainAudit,
   SpamhausDropCheck,
@@ -1657,5 +1661,351 @@ export async function runDeepLiveProbes(params: {
     },
     probes,
   };
+}
+
+// =============================================================================
+// v23.0 ZERO-KEY LOBBYING DOLLAR-FLOWS (U.S. SENATE LDA) & SEC XBRL COUNTERPARTY PROBES
+// =============================================================================
+
+export interface SenateLdaDetailedProbeResult {
+  totalSpendUsd: number;
+  filingsCount: number;
+  revolvingDoorCount: number;
+  targetedAgencies: string[];
+  filings: SenateLdaDetailedRecord[];
+  latencyMs: number;
+}
+
+/**
+ * Zero-key U.S. Senate Lobbying Disclosure Act (LDA) API probe.
+ * Extracts exact quarterly lobbying spend, targeted agencies, issue codes,
+ * and former federal officials (covered_position) to feed Squad F & Temporal Causality.
+ */
+export async function probeSenateLdaDetailedLobbying(
+  entityName: string
+): Promise<SenateLdaDetailedProbeResult> {
+  const t0 = Date.now();
+  const cleanName = entityName.trim();
+  if (!cleanName) {
+    return {
+      totalSpendUsd: 0,
+      filingsCount: 0,
+      revolvingDoorCount: 0,
+      targetedAgencies: [],
+      filings: [],
+      latencyMs: 0,
+    };
+  }
+
+  const url = `https://lda.senate.gov/api/v1/filings/?client_name=${encodeURIComponent(cleanName)}&page_size=12`;
+  const res = await resilientFetch(url, {
+    timeoutMs: 9000,
+    maxBytes: 768_000,
+    headers: {
+      'User-Agent': PROBE_UA,
+      Accept: 'application/json',
+    },
+  });
+
+  if (!res.ok || !res.bodyText) {
+    return {
+      totalSpendUsd: 0,
+      filingsCount: 0,
+      revolvingDoorCount: 0,
+      targetedAgencies: [],
+      filings: [],
+      latencyMs: Date.now() - t0,
+    };
+  }
+
+  let parsed: { results?: Array<Record<string, unknown>> } | null = null;
+  try {
+    parsed = JSON.parse(res.bodyText);
+  } catch {
+    parsed = null;
+  }
+
+  const rows = Array.isArray(parsed?.results) ? parsed.results : [];
+  const filings: SenateLdaDetailedRecord[] = [];
+  const agencySet = new Set<string>();
+  const globalRevDoorSet = new Set<string>();
+  let totalSpendUsd = 0;
+
+  const targetTokens = cleanName
+    .toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((t) => t.length >= 3 && !/^(inc|corp|llc|ltd|the|and|for|group|holdings)$/.test(t));
+
+  for (const r of rows) {
+    const clientObj = (r.client && typeof r.client === 'object' ? r.client : {}) as Record<string, unknown>;
+    const regObj = (r.registrant && typeof r.registrant === 'object' ? r.registrant : {}) as Record<string, unknown>;
+    const clientName = String(clientObj.name || '').trim();
+    if (!clientName) continue;
+    const lowerClient = clientName.toLowerCase();
+    if (
+      targetTokens.length > 0 &&
+      !targetTokens.some((tok) => lowerClient.includes(tok))
+    ) {
+      continue;
+    }
+
+    const expensesNum = Number(r.expenses ?? r.income ?? 0);
+    const amountUsd = Number.isFinite(expensesNum) && expensesNum > 0 ? expensesNum : 0;
+    totalSpendUsd += amountUsd;
+
+    const agencies = new Set<string>();
+    const issueCodes = new Set<string>();
+    const issueDescs: string[] = [];
+    const revolvingDoorLobbyists: Array<{ name: string; coveredPosition: string }> = [];
+    const seenLob = new Set<string>();
+
+    const activities = Array.isArray(r.lobbying_activities) ? r.lobbying_activities : [];
+    for (const rawAct of activities) {
+      const act = (rawAct && typeof rawAct === 'object' ? rawAct : {}) as Record<string, unknown>;
+      if (act.general_issue_code_display || act.general_issue_code) {
+        issueCodes.add(String(act.general_issue_code_display || act.general_issue_code));
+      }
+      if (typeof act.description === 'string' && act.description.trim()) {
+        issueDescs.push(act.description.trim().slice(0, 180));
+      }
+      const govEntities = Array.isArray(act.government_entities) ? act.government_entities : [];
+      for (const rawGe of govEntities) {
+        const ge = (rawGe && typeof rawGe === 'object' ? rawGe : {}) as Record<string, unknown>;
+        if (ge.name) {
+          const name = String(ge.name).trim();
+          agencies.add(name);
+          agencySet.add(name);
+        }
+      }
+      const lobbyists = Array.isArray(act.lobbyists) ? act.lobbyists : [];
+      for (const rawLob of lobbyists) {
+        const lob = (rawLob && typeof rawLob === 'object' ? rawLob : {}) as Record<string, unknown>;
+        const covered = String(lob.covered_position || '').trim();
+        const person = (lob.lobbyist && typeof lob.lobbyist === 'object' ? lob.lobbyist : {}) as Record<string, unknown>;
+        const fullName = `${String(person.first_name || '').trim()} ${String(person.last_name || '').trim()}`.trim();
+        if (fullName && covered && !seenLob.has(fullName)) {
+          seenLob.add(fullName);
+          globalRevDoorSet.add(`${fullName}|${covered}`);
+          revolvingDoorLobbyists.push({ name: fullName, coveredPosition: covered });
+        }
+      }
+    }
+
+    const filingUuid = String(r.filing_uuid || '');
+    filings.push({
+      filingUuid,
+      filingYear: Number(r.filing_year || 0),
+      filingPeriod: String(r.filing_period_display || r.filing_period || r.filing_type_display || 'LD-2'),
+      dtPosted: String(r.dt_posted || '').slice(0, 10),
+      registrantName: String(regObj.name || 'Registered Lobbying Firm'),
+      clientName,
+      amountUsd,
+      governmentEntities: Array.from(agencies).slice(0, 10),
+      issueCodes: Array.from(issueCodes).slice(0, 8),
+      specificIssuesSummary: issueDescs.slice(0, 4).join(' | '),
+      revolvingDoorLobbyists: revolvingDoorLobbyists.slice(0, 10),
+      url: String(
+        r.filing_document_url ||
+          (filingUuid
+            ? `https://lda.senate.gov/filings/public/filing/${filingUuid}/print/`
+            : 'https://lda.senate.gov/filings/public/filing/search/')
+      ),
+    });
+  }
+
+  return {
+    totalSpendUsd,
+    filingsCount: filings.length,
+    revolvingDoorCount: globalRevDoorSet.size,
+    targetedAgencies: Array.from(agencySet).slice(0, 16),
+    filings: filings.slice(0, 12),
+    latencyMs: Date.now() - t0,
+  };
+}
+
+let cachedSecTickersMap: Array<{ cik: string; ticker: string; title: string }> | null = null;
+let cachedSecTickersAt = 0;
+
+async function resolveSecCompanyCik(entityName: string): Promise<{ cik: string; ticker?: string; title: string } | null> {
+  const now = Date.now();
+  if (!cachedSecTickersMap || now - cachedSecTickersAt > 6 * 3_600_000) {
+    const res = await resilientFetch('https://www.sec.gov/files/company_tickers.json', {
+      timeoutMs: 8500,
+      maxBytes: 2_500_000,
+      softTtlMs: 6 * 3_600_000,
+      headers: {
+        'User-Agent': 'SovereignForensicMatrix/23.0 (ComplianceAudit; contact@xerj.org)',
+        Accept: 'application/json',
+      },
+    });
+    if (res.ok && res.bodyText) {
+      try {
+        const raw = JSON.parse(res.bodyText) as Record<
+          string,
+          { cik_str?: number | string; ticker?: string; title?: string }
+        >;
+        cachedSecTickersMap = Object.values(raw)
+          .filter((v) => v && v.cik_str != null && v.title)
+          .map((v) => ({
+            cik: String(v.cik_str).replace(/\D/g, '').padStart(10, '0'),
+            ticker: String(v.ticker || '').toUpperCase(),
+            title: String(v.title || ''),
+          }));
+        cachedSecTickersAt = now;
+      } catch {
+        // leave uncached
+      }
+    }
+  }
+
+  if (!cachedSecTickersMap || cachedSecTickersMap.length === 0) return null;
+  const norm = entityName
+    .toLowerCase()
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\b(inc|incorporated|corp|corporation|llc|ltd|limited|co|company|holdings|group|plc|sa)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+  if (norm.length < 3) return null;
+
+  // Prefer exact normalized match or prefix match
+  let best: { cik: string; ticker?: string; title: string } | null = null;
+  for (const row of cachedSecTickersMap) {
+    const rowNorm = row.title
+      .toLowerCase()
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\b(inc|incorporated|corp|corporation|llc|ltd|limited|co|company|holdings|group|plc|sa)\b/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (rowNorm === norm) return row;
+    if (!best && (rowNorm.startsWith(`${norm} `) || norm.startsWith(`${rowNorm} `))) {
+      best = row;
+    }
+  }
+  return best;
+}
+
+function extractLatestAnnualUsdFact(
+  gaap: Record<string, { units?: { USD?: Array<{ val?: number; form?: string; end?: string; fy?: number }> } }>,
+  tags: string[]
+): { value: number; endDate: string; form: string } | null {
+  for (const tag of tags) {
+    const items = gaap[tag]?.units?.USD;
+    if (!Array.isArray(items) || items.length === 0) continue;
+    const valid = items
+      .filter((u) => typeof u.val === 'number' && Number.isFinite(u.val) && (u.form === '10-K' || u.form === '20-F' || u.form === '10-Q'))
+      .sort((a, b) => String(a.end || '').localeCompare(String(b.end || '')));
+    const latest = valid[valid.length - 1];
+    if (latest && typeof latest.val === 'number') {
+      return {
+        value: latest.val,
+        endDate: String(latest.end || ''),
+        form: String(latest.form || '10-K'),
+      };
+    }
+  }
+  return null;
+}
+
+/**
+ * Zero-key SEC EDGAR Direct Company Facts XBRL Auditor for target & discovered public counterparties.
+ * Pulls audited GAAP Revenue, Net Income, Assets, Receivables, Operating Cash Flow, and runs
+ * Second-Digit Benford's Law Chi-Square across all audited USD GAAP figures (Squad J).
+ */
+export async function probeSecEdgarCompanyFactsXbrl(
+  candidates: Array<{ entityName: string; cik?: string; role: 'PRIMARY_TARGET' | 'COUNTERPARTY' }>
+): Promise<{ summaries: SecCounterpartyXbrlSummary[]; latencyMs: number }> {
+  const t0 = Date.now();
+  const seenCiks = new Set<string>();
+  const resolvedTargets: Array<{ entityName: string; cik: string; ticker?: string; role: 'PRIMARY_TARGET' | 'COUNTERPARTY' }> = [];
+
+  for (const cand of candidates) {
+    if (resolvedTargets.length >= 3) break;
+    let cik = cand.cik ? cand.cik.replace(/\D/g, '').padStart(10, '0') : '';
+    let ticker: string | undefined;
+    let resolvedName = cand.entityName;
+
+    if (!cik || /^0+$/.test(cik)) {
+      const match = await resolveSecCompanyCik(cand.entityName);
+      if (!match) continue;
+      cik = match.cik;
+      ticker = match.ticker;
+      resolvedName = match.title || cand.entityName;
+    }
+
+    if (seenCiks.has(cik)) continue;
+    seenCiks.add(cik);
+    resolvedTargets.push({ entityName: resolvedName, cik, ticker, role: cand.role });
+  }
+
+  const summaries: SecCounterpartyXbrlSummary[] = [];
+
+  for (const target of resolvedTargets) {
+    const url = `https://data.sec.gov/api/xbrl/companyfacts/CIK${target.cik}.json`;
+    const res = await resilientFetch(url, {
+      timeoutMs: 12000,
+      maxBytes: 16_000_000,
+      bypassCache: true,
+      headers: {
+        'User-Agent': 'SovereignForensicMatrix/23.0 (ComplianceAudit; contact@xerj.org)',
+        Accept: 'application/json',
+      },
+    });
+    if (!res.ok || !res.bodyText) continue;
+
+    let parsed: { entityName?: string; facts?: { 'us-gaap'?: Record<string, any> } } | null = null;
+    try {
+      parsed = JSON.parse(res.bodyText);
+    } catch {
+      continue;
+    }
+
+    const gaap = parsed?.facts?.['us-gaap'];
+    if (!gaap || typeof gaap !== 'object') continue;
+
+    const rev = extractLatestAnnualUsdFact(gaap, [
+      'Revenues',
+      'RevenueFromContractWithCustomerExcludingAssessedTax',
+      'SalesRevenueNet',
+    ]);
+    const netInc = extractLatestAnnualUsdFact(gaap, ['NetIncomeLoss', 'ProfitLoss']);
+    const assets = extractLatestAnnualUsdFact(gaap, ['Assets']);
+    const ar = extractLatestAnnualUsdFact(gaap, ['AccountsReceivableNetCurrent', 'ReceivablesNetCurrent']);
+    const ocf = extractLatestAnnualUsdFact(gaap, ['NetCashProvidedByUsedInOperatingActivities']);
+
+    const numericSeries: number[] = [];
+    for (const entry of Object.values(gaap)) {
+      const usd = (entry as { units?: { USD?: Array<{ val?: number }> } })?.units?.USD;
+      if (!Array.isArray(usd)) continue;
+      for (const pt of usd.slice(-6)) {
+        if (typeof pt.val === 'number' && Math.abs(pt.val) >= 100) {
+          numericSeries.push(Math.abs(pt.val));
+        }
+      }
+      if (numericSeries.length >= 600) break;
+    }
+
+    const benfordSecondDigitChiSq = computeSecondDigitBenfordChiSq(numericSeries);
+    const fiscalEndDate = rev?.endDate || assets?.endDate || netInc?.endDate || '';
+    const fiscalYearMatch = fiscalEndDate.match(/^(\d{4})/);
+
+    summaries.push({
+      entityName: String(parsed?.entityName || target.entityName),
+      cik: target.cik,
+      ticker: target.ticker,
+      role: target.role,
+      fiscalYear: fiscalYearMatch ? Number(fiscalYearMatch[1]) : null,
+      fiscalEndDate,
+      revenueUsd: rev?.value ?? null,
+      netIncomeUsd: netInc?.value ?? null,
+      totalAssetsUsd: assets?.value ?? null,
+      receivablesUsd: ar?.value ?? null,
+      operatingCashFlowUsd: ocf?.value ?? null,
+      benfordSampleSize: numericSeries.length,
+      benfordChiSq: numericSeries.length >= 10 ? benfordSecondDigitChiSq : null,
+      companyFactsUrl: url,
+    });
+  }
+
+  return { summaries, latencyMs: Date.now() - t0 };
 }
 
