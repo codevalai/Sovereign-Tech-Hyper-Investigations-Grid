@@ -237,7 +237,7 @@ All routes are served on port `3000` by `server.ts` (Express + Vite dev middlewa
 ```bash
 # 1. Clone the repository
 git clone https://github.com/codevalai/Sovereign-Tech-Hyper-Investigations-Grid
-
+cd
 # 2. Install dependencies
 npm install
 
