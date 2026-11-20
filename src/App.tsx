@@ -1,4 +1,4 @@
-import React, { Suspense, lazy, useEffect, useState } from 'react';
+import { Suspense, lazy, useEffect, useState } from 'react';
 import { Header } from './components/Header';
 import { InvestigationLauncher } from './components/InvestigationLauncher';
 import { SwarmExecutionView } from './components/SwarmExecutionView';

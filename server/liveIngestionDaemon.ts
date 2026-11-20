@@ -2221,9 +2221,16 @@ class SovereignRealtimeDaemon {
       inserted++;
     }
 
+    const validHostnameRe = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
     for (const dom of externalDomains.slice(0, 10)) {
-      const clean = dom.trim().toLowerCase();
-      if (!clean || clean.length < 4) continue;
+      const clean = dom
+        .trim()
+        .toLowerCase()
+        .replace(/^https?:\/\//i, '')
+        .split(/[/?#]/)[0]
+        .replace(/^www\./i, '')
+        .replace(/[),.;:'"\]>]+$/g, '');
+      if (!clean || clean.length < 4 || !validHostnameRe.test(clean)) continue;
       const sha = crypto.createHash('sha256').update(`${targetNorm}|DORK_EXTERNAL_DOMAIN|${clean}`).digest('hex');
       stmt.run(
         sha.slice(0, 24),
@@ -2560,13 +2567,14 @@ class SovereignRealtimeDaemon {
       }
     };
     const fri = Number(r.fri ?? 0);
+    const friNorm = fri > 1 ? fri / 100 : fri;
     return {
       investigationId: String(r.investigation_id),
       targetEntity: String(r.entity_name || ''),
       primaryDomain: r.primary_domain ? String(r.primary_domain) : undefined,
       capturedAtIso: String(r.completed_at_iso || new Date().toISOString()),
       merkleRoot: r.merkle_root ? String(r.merkle_root) : undefined,
-      postRedTeamPosterior: Number(Math.min(0.95, Math.max(0.05, fri / 100)).toFixed(4)),
+      postRedTeamPosterior: Number(Math.min(0.95, Math.max(0.05, friNorm > 0 ? friNorm : 0.2)).toFixed(4)),
       fri,
       mai: Number(r.mai ?? 0),
       executives: [],
@@ -2654,10 +2662,21 @@ class SovereignRealtimeDaemon {
     runA?: string;
     runB?: string;
   }): Promise<{
+    ok: boolean;
     diff: LongitudinalDiffReport | null;
     markdownReport: string | null;
-    availableRuns: Array<{ investigationId: string; entityName: string; capturedAtIso: string; fri: number }>;
+    diffSha256?: string;
+    ed25519SignatureBase64?: string;
+    availableRuns: Array<{
+      investigationId: string;
+      entityName: string;
+      capturedAtIso: string;
+      completedAtIso: string;
+      hasSnapshot: boolean;
+      fri: number;
+    }>;
     reason?: string;
+    error?: string;
   }> {
     this.initDatabase();
     const db = this.db!;
@@ -2679,6 +2698,8 @@ class SovereignRealtimeDaemon {
       investigationId: String(r.investigation_id),
       entityName: String(r.entity_name),
       capturedAtIso: String(r.completed_at_iso),
+      completedAtIso: String(r.completed_at_iso),
+      hasSnapshot: typeof r.snapshot_json === 'string' && r.snapshot_json.trim().startsWith('{'),
       fri: Number(r.fri ?? 0),
     }));
 
@@ -2695,11 +2716,14 @@ class SovereignRealtimeDaemon {
     }
 
     if (!rowA || !rowB) {
+      const msg = 'At least 2 archived runs are required to compute a T1 vs. T2 longitudinal delta.';
       return {
+        ok: false,
         diff: null,
         markdownReport: null,
         availableRuns,
-        reason: 'At least 2 archived runs are required to compute a T1 vs. T2 longitudinal delta.',
+        reason: msg,
+        error: msg,
       };
     }
 
@@ -2721,8 +2745,11 @@ class SovereignRealtimeDaemon {
     };
 
     return {
+      ok: true,
       diff: sealedDiff,
       markdownReport: buildDeltaAlertMarkdown(sealedDiff),
+      diffSha256: sealedDiff.diffSha256,
+      ed25519SignatureBase64: sigBase64,
       availableRuns,
     };
   }

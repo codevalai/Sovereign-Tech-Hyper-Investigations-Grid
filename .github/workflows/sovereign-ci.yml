@@ -1,4 +1,4 @@
-name: Sovereign v26.1 11-Phase Cryptographic CI
+name: Sovereign 160-Agent Cryptographic CI
 
 on:
   push:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   verify-forensic-matrix:
-    name: Typecheck, Vite Build & 11-Phase v26.1 Cryptographic CI
+    name: Typecheck, Production Build & 160-Agent Cryptographic Seals
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -38,8 +38,8 @@ jobs:
       - name: Production Vite Bundle Build
         run: npm run build
 
-      - name: Run 11-Phase Cryptographic, ACH, FtM & v26.1 Precision CI Suite
-        run: npm run verify
+      - name: Verify 160-Agent Dossier Cryptographic Seals & Ring-1/Ring-5 Defense
+        run: npx tsx scripts/verify-ci.ts --require-build
 
   verify-container-build:
     name: Multi-Stage Docker Image Build Verification
@@ -50,4 +50,4 @@ jobs:
         uses: actions/checkout@v4
 
       - name: Build Production Docker Image (node:22-bookworm-slim)
-        run: docker build -t sovereign-tech-hyper-investigations-grid:ci .
+        run: docker build -t sovereign-forensic-matrix:ci .

@@ -1,4 +1,4 @@
-import { sha256Hex } from '../services/forensicMathEngine';
+import { sha256Hex } from '../services/forensicMathEngine.ts';
 
 export interface PrivateEntitySignal {
   source:

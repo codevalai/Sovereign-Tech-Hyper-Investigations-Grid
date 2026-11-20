@@ -9,10 +9,8 @@ import {
   Folder, 
   FileCode, 
   FileSpreadsheet, 
-  Share2,
   ChevronRight,
   ShieldCheck,
-  Zap,
   Globe,
   Eye,
   Code2
@@ -48,10 +46,16 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
   const isHtmlArtifact = Boolean(selectedFile?.filename.endsWith('.html'));
 
   const handleCopyContent = () => {
-    if (selectedFile) {
-      navigator.clipboard.writeText(selectedFile.content);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
+    if (selectedFile && navigator.clipboard?.writeText) {
+      navigator.clipboard
+        .writeText(selectedFile.content)
+        .then(() => {
+          setCopied(true);
+          setTimeout(() => setCopied(false), 2000);
+        })
+        .catch(() => {
+          // Non-fatal iframe clipboard permission guard
+        });
     }
   };
 

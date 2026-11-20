@@ -1,6 +1,6 @@
 {
   "name": "Sovereign Tech Hyper-Investigations Grid",
-  "description": "Zero-API-key forensic OSINT grid (v26.1 Apex Precision) with 160-agent / 16-squad swarm, strict entity disambiguation, sovereign registries, calibrated 20% prior Bayesian + Phase-5 ACH engine, FollowTheMoney NDJSON, STIX 2.1, and Ed25519 + Merkle sealed dossier & audit bundle export.",
+  "description": "Planetary-grade forensic OSINT grid with 160-agent / 16-squad recursive swarm, live zero-key sovereign registries, Bayesian risk scoring, STIX 2.1 export, and Ed25519 + Merkle sealed dossier generator.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

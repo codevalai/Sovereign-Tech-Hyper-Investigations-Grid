@@ -1,5 +1,5 @@
-import { sha256Hex } from '../services/forensicMathEngine';
-import { isSpvOrFundIssuerName, isValidSenateLdaRecord } from './entityDisambiguation';
+import { sha256Hex } from '../services/forensicMathEngine.ts';
+import { isSpvOrFundIssuerName, isValidSenateLdaRecord } from './entityDisambiguation.ts';
 import type {
   LiveBusinessIntelligence,
   PropertyGraphEdge,

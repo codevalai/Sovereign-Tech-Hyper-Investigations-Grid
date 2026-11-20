@@ -25,11 +25,13 @@ export class AutonomousPivotQueue {
   private visited = new Set<string>();
   private queue: PivotTask[] = [];
   private executedCount = 0;
+  private readonly maxDepth: number;
+  private readonly maxTotalProbes: number;
 
-  constructor(
-    private readonly maxDepth: number = 2,
-    private readonly maxTotalProbes: number = 24
-  ) {}
+  constructor(maxDepth = 2, maxTotalProbes = 24) {
+    this.maxDepth = maxDepth;
+    this.maxTotalProbes = maxTotalProbes;
+  }
 
   enqueue(task: PivotTask): boolean {
     const normalizedVal = task.value.trim().toLowerCase();

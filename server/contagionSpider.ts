@@ -49,17 +49,24 @@ export async function runBoundedContagionSpider(params: {
   const seenNames = new Set<string>([rootNorm]);
 
   const noiseDomainPattern =
-    /(?:^|\.)(google|googleapis|gstatic|googletagmanager|cloudflare|cloudfront|akamai|fastly|amazonaws|github|githubusercontent|jsdelivr|unpkg|stripe|sentry|datadog|youtube|youtu\.be|vimeo|twitter|x\.com|facebook|instagram|linkedin|tiktok|reddit|medium\.com|wikimedia|wikipedia|wikidata|w3\.org|iptc\.org|day\.com|adobe\.com|schema\.org|purl\.org|creativecommons\.org|archive\.org|sec\.gov|fda\.gov|epa\.gov|irs\.gov|loc\.gov|nist\.gov|courtlistener\.com|federalregister\.gov|clinicaltrials\.gov|usaspending\.gov)$/i;
+    /(?:^|\.)(google|googleapis|gstatic|googletagmanager|cloudflare|cloudfront|akamai|fastly|amazonaws|github|githubusercontent|jsdelivr|unpkg|stripe|sentry|datadog|youtube|youtu\.be|vimeo|twitter|x\.com|facebook|instagram|linkedin|tiktok|reddit|medium\.com|wikimedia|wikipedia|wikidata|w3\.org|iptc\.org|day\.com|adobe\.com|schema\.org|purl\.org|creativecommons\.org|archive\.org|courtlistener\.com)$|\.(?:gov|mil|edu|int)(?:\.[a-z]{2})?$/i;
+
+  const validHostnameRe = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
 
   const pushCandidate = (rawName: string, rawDomain: string, source: ContagionSpiderNodeResult['source']) => {
-    const cleanName = rawName.trim();
+    const cleanName = rawName.trim().replace(/[),.;:'"\]>]+$/g, '');
     const norm = cleanName.toLowerCase();
     if (!cleanName || cleanName.length < 3 || seenNames.has(norm)) return;
     if (/^(?:air force|coast guard|defense department|federal aviation|federal communications|department of|securities and exchange|united states)/i.test(cleanName)) {
       return;
     }
-    const domain = (rawDomain || deriveDomainCandidate(cleanName)).replace(/^https?:\/\//i, '').split('/')[0].toLowerCase();
-    if (!domain || noiseDomainPattern.test(domain) || domain === rootRecord?.primaryDomain?.toLowerCase()) return;
+    const domain = (rawDomain || deriveDomainCandidate(cleanName))
+      .replace(/^https?:\/\//i, '')
+      .split(/[/?#]/)[0]
+      .replace(/^www\./i, '')
+      .replace(/[),.;:'"\]>]+$/g, '')
+      .toLowerCase();
+    if (!domain || !validHostnameRe.test(domain) || noiseDomainPattern.test(domain) || domain === rootRecord?.primaryDomain?.toLowerCase()) return;
     seenNames.add(norm);
     candidates.push({ name: cleanName, domain, source });
   };

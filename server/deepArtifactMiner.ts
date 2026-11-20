@@ -256,15 +256,20 @@ export function parsePublicDocumentBuffer(
     return null;
   }
 
-  const urlMatches = scanCorpus.match(/https?:\/\/[a-zA-Z0-9._~:/?#[\]@!$&'()*+,;=-]{8,180}/g) || [];
+  const urlMatches = scanCorpus.match(/https?:\/\/[a-zA-Z0-9._~:/?#[\]@!$&*+,;=-]{8,180}/g) || [];
   const embeddedUrls = Array.from(
     new Set(
-      urlMatches.filter(
-        (u) => !/w3\.org|ns\.adobe\.com|purl\.org|schemas\.openxmlformats\.org|schemas\.microsoft\.com/i.test(u)
-      )
+      urlMatches
+        .map((u) => u.replace(/[),.;:'"\]>]+$/g, ''))
+        .filter(
+          (u) =>
+            u.length >= 10 &&
+            !/w3\.org|ns\.adobe\.com|purl\.org|schemas\.openxmlformats\.org|schemas\.microsoft\.com/i.test(u)
+        )
     )
   ).slice(0, 30);
 
+  const validHostnameRe = /^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$/;
   const extractedDomains = Array.from(
     new Set(
       embeddedUrls
@@ -275,7 +280,7 @@ export function parsePublicDocumentBuffer(
             return '';
           }
         })
-        .filter((h) => h && h.includes('.'))
+        .filter((h) => Boolean(h) && validHostnameRe.test(h))
     )
   ).slice(0, 20);
 

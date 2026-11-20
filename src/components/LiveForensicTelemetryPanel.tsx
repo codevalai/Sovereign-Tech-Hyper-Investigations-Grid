@@ -1253,11 +1253,17 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                     </div>
                     {wr.largeDeletions.length > 0 ? (
                       <div className="space-y-1 max-h-24 overflow-y-auto pt-1">
-                        {wr.largeDeletions.slice(0, 4).map((d) => (
-                          <div key={d.revId} className="text-rose-300 truncate">
-                            [{d.timestamp.slice(0, 10)}] {d.deltaBytes}B by {d.user}{d.isAnonymousIp ? ' (ANON)' : ''} — {d.comment || 'no summary'}
-                          </div>
-                        ))}
+                        {wr.largeDeletions.slice(0, 4).map((d) => {
+                          const isBenign = d.intentClassification === 'BENIGN_SOURCING_CLEANUP';
+                          return (
+                            <div
+                              key={d.revId}
+                              className={`${isBenign ? 'text-slate-400' : 'text-rose-300'} truncate`}
+                            >
+                              [{d.timestamp.slice(0, 10)}] [{isBenign ? 'BENIGN_SOURCING_CLEANUP' : 'SUSPICIOUS_DELETION'}] {d.deltaBytes}B by {d.user}{d.isAnonymousIp ? ' (ANON)' : ''} — {d.comment || 'no summary'}
+                            </div>
+                          );
+                        })}
                       </div>
                     ) : (
                       <div className="text-slate-500">Zero large content removals (&le;-1,500B) in recent revisions.</div>
@@ -1355,10 +1361,26 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
               </p>
             </div>
 
-            {/* Bayesian Fraud Risk Posterior Breakdown */}
+            {/* Bayesian Fraud Risk Posterior Breakdown (Post-Phase-5 ACH Sealed) */}
             {(() => {
+              let sealedBayes: ReturnType<typeof computeBayesianFraudRiskPosterior> | null = null;
+              const analyticsFile = result.files.find(
+                (f) => f.filename === 'evidence/bayesian_and_graph_analytics.json'
+              );
+              if (analyticsFile) {
+                try {
+                  const parsed = JSON.parse(analyticsFile.content) as {
+                    bayesian_fraud_risk_posterior?: ReturnType<typeof computeBayesianFraudRiskPosterior>;
+                  };
+                  if (parsed?.bayesian_fraud_risk_posterior) {
+                    sealedBayes = parsed.bayesian_fraud_risk_posterior;
+                  }
+                } catch {
+                  // fallback below
+                }
+              }
               const ben = computeBenfordAnalysis(intel.shadowFinance?.numericSamples || []);
-              const bayes = computeBayesianFraudRiskPosterior(result.fri, intel, ben);
+              const bayes = sealedBayes || computeBayesianFraudRiskPosterior(result.fri, intel, ben);
               const tierColor =
                 bayes.riskTier === 'CRITICAL'
                   ? 'text-rose-400'
@@ -1369,10 +1391,13 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                 <div className="lg:col-span-2 p-4 rounded-lg bg-[#0B0E17] border border-slate-800 space-y-2.5 tabular-nums">
                   <div className="flex flex-wrap items-center justify-between gap-2 border-b border-slate-800 pb-2">
                     <span className="font-semibold text-slate-200">
-                      Sequential Log-Odds Bayesian Fraud Risk Posterior
+                      Sequential Log-Odds Bayesian Fraud Risk Posterior (Post-ACH)
                     </span>
                     <span className={`font-semibold ${tierColor}`}>
-                      Posterior {(bayes.posteriorProbability * 100).toFixed(1)}% [{bayes.riskTier}] · Prior {(bayes.priorProbability * 100).toFixed(1)}% · BF {bayes.combinedBayesFactor}x · 95% CI {(bayes.confidenceInterval95[0] * 100).toFixed(0)}%–{(bayes.confidenceInterval95[1] * 100).toFixed(0)}%
+                      Posterior {(bayes.posteriorProbability * 100).toFixed(1)}% [{bayes.riskTier}]
+                      {bayes.preRedTeamPosterior != null && bayes.preRedTeamPosterior !== bayes.posteriorProbability
+                        ? ` (Pre-ACH ${(bayes.preRedTeamPosterior * 100).toFixed(1)}%)`
+                        : ''} · Prior {(bayes.priorProbability * 100).toFixed(1)}% · BF {bayes.combinedBayesFactor}x · 95% CI {(bayes.confidenceInterval95[0] * 100).toFixed(0)}%–{(bayes.confidenceInterval95[1] * 100).toFixed(0)}%
                     </span>
                   </div>
                   {bayes.evidenceContributions.length > 0 ? (

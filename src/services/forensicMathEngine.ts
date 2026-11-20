@@ -16,7 +16,7 @@ import type {
 import {
   classifyWikipediaDeletionIntent,
   isValidSenateLdaRecord,
-} from '../engine/entityDisambiguation';
+} from '../engine/entityDisambiguation.ts';
 
 // =============================================================================
 // 1. REAL FIPS 180-4 SHA-256 & BINARY MERKLE TREE

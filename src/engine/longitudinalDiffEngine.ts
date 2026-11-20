@@ -1,5 +1,5 @@
-import { sha256Hex } from '../services/forensicMathEngine';
-import { classifyWikipediaDeletionIntent, extractDomainHost } from './entityDisambiguation';
+import { sha256Hex } from '../services/forensicMathEngine.ts';
+import { classifyWikipediaDeletionIntent, extractDomainHost } from './entityDisambiguation.ts';
 import type {
   BayesianRiskPosterior,
   LiveBusinessIntelligence,

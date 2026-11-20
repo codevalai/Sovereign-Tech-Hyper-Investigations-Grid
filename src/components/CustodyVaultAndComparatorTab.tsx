@@ -1075,7 +1075,9 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
               <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800">
                 <div className="text-[11px] text-slate-400">Ed25519 Diff Seal</div>
                 <div className="mt-1 text-xs font-semibold text-cyan-300 truncate">
-                  {diffResult.diffSha256 ? `${diffResult.diffSha256.slice(0, 18)}...` : 'SEALED'}
+                  {(diffResult.diffSha256 || diffResult.diff.diffSha256)
+                    ? `${(diffResult.diffSha256 || diffResult.diff.diffSha256).slice(0, 18)}...`
+                    : 'SEALED'}
                 </div>
                 <div className="text-[11px] text-slate-500 mt-0.5 truncate">
                   {diffResult.diff.runAId.slice(0, 10)} → {diffResult.diff.runBId.slice(0, 10)}
@@ -1106,7 +1108,9 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
                             ? 'text-rose-400 font-bold'
                             : d.severity === 'HIGH'
                               ? 'text-amber-400 font-bold'
-                              : 'text-cyan-300'
+                              : d.severity === 'LOW'
+                                ? 'text-slate-400'
+                                : 'text-cyan-300'
                         }
                       >
                         {d.severity}
@@ -1128,7 +1132,7 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
           </div>
         ) : diffResult && !diffResult.ok ? (
           <div className="p-3 rounded-lg bg-[#0B0E17] border border-slate-800 font-mono text-xs text-slate-400">
-            {diffResult.error} Run the same entity twice (T1 &amp; T2) to unlock automated Silent Deletion &amp; Risk Spike delta surveillance, or run <span className="text-amber-300">node diff_dossiers.mjs dossier_T1/ dossier_T2/</span> offline on any two exported ZIPs.
+            {diffResult.error || 'At least 2 archived runs are required for longitudinal delta surveillance.'} Run the same entity twice (T1 &amp; T2) to unlock automated Silent Deletion &amp; Risk Spike delta surveillance, or run <span className="text-amber-300">node diff_dossiers.mjs dossier_T1/ dossier_T2/</span> offline on any two exported ZIPs.
           </div>
         ) : (
           <div className="text-xs font-mono text-slate-500">

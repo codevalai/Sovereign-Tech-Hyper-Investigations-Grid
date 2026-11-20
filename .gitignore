@@ -4,10 +4,7 @@ dist/
 coverage/
 .DS_Store
 *.log
-*.tsbuildinfo
 .env*
 !.env.example
 .sovereign_data/
-.tmp/
-investigation_*.zip
-audit_bundle_*.md
+

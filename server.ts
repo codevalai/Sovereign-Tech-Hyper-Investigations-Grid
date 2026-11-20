@@ -492,7 +492,13 @@ async function startServer() {
 
   app.get('/api/vault/diff', async (req, res) => {
     try {
-      const target = typeof req.query.target === 'string' ? req.query.target.trim() : undefined;
+      const targetRaw =
+        typeof req.query.target === 'string'
+          ? req.query.target
+          : typeof req.query.entity === 'string'
+            ? req.query.entity
+            : '';
+      const target = targetRaw.trim() || undefined;
       const runA = typeof req.query.runA === 'string' ? req.query.runA.trim() : undefined;
       const runB = typeof req.query.runB === 'string' ? req.query.runB.trim() : undefined;
       const out = await liveDaemon.computeAndSealVaultDiff({ target, runA, runB });

@@ -10,7 +10,6 @@ import type {
   BenfordAnalysisResult,
   ForensicPropertyGraphResult,
   HawkesAnalysisResult,
-  MerkleTreeSummary,
   StylometricResult,
 } from './forensicMathEngine';
 

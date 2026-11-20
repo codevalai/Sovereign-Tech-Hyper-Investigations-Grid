@@ -4972,11 +4972,30 @@ export async function runLiveOsintInvestigation(
     ])
   ).slice(0, 10);
 
+  const genericOsmPlaceTypes = new Set([
+    'company',
+    'office',
+    'building',
+    'yes',
+    'commercial',
+    'industrial',
+    'administrative',
+    'headquarters',
+    'warehouse',
+    'construction',
+    'attraction',
+    'house',
+    'residential',
+  ]);
+  const nomProductType =
+    primaryNom?.type && !genericOsmPlaceTypes.has(primaryNom.type.trim().toLowerCase())
+      ? primaryNom.type.replace(/_/g, ' ')
+      : null;
   const productsAndServices = Array.from(
     new Set([
       ...(wd?.products || []),
       ...(primaryNom?.cuisine ? [`Specialty / Cuisine: ${primaryNom.cuisine}`] : []),
-      ...(primaryNom?.type ? [primaryNom.type.replace(/_/g, ' ')] : []),
+      ...(nomProductType ? [nomProductType] : []),
       ...(spec.fdaClearances.map((f) => `FDA Cleared Device: ${f.deviceName} (${f.kNumber})`) || []),
       ...(ddgIa?.infobox['Products'] ? ddgIa.infobox['Products'].split(/,\s*/) : []),
     ])
