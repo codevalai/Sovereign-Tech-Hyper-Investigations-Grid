@@ -11,6 +11,7 @@ import {
   computeLongitudinalDossierDiff,
   isUrlOnTargetOwnedDomain,
 } from '../src/engine/longitudinalDiffEngine.ts';
+import { SEC_EDGAR_COMPLIANT_USER_AGENT } from './planetaryRegistryEngine.ts';
 import type {
   ClinicalTrialMutationSnapshot,
   ClinicalTrialSilentMutationAlert,
@@ -25,6 +26,11 @@ import type {
   LongitudinalSnapshot,
   MonitoredWatchlistItem,
   PersistedInvestigationSummary,
+  PlanetaryRegistryEvent,
+  PlanetaryRegistryEventCategory,
+  PlanetaryRegistrySourceBadge,
+  PlanetaryRegistryStats,
+  PlanetarySourceIngestReport,
   PrivateEntitySignal,
   SilentDeletionAlertRecord,
   TemporalCausalEvent,
@@ -319,6 +325,38 @@ class SovereignRealtimeDaemon {
         last_mutations_summary TEXT
       );
       CREATE INDEX IF NOT EXISTS idx_watchlist_added ON monitored_watchlist(added_at_iso DESC);
+
+      CREATE TABLE IF NOT EXISTS planetary_registry_events (
+        id TEXT PRIMARY KEY,
+        source_record_id TEXT UNIQUE NOT NULL,
+        category TEXT NOT NULL,
+        source_badge TEXT NOT NULL,
+        source_name TEXT NOT NULL,
+        entity_name TEXT NOT NULL,
+        counterparty_or_target TEXT,
+        filed_at TEXT NOT NULL,
+        country TEXT NOT NULL,
+        city TEXT NOT NULL,
+        region TEXT NOT NULL,
+        sector TEXT NOT NULL,
+        form_or_type TEXT NOT NULL,
+        deal_value_or_capital TEXT NOT NULL,
+        regulatory_status TEXT NOT NULL,
+        summary TEXT NOT NULL,
+        source_url TEXT NOT NULL,
+        ingested_at_iso TEXT NOT NULL
+      );
+      CREATE INDEX IF NOT EXISTS idx_planetary_cat_filed ON planetary_registry_events(category, filed_at DESC, ingested_at_iso DESC);
+      CREATE INDEX IF NOT EXISTS idx_planetary_filed ON planetary_registry_events(filed_at DESC, ingested_at_iso DESC);
+
+      CREATE TABLE IF NOT EXISTS planetary_registry_sync_meta (
+        id TEXT PRIMARY KEY,
+        synced_at_iso TEXT NOT NULL,
+        start_date TEXT NOT NULL,
+        end_date TEXT NOT NULL,
+        sources_json TEXT NOT NULL,
+        last_page_fetched INTEGER NOT NULL DEFAULT 0
+      );
     `);
 
     // Non-destructive schema evolution for existing SQLite databases (preserves 100% of prior rows)
@@ -785,11 +823,17 @@ class SovereignRealtimeDaemon {
   }
 
   // 1. Live SEC EDGAR EFTS Search Index (Form D New SPVs/Entities, 8-K M&A, S-4 Mergers, SC 13D Stakes)
-  private async pollSecEdgarLiveMnaAndEntities(cb: number) {
+  private async pollSecEdgarLiveMnaAndEntities(_cb: number) {
     const today = new Date().toISOString().slice(0, 10);
     const thirtyDaysAgo = new Date(Date.now() - 30 * 86_400_000).toISOString().slice(0, 10);
-    const url = `https://efts.sec.gov/LATEST/search-index?forms=D,8-K,S-4,SC%2013D&startdt=${thirtyDaysAgo}&enddt=${today}&_cb=${cb}`;
-    const res = await safeForensicFetch(url, 524_288, 7000);
+    const url = `https://efts.sec.gov/LATEST/search-index?forms=D,8-K,S-4,SC%2013D&dateRange=custom&startdt=${thirtyDaysAgo}&enddt=${today}&from=0&size=35`;
+    const res = await safeForensicFetch(
+      url,
+      524_288,
+      12_000,
+      { 'User-Agent': SEC_EDGAR_COMPLIANT_USER_AGENT, Accept: 'application/json' },
+      { bypassCache: true }
+    );
     if (!res.ok || !res.bodyText) return;
 
     let data: any;
@@ -2752,6 +2796,284 @@ class SovereignRealtimeDaemon {
       ed25519SignatureBase64: sigBase64,
       availableRuns,
     };
+  }
+
+  // ===========================================================================
+  // SECTION 05: PLANETARY REGISTRY EVENTS (SQLITE WAL PERSISTENCE & DEDUP)
+  // ===========================================================================
+  public upsertPlanetaryRegistryEvents(events: PlanetaryRegistryEvent[]): {
+    inserted: number;
+    duplicatesSkipped: number;
+  } {
+    this.initDatabase();
+    const db = this.db!;
+    if (!Array.isArray(events) || events.length === 0) {
+      return { inserted: 0, duplicatesSkipped: 0 };
+    }
+
+    const stmt = db.prepare(`
+      INSERT OR IGNORE INTO planetary_registry_events (
+        id, source_record_id, category, source_badge, source_name,
+        entity_name, counterparty_or_target, filed_at, country, city,
+        region, sector, form_or_type, deal_value_or_capital,
+        regulatory_status, summary, source_url, ingested_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    let inserted = 0;
+    let duplicatesSkipped = 0;
+
+    db.exec('BEGIN IMMEDIATE');
+    try {
+      for (const ev of events) {
+        if (!ev?.sourceRecordId || !ev?.entityName) continue;
+        const result = stmt.run(
+          ev.id,
+          ev.sourceRecordId,
+          ev.category,
+          ev.sourceBadge,
+          ev.sourceName,
+          ev.entityName,
+          ev.counterpartyOrTarget ?? null,
+          ev.filedAt,
+          ev.country,
+          ev.city,
+          ev.region,
+          ev.sector,
+          ev.formOrType,
+          ev.dealValueOrCapital,
+          ev.regulatoryStatus,
+          ev.summary,
+          ev.sourceUrl,
+          ev.ingestedAtIso
+        );
+        if (Number(result.changes || 0) > 0) {
+          inserted++;
+        } else {
+          duplicatesSkipped++;
+        }
+      }
+      db.exec('COMMIT');
+    } catch (err) {
+      try {
+        db.exec('ROLLBACK');
+      } catch {
+        // Ignore rollback failure
+      }
+      throw err;
+    }
+
+    return { inserted, duplicatesSkipped };
+  }
+
+  public savePlanetarySyncMeta(meta: {
+    syncedAtIso: string;
+    startDate: string;
+    endDate: string;
+    sources: PlanetarySourceIngestReport[];
+    lastPageFetched?: number;
+  }): void {
+    this.initDatabase();
+    const db = this.db!;
+    const existing = this.getPlanetarySyncMeta();
+    const pageToStore =
+      typeof meta.lastPageFetched === 'number' && Number.isFinite(meta.lastPageFetched)
+        ? Math.max(0, Math.floor(meta.lastPageFetched))
+        : existing?.lastPageFetched ?? 0;
+
+    db.prepare(`
+      INSERT OR REPLACE INTO planetary_registry_sync_meta (
+        id, synced_at_iso, start_date, end_date, sources_json, last_page_fetched
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `).run(
+      'latest',
+      meta.syncedAtIso,
+      meta.startDate,
+      meta.endDate,
+      JSON.stringify(meta.sources || []),
+      pageToStore
+    );
+  }
+
+  public getPlanetarySyncMeta(): {
+    syncedAtIso: string;
+    startDate: string;
+    endDate: string;
+    sources: PlanetarySourceIngestReport[];
+    lastPageFetched: number;
+  } | null {
+    this.initDatabase();
+    const db = this.db!;
+    const row = db
+      .prepare(
+        `SELECT synced_at_iso, start_date, end_date, sources_json, last_page_fetched
+         FROM planetary_registry_sync_meta WHERE id = ? LIMIT 1`
+      )
+      .get('latest') as Record<string, unknown> | undefined;
+    if (!row) return null;
+    let sources: PlanetarySourceIngestReport[] = [];
+    try {
+      const parsed = JSON.parse(String(row.sources_json || '[]'));
+      if (Array.isArray(parsed)) sources = parsed as PlanetarySourceIngestReport[];
+    } catch {
+      sources = [];
+    }
+    return {
+      syncedAtIso: String(row.synced_at_iso || ''),
+      startDate: String(row.start_date || ''),
+      endDate: String(row.end_date || ''),
+      sources,
+      lastPageFetched: Number(row.last_page_fetched ?? 0),
+    };
+  }
+
+  public getPlanetaryRegistryEvents(options: {
+    category?: PlanetaryRegistryEventCategory;
+    categories?: PlanetaryRegistryEventCategory[];
+    region?: string;
+    search?: string;
+    limit?: number;
+    offset?: number;
+  } = {}): {
+    items: PlanetaryRegistryEvent[];
+    totalMatching: number;
+    hasMore: boolean;
+  } {
+    this.initDatabase();
+    const db = this.db!;
+    const limit = Math.max(1, Math.min(200, Math.floor(Number(options.limit ?? 50))));
+    const offset = Math.max(0, Math.floor(Number(options.offset ?? 0)));
+
+    const whereClauses: string[] = [];
+    const params: Array<string | number> = [];
+
+    if (options.categories && options.categories.length > 0) {
+      const placeholders = options.categories.map(() => '?').join(', ');
+      whereClauses.push(`category IN (${placeholders})`);
+      for (const c of options.categories) params.push(c);
+    } else if (options.category) {
+      whereClauses.push('category = ?');
+      params.push(options.category);
+    }
+
+    if (options.region && options.region !== 'ALL') {
+      whereClauses.push('region = ?');
+      params.push(options.region);
+    }
+
+    const q = String(options.search || '').trim().toLowerCase();
+    if (q) {
+      const like = `%${q}%`;
+      whereClauses.push(
+        '(lower(entity_name) LIKE ? OR lower(COALESCE(counterparty_or_target, \'\')) LIKE ? OR lower(country) LIKE ? OR lower(city) LIKE ? OR lower(sector) LIKE ? OR lower(summary) LIKE ?)'
+      );
+      params.push(like, like, like, like, like, like);
+    }
+
+    const whereSql = whereClauses.length > 0 ? `WHERE ${whereClauses.join(' AND ')}` : '';
+    const countRow = db
+      .prepare(`SELECT COUNT(*) as total FROM planetary_registry_events ${whereSql}`)
+      .get(...params) as { total?: number } | undefined;
+    const totalMatching = Number(countRow?.total ?? 0);
+
+    const rows = db
+      .prepare(
+        `SELECT id, source_record_id, category, source_badge, source_name,
+                entity_name, counterparty_or_target, filed_at, country, city,
+                region, sector, form_or_type, deal_value_or_capital,
+                regulatory_status, summary, source_url, ingested_at_iso
+         FROM planetary_registry_events
+         ${whereSql}
+         ORDER BY filed_at DESC, ingested_at_iso DESC, id ASC
+         LIMIT ? OFFSET ?`
+      )
+      .all(...params, limit, offset) as Array<Record<string, unknown>>;
+
+    const items: PlanetaryRegistryEvent[] = rows.map((r) => ({
+      id: String(r.id),
+      sourceRecordId: String(r.source_record_id),
+      category: String(r.category) as PlanetaryRegistryEventCategory,
+      sourceBadge: String(r.source_badge) as PlanetaryRegistrySourceBadge,
+      sourceName: String(r.source_name),
+      entityName: String(r.entity_name),
+      counterpartyOrTarget: r.counterparty_or_target != null ? String(r.counterparty_or_target) : null,
+      filedAt: String(r.filed_at),
+      country: String(r.country),
+      city: String(r.city),
+      region: String(r.region) as PlanetaryRegistryEvent['region'],
+      sector: String(r.sector),
+      formOrType: String(r.form_or_type),
+      dealValueOrCapital: String(r.deal_value_or_capital),
+      regulatoryStatus: String(r.regulatory_status),
+      summary: String(r.summary),
+      sourceUrl: String(r.source_url),
+      ingestedAtIso: String(r.ingested_at_iso),
+    }));
+
+    return {
+      items,
+      totalMatching,
+      hasMore: offset + items.length < totalMatching,
+    };
+  }
+
+  public getPlanetaryRegistryStats(): PlanetaryRegistryStats {
+    this.initDatabase();
+    const db = this.db!;
+
+    const catRows = db
+      .prepare(`SELECT category, COUNT(*) as cnt FROM planetary_registry_events GROUP BY category`)
+      .all() as Array<{ category?: string; cnt?: number }>;
+
+    let newIncorporationsCount = 0;
+    let maBuyoutsCount = 0;
+    let antitrustDocketsCount = 0;
+    for (const r of catRows) {
+      const cnt = Number(r.cnt ?? 0);
+      if (r.category === 'NEW_INCORPORATION') newIncorporationsCount = cnt;
+      else if (r.category === 'MA_BUYOUT') maBuyoutsCount = cnt;
+      else if (r.category === 'ANTITRUST_DOCKET') antitrustDocketsCount = cnt;
+    }
+
+    const badgeRows = db
+      .prepare(`SELECT source_badge, COUNT(*) as cnt FROM planetary_registry_events GROUP BY source_badge`)
+      .all() as Array<{ source_badge?: string; cnt?: number }>;
+
+    const bySourceBadge: Record<PlanetaryRegistrySourceBadge, number> = {
+      'SEC FORM D': 0,
+      'GLEIF LEI': 0,
+      'SEC M&A': 0,
+      'FED REG': 0,
+    };
+    for (const r of badgeRows) {
+      const b = String(r.source_badge || '') as PlanetaryRegistrySourceBadge;
+      if (b in bySourceBadge) {
+        bySourceBadge[b] = Number(r.cnt ?? 0);
+      }
+    }
+
+    const meta = this.getPlanetarySyncMeta();
+    const totalLiveRecords = newIncorporationsCount + maBuyoutsCount + antitrustDocketsCount;
+
+    return {
+      totalLiveRecords,
+      newIncorporationsCount,
+      maBuyoutsCount,
+      antitrustDocketsCount,
+      bySourceBadge,
+      lastSyncedAtIso: meta?.syncedAtIso || null,
+    };
+  }
+
+  public deletePlanetaryRegistryEventsByPrefix(prefix: string): number {
+    this.initDatabase();
+    const db = this.db!;
+    const clean = String(prefix || '').trim();
+    if (!clean) return 0;
+    const res = db
+      .prepare(`DELETE FROM planetary_registry_events WHERE source_record_id LIKE ?`)
+      .run(`${clean}%`);
+    return Number(res.changes ?? 0);
   }
 }
 

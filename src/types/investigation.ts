@@ -221,7 +221,11 @@ export type SquadId =
   | 'squadM'
   | 'squadN'
   | 'squadO'
-  | 'squadP';
+  | 'squadP'
+  | 'squadQ'
+  | 'squadR'
+  | 'squadS'
+  | 'squadT';
 
 export interface ClaimCitation {
   claim_id: string;
@@ -289,6 +293,7 @@ export interface LiveGroundingSource {
     | 'darkpool_crypto'
     | 'court_docket'
     | 'news';
+  sourceSubLabel?: string;
 }
 
 export interface LiveFeedEvent {
@@ -1307,7 +1312,19 @@ export interface TemporalBurstSummary {
 export interface BayesianEvidenceContribution {
   signalId: string;
   label: string;
-  category: 'ACCOUNTING' | 'CYBER' | 'SANCTIONS' | 'ADVERSARIAL' | 'REGULATORY' | 'CAUSAL' | 'METADATA_PIVOT' | 'RED_TEAM_ACH';
+  category:
+    | 'ACCOUNTING'
+    | 'CYBER'
+    | 'SANCTIONS'
+    | 'ADVERSARIAL'
+    | 'REGULATORY'
+    | 'CAUSAL'
+    | 'METADATA_PIVOT'
+    | 'RED_TEAM_ACH'
+    | 'ATTACHED_LEAD'
+    | 'PROXY_KINSHIP'
+    | 'POLITICAL_INFLUENCE'
+    | 'SHADOW_INFRA_SUBAWARD';
   observedValue: string;
   likelihoodRatio: number;
   logOddsDelta: number;
@@ -1545,6 +1562,8 @@ export interface GraphPageRankNode {
   contagionRisk: number;
   degree: number;
   betweennessCentrality: number;
+  controlClassification?: 'BENIGN_CONTROL' | 'RISK_NODE';
+  isBenignControl?: boolean;
 }
 
 export interface ShannonEntropyReport {
@@ -1636,6 +1655,13 @@ export interface TemporalCausalityAndLobbyingBundle {
   causalChains?: TemporalCausalChain[];
   burstSummary?: TemporalBurstSummary;
   events: TemporalCausalEvent[];
+  filteredThirdPartySpvCount?: number;
+  filteredThirdPartySpvEvents?: Array<{
+    entityName: string;
+    filedAt: string;
+    url?: string;
+    classification: 'THIRD_PARTY_SPV_NOISE';
+  }>;
   highestSeverity: 'NONE' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   verdict: string;
   analyzedAtIso: string;
@@ -1814,7 +1840,15 @@ export interface LiveBusinessIntelligence {
     squadN?: string[];
     squadO?: string[];
     squadP?: string[];
+    squadQ?: string[];
+    squadR?: string[];
+    squadS?: string[];
+    squadT?: string[];
   };
+  sanitizedTarget?: SanitizedTargetQuery;
+  proxyKinship?: ProxyKinshipTelemetry;
+  politicalInfluence?: PoliticalInfluenceTelemetry;
+  shadowInfraSubawards?: ShadowInfraSubawardTelemetry;
   shadowFinance?: ShadowFinanceTelemetry;
   cyberTelemetry?: CyberInfraTelemetry;
   swarmTelemetry?: SwarmBehaviorTelemetry;
@@ -1844,6 +1878,155 @@ export interface LiveBusinessIntelligence {
   groundingSources: LiveGroundingSource[];
   liveRegistriesQueried: string[];
   fetchedAtIso: string;
+}
+
+export interface SanitizedTargetQuery {
+  rawQuery: string;
+  primaryName: string;
+  aliases: string[];
+  searchTerms: string[];
+  escapedPrimaryRegex: string;
+  escapedAliasRegexes: string[];
+}
+
+export interface ProxyKinshipTelemetry {
+  extractedExecutives: Array<{
+    fullName: string;
+    surname: string;
+    role?: string;
+    source: 'SEC_DEF14A' | 'SEC_10K' | 'GLEIF' | 'EXECUTIVE_ROSTER';
+  }>;
+  relatedPersonTransactions: Array<{
+    accessionNumber?: string;
+    filingDate?: string;
+    snippet: string;
+    partiesMentioned: string[];
+    sourceUrl: string;
+  }>;
+  form4IndirectOwnerships: Array<{
+    ownerName: string;
+    relationship: string;
+    indirectNature: string;
+    filingDate: string;
+    formUrl: string;
+  }>;
+  formDProxyCandidates: Array<{
+    issuerName: string;
+    matchedPerson: string;
+    matchType: 'EXACT_EXECUTIVE_NAME' | 'SHARED_SURNAME_GEO';
+    cityOrState?: string;
+    filedAt: string;
+    riskClassification: 'VERIFIED_RELATED_PARTY' | 'CANDIDATE_PROXY_COLLISION_CHECK';
+    url: string;
+  }>;
+  exhibit21SubsidiaryDiff: {
+    filingsCompared: number;
+    latestFilingDate?: string;
+    priorFilingDate?: string;
+    currentSubsidiaries: string[];
+    vanishedSubsidiaries: string[];
+    renamedOrSpunOffCandidates: Array<{
+      priorName: string;
+      closestCurrentName?: string;
+      status: 'VANISHED' | 'RENAMED_OR_SPUN_OFF';
+    }>;
+    sourceUrls: string[];
+  };
+  secFilingsPulledCount: number;
+  summaryVerdict: string;
+}
+
+export interface PoliticalInfluenceTelemetry {
+  faraMatches: Array<{
+    registrationNumber: string;
+    registrantName: string;
+    foreignPrincipalName?: string;
+    country?: string;
+    active: boolean;
+    url: string;
+  }>;
+  senateLdaFilings: Array<{
+    filingUuid: string;
+    filingType: string;
+    registrantName: string;
+    clientName: string;
+    amountUsd: number;
+    filingYear: number;
+    filingPeriod: string;
+    lobbyingIssues: string[];
+    contributionPayees: string[];
+    url: string;
+  }>;
+  openFecSummary: {
+    apiMode: 'PUBLIC_DEMO_KEY' | 'ENV_KEY' | 'UNAVAILABLE';
+    committees: Array<{
+      committeeId: string;
+      name: string;
+      party: string;
+      committeeType: string;
+      designation: string;
+      totalReceiptsUsd: number;
+      totalDisbursementsUsd: number;
+      cycle?: number;
+      url: string;
+    }>;
+    executiveContributionsByPartyCycle: Array<{
+      contributorName: string;
+      party: string;
+      committeeName: string;
+      cycle: number;
+      totalAmountUsd: number;
+      count: number;
+      url: string;
+    }>;
+    totalPacDisbursementsUsd: number;
+    totalExecutiveContributionsUsd: number;
+  };
+  affiliatedNonprofits: Array<{
+    ein: string;
+    name: string;
+    subsectionCode: string;
+    classification: '501(c)(3)' | '501(c)(4)' | 'OTHER_EXEMPT';
+    city: string;
+    state: string;
+    totalRevenueUsd: number;
+    totalAssetsUsd: number;
+    matchReason: string;
+    url: string;
+  }>;
+  summaryVerdict: string;
+}
+
+export interface ShadowInfraSubawardTelemetry {
+  infraFingerprint: {
+    primaryDomain: string;
+    faviconMmh3: number | null;
+    gtmIds: string[];
+    gaIds: string[];
+    spfIncludes: string[];
+    crtShSanCount: number;
+    crtShSanSample: string[];
+  };
+  sharedInfraDomains: Array<{
+    domain: string;
+    sharedSignals: string[];
+    confidence: 'HIGH' | 'MEDIUM' | 'LOW';
+    classification: 'UNDISCLOSED_FRONT_OR_PARTNER' | 'KNOWN_SUBSIDIARY' | 'CDN_SHARED_NOISE';
+    sourceUrl: string;
+  }>;
+  usaSpendingSubawards: Array<{
+    subawardId: string;
+    primeAwardId: string;
+    primeRecipient: string;
+    subawardeeName: string;
+    amountUsd: number;
+    awardingAgency: string;
+    actionDate: string;
+    description: string;
+    url: string;
+  }>;
+  totalSubawardPassThroughUsd: number;
+  summaryVerdict: string;
 }
 
 export interface InvestigationScope {
@@ -1937,3 +2120,71 @@ export interface ShockwaveScenario {
     mechanism: string;
   }[];
 }
+
+export type PlanetaryRegistryEventCategory =
+  | 'NEW_INCORPORATION'
+  | 'MA_BUYOUT'
+  | 'ANTITRUST_DOCKET';
+
+export type PlanetaryRegistrySourceBadge =
+  | 'SEC FORM D'
+  | 'GLEIF LEI'
+  | 'SEC M&A'
+  | 'FED REG';
+
+export interface PlanetaryRegistryEvent {
+  id: string;
+  sourceRecordId: string;
+  category: PlanetaryRegistryEventCategory;
+  sourceBadge: PlanetaryRegistrySourceBadge;
+  sourceName: string;
+  entityName: string;
+  counterpartyOrTarget: string | null;
+  filedAt: string;
+  country: string;
+  city: string;
+  region: 'North America' | 'Europe' | 'Asia-Pacific' | 'Middle East & Africa' | 'Global';
+  sector: string;
+  formOrType: string;
+  dealValueOrCapital: string;
+  regulatoryStatus: string;
+  summary: string;
+  sourceUrl: string;
+  ingestedAtIso: string;
+}
+
+export interface PlanetarySourceIngestReport {
+  sourceKey: 'gleif_lei' | 'sec_new_ventures' | 'sec_ma_buyouts' | 'federal_register_antitrust';
+  sourceBadge: PlanetaryRegistrySourceBadge;
+  label: string;
+  endpointUrl: string;
+  ok: boolean;
+  httpStatus: number;
+  fetchedCount: number;
+  insertedCount: number;
+  duplicateSkippedCount: number;
+  error?: string;
+  durationMs: number;
+}
+
+export interface PlanetaryRegistryStats {
+  totalLiveRecords: number;
+  newIncorporationsCount: number;
+  maBuyoutsCount: number;
+  antitrustDocketsCount: number;
+  bySourceBadge: Record<PlanetaryRegistrySourceBadge, number>;
+  lastSyncedAtIso: string | null;
+}
+
+export interface PlanetaryRegistryIngestResponse {
+  ok: boolean;
+  startDate: string;
+  endDate: string;
+  syncedAtIso: string;
+  totalFetched: number;
+  totalInserted: number;
+  totalDuplicatesSkipped: number;
+  sources: PlanetarySourceIngestReport[];
+  stats: PlanetaryRegistryStats;
+}
+

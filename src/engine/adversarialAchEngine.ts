@@ -6,7 +6,14 @@ import type {
   BayesianRiskPosterior,
   LiveBusinessIntelligence,
   MetadataPivotReport,
-} from '../types/investigation';
+} from '../types/investigation.ts';
+import { isSpvOrFundIssuerName } from './entityDisambiguation.ts';
+
+export interface AttachedLeadDocumentInput {
+  fileName: string;
+  content?: string;
+  squadCSdkContractJson?: string;
+}
 
 export interface SwarmCandidateFinding {
   findingId: string;
@@ -66,6 +73,15 @@ function buildSteelmanAndMatrix(
   } else if (cat.includes('METADATA_PIVOT') || cat.includes('DOCUMENT')) {
     h0BenignSteelman =
       'Shared PDF/Office document author metadata reflects licensed vendor templates, shared outside legal counsel, or routine agency re-publication of submitted public materials.';
+  } else if (cat.includes('PROXY') || cat.includes('KINSHIP')) {
+    h0BenignSteelman =
+      'Candidate surname or Form D match reflects a coincidental name collision with an unrelated private individual or routine disclosed family-office estate planning rather than an undisclosed proxy venture.';
+  } else if (cat.includes('POLITICAL') || cat.includes('FARA') || cat.includes('LOBBY')) {
+    h0BenignSteelman =
+      'Indexed PAC disbursements, executive political donations, or 501(c)(3) foundation grants reflect lawful bipartisan civic engagement and standard regulated-industry advocacy rather than improper capture or covert foreign influence.';
+  } else if (cat.includes('SUBAWARD') || cat.includes('INFRA_DNA')) {
+    h0BenignSteelman =
+      'Shared SPF/analytics tokens or USASpending sub-awards reflect multi-tenant SaaS/CDN vendor overlap or standard prime-contractor supply-chain subcontracting rather than an undisclosed front group or pass-through shell.';
   } else if (cat.includes('REGULATORY') || cat.includes('LITIGATION') || cat.includes('LABOR')) {
     h0BenignSteelman =
       'Indexed lawsuits, labor filings, or agency notices reflect ordinary-course litigation volume proportional to enterprise headcount and regulated operating scale rather than systemic misconduct.';
@@ -174,23 +190,171 @@ function buildSteelmanAndMatrix(
   };
 }
 
+function buildAttachedLeadAchFinding(
+  lead: AttachedLeadDocumentInput,
+  targetEntity: string,
+  liveIntel?: LiveBusinessIntelligence
+): {
+  finding: AdversarialAchFinding;
+  bayesianContribution: BayesianEvidenceContribution;
+  logOddsDelta: number;
+} {
+  const leadText = String(lead.content || '').trim();
+  const leadLower = `${lead.fileName} ${leadText}`.toLowerCase();
+  const sdkText = String(lead.squadCSdkContractJson || '').toLowerCase();
+  const telemetryCorpus = [
+    sdkText,
+    ...(liveIntel?.technicalOrOperationalProfile || []).map((s) => s.toLowerCase()),
+    ...(liveIntel?.cyberTelemetry?.ctSubdomains || []).map((s) => s.toLowerCase()),
+    ...(liveIntel?.deepAttackSurface?.httpSecurityAudit?.cspDiscoveredOrigins || []).map((s) => s.toLowerCase()),
+    ...(liveIntel?.extremeDorkingAndDna?.stealthEditDiffs || []).map((d) => `${d.path} ${d.highRiskKeywordsAdded.join(' ')}`.toLowerCase()),
+    ...(liveIntel?.adversarialInfra?.cisaKevMatches || []).map((k) => `${k.cveId} ${k.product}`.toLowerCase()),
+    liveIntel?.cyberTelemetry?.primaryDomain || '',
+  ]
+    .filter(Boolean)
+    .join('\n');
+
+  // Extract salient technical/forensic tokens (endpoints, UUIDs, protocols, CVE/policy/telemetry keywords)
+  const leadTokens = Array.from(
+    new Set(
+      (leadLower.match(/\b[a-z0-9][a-z0-9._/-]{3,40}\b/g) || []).filter(
+        (t) =>
+          !/^(this|that|with|from|have|were|been|they|their|about|which|would|could|should|into|over|under|also|only|more|most|some|such|than|then|them|very|will|just|like|when|what|where|there|here|after|before|between|through|during|without|because|however|company|entity|target|report|memo|file|document|attached|lead|txt|pdf|json|csv|md)$/.test(
+            t
+          )
+      )
+    )
+  );
+  const technicalAnchorRe =
+    /(?:telemetry|beacon|uuid|sdk|endpoint|grpc|https|api|\/v[0-9]|cookie|tracker|exfil|backdoor|shadow|bypass|audit|override|unlogged|retaliat|whistleblow|safety|defect|fraud|conceal|arbitration|waiver|cve-|spv|offshore|restatement|discrepanc)/i;
+
+  const matchedSquadCTokens = leadTokens.filter(
+    (tok) => tok.length >= 4 && telemetryCorpus.includes(tok)
+  );
+  const hasTechnicalAllegationMarkers = technicalAnchorRe.test(leadLower);
+  const hasConcreteContent = leadText.length >= 25;
+  const squadCCorroborated = matchedSquadCTokens.length >= 2 || (matchedSquadCTokens.length >= 1 && sdkText.length > 40);
+
+  // Calibrate Likelihood Ratio for the attached lead:
+  // - Corroborated against Squad C client_sdk_contract.json / technical telemetry -> LR > 1.0 (risk-increasing)
+  // - Uncorroborated / benign telemetry lead -> LR < 1.0 (risk-decreasing / conservative dampening)
+  let leadLr = 0.88;
+  let verdict: AdversarialAchFinding['verdict'] = 'WEAKENED_BY_STEELMAN';
+  let severity: AdversarialAchFinding['severity'] = 'MEDIUM';
+  let rationale =
+    'Attached user lead document could not be independently corroborated by Squad C client_sdk_contract.json or live technical telemetry; treated as unverified lead with conservative downward LR.';
+
+  if (hasConcreteContent && squadCCorroborated && hasTechnicalAllegationMarkers) {
+    leadLr = matchedSquadCTokens.length >= 4 ? 1.48 : 1.28;
+    verdict = 'SURVIVED_RED_TEAM';
+    severity = matchedSquadCTokens.length >= 4 ? 'HIGH' : 'MEDIUM';
+    rationale = `Attached lead "${lead.fileName}" survived Phase-5 ACH: ${matchedSquadCTokens.length} concrete technical/telemetry marker(s) (${matchedSquadCTokens.slice(0, 5).join(', ')}) corroborated directly against Squad C client_sdk_contract.json and live infrastructure payloads.`;
+  } else if (!hasConcreteContent || (!squadCCorroborated && !hasTechnicalAllegationMarkers)) {
+    leadLr = 0.82;
+    verdict = 'REFUTED_NON_DIAGNOSTIC';
+    severity = 'LOW';
+    rationale = `Attached lead "${lead.fileName}" lacked corroborated technical markers in Squad C client_sdk_contract.json or live OSINT telemetry; classified as unverified/benign telemetry under H0.`;
+  }
+
+  const evidenceMatrix: AdversarialAchEvidenceItem[] = [
+    {
+      evidenceId: 'ACH-LEAD-E1',
+      description: `User-attached lead artifact "${lead.fileName}" (${leadText.length} chars) ingested for H1 allegation vs. H0 benign telemetry evaluation.`,
+      supportsH1: hasTechnicalAllegationMarkers ? 'STRONG' : 'WEAK',
+      supportsH0: hasTechnicalAllegationMarkers ? 'WEAK' : 'MODERATE',
+      diagnosticityScore: hasConcreteContent && hasTechnicalAllegationMarkers ? 0.82 : 0.38,
+      isNonDiagnosticNoise: !hasConcreteContent,
+    },
+    {
+      evidenceId: 'ACH-LEAD-E2',
+      description: squadCCorroborated
+        ? `Cross-referenced against Squad C evidence/api_snapshots/client_sdk_contract.json & live telemetry: matched tokens [${matchedSquadCTokens.slice(0, 6).join(', ')}]`
+        : `Cross-referenced against Squad C evidence/api_snapshots/client_sdk_contract.json & live technical telemetry: 0 independent overlapping artifacts verified`,
+      supportsH1: squadCCorroborated ? 'STRONG' : 'INCONSISTENT',
+      supportsH0: squadCCorroborated ? 'WEAK' : 'STRONG',
+      diagnosticityScore: squadCCorroborated ? 0.88 : 0.72,
+      isNonDiagnosticNoise: false,
+    },
+    {
+      evidenceId: 'ACH-LEAD-E3',
+      description:
+        'Single-source whistleblower/internal lead requires external registry or technical-contract corroboration before escalating above enterprise baseline.',
+      supportsH1: squadCCorroborated ? 'MODERATE' : 'WEAK',
+      supportsH0: squadCCorroborated ? 'WEAK' : 'STRONG',
+      diagnosticityScore: 0.68,
+      isNonDiagnosticNoise: false,
+    },
+  ];
+
+  const diagnosticItems = evidenceMatrix.filter((e) => !e.isNonDiagnosticNoise);
+  const diagnosticityAvg = Number(
+    (
+      diagnosticItems.reduce((s, e) => s + e.diagnosticityScore, 0) /
+      Math.max(1, diagnosticItems.length)
+    ).toFixed(2)
+  );
+  const logOddsDelta = Number(Math.log(leadLr).toFixed(4));
+  const leadExcerpt = leadText.replace(/\s+/g, ' ').slice(0, 120);
+
+  const finding: AdversarialAchFinding = {
+    findingId: 'ACH-LEAD',
+    rank: 1,
+    sourceAgentOrSignal: `AttachedLead:${lead.fileName}`,
+    category: 'ATTACHED_LEAD',
+    severity,
+    h1AdverseHypothesis: `Attached lead "${lead.fileName}" allegation corroborated against ${targetEntity} Squad C client_sdk_contract.json & live technical telemetry${leadExcerpt ? ` ("${leadExcerpt}")` : ''}.`,
+    h0BenignSteelman:
+      'Attached lead represents unverified internal commentary, routine diagnostic/benign telemetry, or non-corroborated operational noise with no confirmed statutory or technical defect.',
+    diagnosticityAvg,
+    nonDiagnosticFilteredCount: evidenceMatrix.filter((e) => e.isNonDiagnosticNoise).length,
+    negativeLikelihoodRatio: Number(leadLr.toFixed(3)),
+    logOddsPenalty: logOddsDelta,
+    verdict,
+    steelmanRationale: rationale,
+    evidenceMatrix,
+  };
+
+  const bayesianContribution: BayesianEvidenceContribution = {
+    signalId: 'ach_attached_user_lead',
+    label: `Attached User Lead Cross-Examination (${lead.fileName})`,
+    category: 'ATTACHED_LEAD',
+    observedValue: squadCCorroborated
+      ? `ACH-LEAD ${verdict} · ${matchedSquadCTokens.length} Squad C/telemetry overlap(s): ${matchedSquadCTokens.slice(0, 4).join(', ')}`
+      : `ACH-LEAD ${verdict} · Uncorroborated against Squad C client_sdk_contract.json & live telemetry`,
+    likelihoodRatio: Number(leadLr.toFixed(3)),
+    logOddsDelta: Number(logOddsDelta.toFixed(3)),
+    direction: leadLr > 1.03 ? 'RISK_INCREASING' : leadLr < 0.97 ? 'RISK_DECREASING' : 'NEUTRAL',
+  };
+
+  return { finding, bayesianContribution, logOddsDelta };
+}
+
 /**
  * Phase-5 Mandatory Adversarial Red-Team & ACH (Analysis of Competing Hypotheses) Pass.
- * Evaluates up to the top 10 highest-severity findings, filters non-diagnostic noise,
- * and applies calibrated negative likelihood ratios (LR < 1.0) directly into the
- * Sequential Log-Odds Bayesian posterior engine.
+ * Evaluates up to the top 10 highest-severity findings (plus a dedicated ACH-LEAD row whenever
+ * a user attaches a lead document), filters non-diagnostic noise & third-party SPV Form D noise,
+ * and applies calibrated likelihood ratios directly into the Sequential Log-Odds Bayesian posterior.
  */
 export function runAdversarialRedTeamAchPass(params: {
   targetEntity: string;
+  targetLegalName?: string;
   preRedTeamBayesian: BayesianRiskPosterior;
   liveIntel?: LiveBusinessIntelligence;
   metadataPivots?: MetadataPivotReport;
   extraCandidates?: SwarmCandidateFinding[];
+  attachedLeadDocument?: AttachedLeadDocumentInput;
 }): {
   achReport: AdversarialAchReport;
   postRedTeamBayesian: BayesianRiskPosterior;
 } {
   const candidates: SwarmCandidateFinding[] = [];
+  const targetLegalName = params.targetLegalName || params.liveIntel?.legalName;
+  const isThirdPartySpvTemporalCluster = (events: ReadonlyArray<{ stream: string; title: string }>): boolean =>
+    events.some((ev) => {
+      if (ev.stream !== 'SEC_FORM_D') return false;
+      const issuer = ev.title.split('—').slice(1).join('—').trim() || ev.title;
+      return isSpvOrFundIssuerName(issuer, targetLegalName, params.targetEntity);
+    });
 
   // 1. Pull risk-increasing Bayesian signals
   for (const c of params.preRedTeamBayesian.evidenceContributions) {
@@ -207,8 +371,10 @@ export function runAdversarialRedTeamAchPass(params: {
     });
   }
 
-  // 2. Pull top Temporal Causality clusters
-  for (const cl of (params.liveIntel?.temporalCausalityAndLobbying?.clusters || []).slice(0, 3)) {
+  // 2. Pull top Temporal Causality clusters (FIX 2: exclude THIRD_PARTY_SPV_NOISE Form D filings)
+  for (const cl of (params.liveIntel?.temporalCausalityAndLobbying?.clusters || [])
+    .filter((c) => !isThirdPartySpvTemporalCluster(c.events))
+    .slice(0, 3)) {
     candidates.push({
       findingId: `ACH-${candidates.length + 1}`,
       sourceAgentOrSignal: `TemporalCausality:${cl.typology}`,
@@ -249,13 +415,95 @@ export function runAdversarialRedTeamAchPass(params: {
     });
   }
 
+  // 4b. v27.0 Squad Q (Proxy/Kinship) — explicitly separates verified Item 404/Form 4/Ex-21.1 from surname-only collisions
+  const pk = params.liveIntel?.proxyKinship;
+  if (pk) {
+    if (pk.relatedPersonTransactions.length > 0 || pk.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length > 0) {
+      candidates.push({
+        findingId: `ACH-${candidates.length + 1}`,
+        sourceAgentOrSignal: 'SquadQ:ProxyKinship',
+        category: 'PROXY_KINSHIP',
+        severity: pk.relatedPersonTransactions.length > 0 ? 'HIGH' : 'MEDIUM',
+        statement: `Verified SEC proxy/kinship signals: ${pk.relatedPersonTransactions.length} DEF 14A Item 404 related-person tx, ${pk.form4IndirectOwnerships.length} Form 4 indirect family/LLC vehicle(s), ${pk.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length} vanished Exhibit 21.1 subsidiary/subsidiaries`,
+        evidenceSourcesCount: (pk.relatedPersonTransactions.length > 0 ? 1 : 0) + (pk.form4IndirectOwnerships.length > 0 ? 1 : 0) + (pk.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length > 0 ? 1 : 0),
+        isPrimaryRegistryGrounded: true,
+        isQuantitativeAnomaly: pk.relatedPersonTransactions.length > 0 && pk.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length > 0,
+      });
+    }
+    const collisionCandidates = pk.formDProxyCandidates.filter(
+      (c) => c.riskClassification === 'CANDIDATE_PROXY_COLLISION_CHECK'
+    );
+    if (collisionCandidates.length > 0) {
+      candidates.push({
+        findingId: `ACH-${candidates.length + 1}`,
+        sourceAgentOrSignal: 'SquadQ:FormDNameCollisionCheck',
+        category: 'PROXY_KINSHIP',
+        severity: 'MEDIUM',
+        statement: `Unverified surname/name Form D candidate(s) (${collisionCandidates.slice(0, 2).map((c) => c.issuerName).join(', ')}) pending H0 name-collision falsification`,
+        evidenceSourcesCount: 1,
+        isPrimaryRegistryGrounded: false,
+        isQuantitativeAnomaly: false,
+      });
+    }
+  }
+
+  // 4c. v27.0 Squad R (Political Influence, DOJ FARA, OpenFEC & 501(c)(4) Dark Money)
+  const pol = params.liveIntel?.politicalInfluence;
+  if (pol) {
+    if (pol.faraMatches.length > 0) {
+      candidates.push({
+        findingId: `ACH-${candidates.length + 1}`,
+        sourceAgentOrSignal: 'SquadR:DOJ_FARA',
+        category: 'POLITICAL_INFLUENCE',
+        severity: 'HIGH',
+        statement: `DOJ FARA API v1 active foreign-agent/principal registration(s): ${pol.faraMatches.slice(0, 2).map((f) => `${f.registrantName} (#${f.registrationNumber})`).join(', ')}`,
+        evidenceSourcesCount: 2,
+        isPrimaryRegistryGrounded: true,
+        isQuantitativeAnomaly: true,
+      });
+    }
+    const c4Count = pol.affiliatedNonprofits.filter((n) => n.classification === '501(c)(4)').length;
+    if (c4Count > 0) {
+      candidates.push({
+        findingId: `ACH-${candidates.length + 1}`,
+        sourceAgentOrSignal: 'SquadR:501c4_DarkMoney',
+        category: 'POLITICAL_INFLUENCE',
+        severity: 'MEDIUM',
+        statement: `${c4Count} affiliated 501(c)(4) policy/advocacy vehicle(s) alongside ${pol.senateLdaFilings.length} Senate LDA & ${pol.openFecSummary.committees.length} OpenFEC PAC record(s)`,
+        evidenceSourcesCount: 1 + (pol.senateLdaFilings.length > 0 ? 1 : 0),
+        isPrimaryRegistryGrounded: true,
+        isQuantitativeAnomaly: false,
+      });
+    }
+  }
+
+  // 4d. v27.0 Squad S (Shadow Infra DNA Front Domains & USASpending Sub-Award Pass-Throughs)
+  const shInfra = params.liveIntel?.shadowInfraSubawards;
+  if (shInfra) {
+    const fronts = shInfra.sharedInfraDomains.filter(
+      (d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER' && d.confidence !== 'LOW'
+    );
+    if (fronts.length > 0) {
+      candidates.push({
+        findingId: `ACH-${candidates.length + 1}`,
+        sourceAgentOrSignal: 'SquadS:ShadowInfraDNA',
+        category: 'SHADOW_INFRA_SUBAWARD',
+        severity: fronts.some((f) => f.confidence === 'HIGH') ? 'HIGH' : 'MEDIUM',
+        statement: `${fronts.length} non-CDN domain(s) (${fronts.slice(0, 2).map((f) => f.domain).join(', ')}) share Favicon MMH3 / GTM / custom SPF / SAN infrastructure with target`,
+        evidenceSourcesCount: fronts.some((f) => f.sharedSignals.length >= 2) ? 2 : 1,
+        isPrimaryRegistryGrounded: fronts.some((f) => f.confidence === 'HIGH'),
+        isQuantitativeAnomaly: fronts.some((f) => f.sharedSignals.length >= 2),
+      });
+    }
+  }
+
   for (const extra of params.extraCandidates || []) {
     candidates.push(extra);
   }
 
-  // Deduplicate and take top 10 highest-severity findings
+  // Deduplicate and take top 15 highest-severity findings (expanded for 20-squad / 200-agent v27.0 topology)
   const seenStmt = new Set<string>();
-  const top10 = candidates
+  const top15 = candidates
     .filter((c) => {
       const k = c.statement.slice(0, 60).toLowerCase();
       if (seenStmt.has(k)) return false;
@@ -263,14 +511,22 @@ export function runAdversarialRedTeamAchPass(params: {
       return true;
     })
     .sort((a, b) => SEV_WEIGHT[b.severity] - SEV_WEIGHT[a.severity])
-    .slice(0, 10);
+    .slice(0, 15);
 
-  const findings: AdversarialAchFinding[] = top10.map((cand, idx) => {
+  const leadAch =
+    params.attachedLeadDocument?.fileName && params.attachedLeadDocument.fileName.trim().length > 0
+      ? buildAttachedLeadAchFinding(params.attachedLeadDocument, params.targetEntity, params.liveIntel)
+      : null;
+
+  const maxStandardFindings = leadAch ? 14 : 15;
+  const topStandard = top15.slice(0, maxStandardFindings);
+
+  const standardFindings: AdversarialAchFinding[] = topStandard.map((cand, idx) => {
     const res = buildSteelmanAndMatrix(cand, params.liveIntel);
     const logOddsPenalty = Number(Math.log(res.negativeLr).toFixed(4));
     return {
       findingId: `ACH-${String(idx + 1).padStart(2, '0')}`,
-      rank: idx + 1,
+      rank: idx + 1 + (leadAch ? 1 : 0),
       sourceAgentOrSignal: cand.sourceAgentOrSignal,
       category: cand.category,
       severity: cand.severity,
@@ -286,15 +542,21 @@ export function runAdversarialRedTeamAchPass(params: {
     };
   });
 
+  const findings: AdversarialAchFinding[] = leadAch
+    ? [leadAch.finding, ...standardFindings]
+    : standardFindings;
+
   const survivedCount = findings.filter((f) => f.verdict === 'SURVIVED_RED_TEAM').length;
   const weakenedCount = findings.filter((f) => f.verdict === 'WEAKENED_BY_STEELMAN').length;
   const refutedCount = findings.filter((f) => f.verdict === 'REFUTED_NON_DIAGNOSTIC').length;
 
-  // Compute aggregate Red-Team negative likelihood ratio (bounded so log-odds stay numerically calibrated)
-  const rawTotalLogOddsDelta = findings.reduce((s, f) => s + f.logOddsPenalty, 0);
-  // Apply an explicit conservative floor even if 0 adverse findings existed, or bounded cumulative steelman adjustment
-  const totalRedTeamLogOddsDelta =
-    findings.length > 0 ? Number(Math.max(-1.6, rawTotalLogOddsDelta).toFixed(4)) : 0;
+  // Compute aggregate Red-Team negative likelihood ratio for standard findings, plus explicit ACH-LEAD LR
+  const rawStandardLogOddsDelta = standardFindings.reduce((s, f) => s + f.logOddsPenalty, 0);
+  const standardRedTeamLogOddsDelta =
+    standardFindings.length > 0 ? Number(Math.max(-1.6, rawStandardLogOddsDelta).toFixed(4)) : 0;
+  const standardNegativeLr = Number(Math.exp(standardRedTeamLogOddsDelta).toFixed(3));
+  const leadLogOddsDelta = leadAch ? leadAch.logOddsDelta : 0;
+  const totalRedTeamLogOddsDelta = Number((standardRedTeamLogOddsDelta + leadLogOddsDelta).toFixed(4));
   const combinedNegativeLr = Number(Math.exp(totalRedTeamLogOddsDelta).toFixed(3));
 
   const prePosterior = clampProb(params.preRedTeamBayesian.posteriorProbability);
@@ -305,14 +567,17 @@ export function runAdversarialRedTeamAchPass(params: {
   const updatedContributions: BayesianEvidenceContribution[] = [
     ...params.preRedTeamBayesian.evidenceContributions,
   ];
-  if (findings.length > 0 && combinedNegativeLr < 1.0) {
+  if (leadAch) {
+    updatedContributions.push(leadAch.bayesianContribution);
+  }
+  if (standardFindings.length > 0 && standardNegativeLr < 1.0) {
     updatedContributions.push({
       signalId: 'phase5_ach_red_team_steelman',
       label: 'Phase-5 Adversarial Red-Team ACH Calibration',
       category: 'RED_TEAM_ACH',
-      observedValue: `${findings.length} top finding(s) stress-tested · ${survivedCount} survived · ${weakenedCount} weakened · ${refutedCount} refuted as non-diagnostic`,
-      likelihoodRatio: combinedNegativeLr,
-      logOddsDelta: totalRedTeamLogOddsDelta,
+      observedValue: `${standardFindings.length} top finding(s) stress-tested · ${standardFindings.filter((f) => f.verdict === 'SURVIVED_RED_TEAM').length} survived · ${standardFindings.filter((f) => f.verdict === 'WEAKENED_BY_STEELMAN').length} weakened · ${standardFindings.filter((f) => f.verdict === 'REFUTED_NON_DIAGNOSTIC').length} refuted as non-diagnostic`,
+      likelihoodRatio: standardNegativeLr,
+      logOddsDelta: standardRedTeamLogOddsDelta,
       direction: 'RISK_DECREASING',
     });
   }

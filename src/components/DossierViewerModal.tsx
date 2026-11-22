@@ -252,7 +252,7 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
                 onClick={() => setActiveFolderTab('raw')}
                 className={`px-2 py-1 rounded whitespace-nowrap ${activeFolderTab === 'raw' ? 'bg-amber-500/20 text-amber-300 font-semibold' : 'text-neutral-400 hover:text-white'}`}
               >
-                160 Agents
+                200 Agents
               </button>
             </div>
 

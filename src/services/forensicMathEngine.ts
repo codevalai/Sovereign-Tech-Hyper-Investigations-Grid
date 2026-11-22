@@ -15,6 +15,7 @@ import type {
 } from '../types/investigation';
 import {
   classifyWikipediaDeletionIntent,
+  isSpvOrFundIssuerName,
   isValidSenateLdaRecord,
 } from '../engine/entityDisambiguation.ts';
 
@@ -624,6 +625,106 @@ export function buildForensicPropertyGraph(
     addEdge(rootId, did, 'EXEMPT_OFFERING_FILING', 'ownership', 0.88, fd.url);
   });
 
+  // v27.0 Squad Q — Proxy/Kinship Vehicles & Vanished Exhibit 21.1 Subsidiaries
+  if (liveIntel?.proxyKinship) {
+    const pk = liveIntel.proxyKinship;
+    pk.relatedPersonTransactions.slice(0, 4).forEach((rpt, idx) => {
+      const rid = `proxy:item404:${idx}`;
+      upsertNode(rid, `DEF 14A Item 404 Related-Party (${rpt.filingDate || 'Filing'})`, 'Contract/Docket', 'ownership', {
+        parties: rpt.partiesMentioned.slice(0, 3).join(', '),
+      });
+      addEdge(rootId, rid, 'ITEM_404_RELATED_PERSON_TX', 'ownership', 0.91, rpt.sourceUrl);
+    });
+    pk.form4IndirectOwnerships.slice(0, 4).forEach((f4, idx) => {
+      const fid = `proxy:form4:${idx}`;
+      upsertNode(fid, `${f4.ownerName} (${f4.indirectNature})`, 'Person', 'ownership', {
+        relationship: f4.relationship,
+        indirectNature: f4.indirectNature,
+      });
+      addEdge(fid, rootId, 'INDIRECT_FORM4_OWNERSHIP', 'ownership', 0.82, f4.formUrl);
+    });
+    pk.formDProxyCandidates
+      .filter((c) => c.riskClassification === 'VERIFIED_RELATED_PARTY')
+      .slice(0, 4)
+      .forEach((cand, idx) => {
+        const cid = `proxy:formd:${idx}`;
+        upsertNode(cid, `Proxy Form D: ${cand.issuerName}`, 'Subsidiary', 'ownership', {
+          matchedPerson: cand.matchedPerson,
+          matchType: cand.matchType,
+        });
+        addEdge(rootId, cid, 'VERIFIED_PROXY_VENTURE', 'ownership', 0.89, cand.url);
+      });
+    pk.exhibit21SubsidiaryDiff.vanishedSubsidiaries.slice(0, 4).forEach((van, idx) => {
+      const vid = `proxy:ex21vanished:${idx}`;
+      upsertNode(vid, `Vanished Ex-21.1 Sub: ${van}`, 'Subsidiary', 'ownership', { status: 'VANISHED' });
+      addEdge(rootId, vid, 'VANISHED_EXHIBIT21_SUBSIDIARY', 'ownership', 0.86);
+    });
+  }
+
+  // v27.0 Squad R — Political Affiliation, DOJ FARA, OpenFEC PACs & 501(c)(4) Dark-Money Vehicles
+  if (liveIntel?.politicalInfluence) {
+    const pol = liveIntel.politicalInfluence;
+    if (pol.faraMatches.length === 0) {
+      upsertNode('pol:fara_clean', 'Clean DOJ FARA Screening (0 Active Foreign Principal Hits)', 'Contract/Docket', 'revolving_door', {
+        controlClassification: 'BENIGN_CONTROL',
+      });
+      addEdge(rootId, 'pol:fara_clean', 'CLEAN_FARA_CONTROL', 'revolving_door', 0.5);
+    } else {
+      pol.faraMatches.slice(0, 4).forEach((f, idx) => {
+        const fid = `pol:fara:${idx}`;
+        upsertNode(
+          fid,
+          `DOJ FARA #${f.registrationNumber}: ${f.foreignPrincipalName || f.registrantName}`,
+          'Contract/Docket',
+          'revolving_door',
+          { country: f.country || 'N/A', active: f.active }
+        );
+        addEdge(rootId, fid, 'DOJ_FARA_FOREIGN_INFLUENCE', 'revolving_door', 0.94, f.url);
+      });
+    }
+    pol.openFecSummary.committees.slice(0, 3).forEach((pac, idx) => {
+      const pid = `pol:fec_pac:${idx}`;
+      upsertNode(pid, `FEC PAC: ${pac.name} (${pac.committeeId})`, 'Entity', 'revolving_door', {
+        party: pac.party,
+        disbursementsUsd: pac.totalDisbursementsUsd,
+      });
+      addEdge(rootId, pid, 'CONNECTED_CORPORATE_PAC', 'revolving_door', 0.78, pac.url);
+    });
+    pol.affiliatedNonprofits
+      .filter((n) => n.classification === '501(c)(4)')
+      .slice(0, 3)
+      .forEach((np, idx) => {
+        const nid = `pol:501c4:${idx}`;
+        upsertNode(nid, `501(c)(4) Policy Vehicle: ${np.name} (EIN ${np.ein})`, 'Entity', 'revolving_door', {
+          revenueUsd: np.totalRevenueUsd,
+        });
+        addEdge(rootId, nid, 'AFFILIATED_501C4_VEHICLE', 'revolving_door', 0.85, np.url);
+      });
+  }
+
+  // v27.0 Squad S — Shadow Infra DNA Front Domains & USASpending Sub-Award Pass-Throughs
+  if (liveIntel?.shadowInfraSubawards) {
+    const sh = liveIntel.shadowInfraSubawards;
+    sh.sharedInfraDomains
+      .filter((d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER')
+      .slice(0, 4)
+      .forEach((dom, idx) => {
+        const did = `infra:front:${idx}`;
+        upsertNode(did, `Shared Infra Front: ${dom.domain} (${dom.confidence})`, 'ASN/IP_Block', 'cyber', {
+          signals: dom.sharedSignals.join(', '),
+        });
+        addEdge(rootId, did, 'SHARED_INFRA_DNA_PIVOT', 'cyber', dom.confidence === 'HIGH' ? 0.9 : 0.74, dom.sourceUrl);
+      });
+    sh.usaSpendingSubawards.slice(0, 4).forEach((sub, idx) => {
+      const sid = `subaward:${idx}`;
+      upsertNode(sid, `Sub-Awardee: ${sub.subawardeeName} ($${Math.round(sub.amountUsd).toLocaleString('en-US')})`, 'Contract/Docket', 'ownership', {
+        agency: sub.awardingAgency,
+        amountUsd: sub.amountUsd,
+      });
+      addEdge(rootId, sid, 'FEDERAL_SUBAWARD_PASS_THROUGH', 'ownership', 0.84, sub.url);
+    });
+  }
+
   // Persons (Founders, Executives & Revolving-Door Lobbyists)
   const founderSet = new Set(liveIntel?.founders || []);
   const execs = (liveIntel?.keyExecutives || []).slice(0, 6);
@@ -792,12 +893,14 @@ export function buildForensicPropertyGraph(
     });
     adv.rpkiValidation.slice(0, 2).forEach((rp, idx) => {
       const rid = `adv:rpki:${idx}`;
-      upsertNode(rid, `RPKI AS${rp.asn}: ${rp.validity.toUpperCase()}`, 'ASN/IP_Block', 'adversarial', {
+      const isValidRpki = String(rp.validity || '').toLowerCase() === 'valid';
+      upsertNode(rid, `RPKI AS${rp.asn}: ${rp.validity.toUpperCase()}`, 'ASN/IP_Block', isValidRpki ? 'cyber' : 'adversarial', {
         prefix: rp.prefix,
         validity: rp.validity,
+        ...(isValidRpki ? { controlClassification: 'BENIGN_CONTROL' } : {}),
       });
       const anchor = nodeMap.has('cyber:asn:0') ? 'cyber:asn:0' : rootId;
-      addEdge(anchor, rid, 'RPKI_ROA_STATE', 'adversarial', 0.9);
+      addEdge(anchor, rid, 'RPKI_ROA_STATE', isValidRpki ? 'cyber' : 'adversarial', isValidRpki ? 0.45 : 0.9);
     });
     if (adv.waybackSnapshotsFound > 0) {
       const wbid = 'adv:wayback';
@@ -1628,7 +1731,7 @@ export function computeBftCorroborationSummary(
 }
 
 // =============================================================================
-// 7. DETERMINISTIC 16-SQUAD CLAIM CITATION & RFC 6901 JSON POINTER GENERATOR
+// 7. DETERMINISTIC 20-SQUAD CLAIM CITATION & RFC 6901 JSON POINTER GENERATOR
 // =============================================================================
 const SQUAD_TO_EVIDENCE_PATH: Record<SquadId, string> = {
   squadA: 'evidence/press_releases/corporate_charter_release.txt',
@@ -1647,6 +1750,10 @@ const SQUAD_TO_EVIDENCE_PATH: Record<SquadId, string> = {
   squadN: 'evidence/raw_payloads/patent_grant_payload.json',
   squadO: 'evidence/raw_payloads/darkpool_crypto_payload.json',
   squadP: 'evidence/raw_payloads/legal_slapp_payload.json',
+  squadQ: 'evidence/proxy_kinship_graph.json',
+  squadR: 'evidence/political_influence_ledger.json',
+  squadS: 'evidence/raw_payloads/shadow_infra_subaward_payload.json',
+  squadT: 'evidence/ach_red_team_matrix.json',
 };
 
 const SQUAD_TO_JSON_POINTER: Partial<Record<SquadId, string>> = {
@@ -1662,6 +1769,10 @@ const SQUAD_TO_JSON_POINTER: Partial<Record<SquadId, string>> = {
   squadN: '/grantCaptureVerdict',
   squadO: '/derivativesVerdict',
   squadP: '/judicialVerdict',
+  squadQ: '/summaryVerdict',
+  squadR: '/summaryVerdict',
+  squadS: '/summaryVerdict',
+  squadT: '/postRedTeamPosterior',
 };
 
 const SQUAD_TRUTH_TIER: Record<SquadId, 1 | 2 | 3 | 4> = {
@@ -1681,6 +1792,10 @@ const SQUAD_TRUTH_TIER: Record<SquadId, 1 | 2 | 3 | 4> = {
   squadN: 2,
   squadO: 1,
   squadP: 1,
+  squadQ: 1,
+  squadR: 1,
+  squadS: 2,
+  squadT: 1,
 };
 
 export function buildClaimCitationsForAgent(
@@ -1870,8 +1985,19 @@ export function computeBayesianFraudRiskPosterior(
     if (epaPenalties >= 100_000) {
       applyEvidence('EPA_PENALTIES', 'EPA ECHO Statutory Environmental Penalties', 'REGULATORY', `$${Math.round(epaPenalties).toLocaleString('en-US')}`, 1.55);
     }
-    const critClusters = (liveIntel.temporalCausalityAndLobbying?.clusters || []).filter((c) => c.severity === 'CRITICAL').length;
-    const chainsCount = liveIntel.temporalCausalityAndLobbying?.causalChains?.length ?? 0;
+    const isSpvTemporalEvent = (ev: { stream: string; title: string }): boolean => {
+      if (ev.stream !== 'SEC_FORM_D') return false;
+      const issuerMatch = ev.title.split('—').slice(1).join('—').trim() || ev.title;
+      return isSpvOrFundIssuerName(issuerMatch, liveIntel.legalName, liveIntel.entityName);
+    };
+    const nonSpvClusters = (liveIntel.temporalCausalityAndLobbying?.clusters || []).filter(
+      (c) => !c.events.some(isSpvTemporalEvent)
+    );
+    const nonSpvChains = (liveIntel.temporalCausalityAndLobbying?.causalChains || []).filter(
+      (ch) => !ch.events.some(isSpvTemporalEvent)
+    );
+    const critClusters = nonSpvClusters.filter((c) => c.severity === 'CRITICAL').length;
+    const chainsCount = nonSpvChains.length;
     if (critClusters > 0 || chainsCount > 0) {
       applyEvidence('TEMPORAL_CAUSAL', 'Synchronized Cross-Stream Causal Evidence', 'CAUSAL', `${critClusters} critical cluster(s), ${chainsCount} multi-hop chain(s)`, Math.min(2.6, 1.35 + critClusters * 0.25 + chainsCount * 0.12));
     }
@@ -1886,6 +2012,73 @@ export function computeBayesianFraudRiskPosterior(
         `${highMetaPivots} high-signal PDF/Office author pivot(s) matched across registries`,
         Math.min(2.8, 1.55 + highMetaPivots * 0.3)
       );
+    }
+
+    // 10. v27.0 Squad Q — Proxy Ventures, Item 404 Related-Party & Vanished Exhibit 21.1 Subsidiaries
+    if (liveIntel.proxyKinship) {
+      const pk = liveIntel.proxyKinship;
+      const verifiedProxyCount =
+        pk.relatedPersonTransactions.length +
+        pk.formDProxyCandidates.filter((c) => c.riskClassification === 'VERIFIED_RELATED_PARTY').length;
+      const vanishedSubsCount = pk.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length;
+      if (verifiedProxyCount > 0 || vanishedSubsCount > 0) {
+        applyEvidence(
+          'squad_q_proxy_kinship',
+          'Squad Q: Related-Person (Item 404) & Exhibit 21.1 Continuity',
+          'PROXY_KINSHIP',
+          `${pk.relatedPersonTransactions.length} Item 404 tx · ${verifiedProxyCount} verified proxy/related lead(s) · ${vanishedSubsCount} vanished Ex-21.1 sub(s)`,
+          Math.min(2.6, 1.25 + verifiedProxyCount * 0.25 + vanishedSubsCount * 0.18)
+        );
+      }
+    }
+
+    // 11. v27.0 Squad R — Political Influence (DOJ FARA Foreign Principals & 501(c)(4) Dark Money)
+    if (liveIntel.politicalInfluence) {
+      const pol = liveIntel.politicalInfluence;
+      const c4Count = pol.affiliatedNonprofits.filter((n) => n.classification === '501(c)(4)').length;
+      if (pol.faraMatches.length > 0) {
+        applyEvidence(
+          'squad_r_fara_active',
+          'Squad R: DOJ FARA Active Foreign Principal / Registrant Match',
+          'POLITICAL_INFLUENCE',
+          `${pol.faraMatches.length} active DOJ FARA record(s)`,
+          Math.min(2.9, 1.65 + pol.faraMatches.length * 0.25)
+        );
+      } else {
+        applyEvidence(
+          'squad_r_fara_clean',
+          'Squad R: DOJ FARA Foreign Agent Screening',
+          'POLITICAL_INFLUENCE',
+          '0 active DOJ FARA matches',
+          0.95
+        );
+      }
+      if (c4Count > 0) {
+        applyEvidence(
+          'squad_r_501c4_darkmoney',
+          'Squad R: Affiliated 501(c)(4) Policy / Dark-Money Vehicle',
+          'POLITICAL_INFLUENCE',
+          `${c4Count} affiliated 501(c)(4) entity/entities`,
+          Math.min(2.1, 1.3 + c4Count * 0.2)
+        );
+      }
+    }
+
+    // 12. v27.0 Squad S — Undisclosed Shared-Infra DNA Front Domains & Sub-Award Pass-Throughs
+    if (liveIntel.shadowInfraSubawards) {
+      const sh = liveIntel.shadowInfraSubawards;
+      const highFronts = sh.sharedInfraDomains.filter(
+        (d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER' && d.confidence !== 'LOW'
+      ).length;
+      if (highFronts > 0) {
+        applyEvidence(
+          'squad_s_shared_infra_front',
+          'Squad S: Shared Infrastructure DNA (Favicon/GTM/SPF/SAN) Front Domains',
+          'SHADOW_INFRA_SUBAWARD',
+          `${highFronts} non-CDN front/partner domain(s) sharing target infra fingerprints`,
+          Math.min(2.4, 1.35 + highFronts * 0.25)
+        );
+      }
     }
   }
 
@@ -1924,8 +2117,34 @@ export function computeBayesianFraudRiskPosterior(
 }
 
 /**
+ * FIX 3: Classifies whether a Property Graph node represents a passing / benign security or
+ * compliance control (e.g., RPKI: VALID, Clean OFAC/BIS, 0 CISA KEV, Valid TLS, Active GLEIF LEI)
+ * so it acts as a contagion risk dampener and is excluded from the Top 10 Risk Chokepoints table.
+ */
+export function isBenignControlNode(node: PropertyGraphNode): boolean {
+  if (node.metadata?.controlClassification === 'BENIGN_CONTROL') return true;
+  const label = String(node.label || '');
+  const validity = String(node.metadata?.validity || '').toLowerCase();
+  if (/^RPKI\b/i.test(label) && (validity === 'valid' || /\bVALID\b/i.test(label)) && !/\bINVALID\b/i.test(label)) {
+    return true;
+  }
+  if (
+    /\b(?:Clean\s+OFAC\/BIS|0\s+CISA\s+KEV|Valid\s+TLS|Active\s+GLEIF\s+LEI|GLEIF\s+LEI:\s*ACTIVE|LOW_RISK|ALIGNED|CLEAN\s+STANDING)\b/i.test(
+      label
+    )
+  ) {
+    return true;
+  }
+  if (/^Beneish M=/i.test(label) && /\(LOW_RISK\)/i.test(label)) {
+    return true;
+  }
+  return false;
+}
+
+/**
  * Computes iterative power-method PageRank (d=0.85) and Risk Contagion Diffusion
  * over the Forensic Property Graph to identify systemic chokepoints.
+ * Benign passing controls (BENIGN_CONTROL) act as risk dampeners rather than risk amplifiers.
  */
 export function computeGraphPageRankAndContagion(
   nodes: PropertyGraphNode[],
@@ -1941,6 +2160,7 @@ export function computeGraphPageRankAndContagion(
 
   const outNeighbors: Array<Array<{ to: number; weight: number }>> = Array.from({ length: n }, () => []);
   const outWeightSum = new Float64Array(n);
+  const benignFlags = nodes.map((node) => isBenignControlNode(node));
 
   for (const e of edges) {
     const u = idxById.get(e.source);
@@ -1975,9 +2195,15 @@ export function computeGraphPageRankAndContagion(
   }
 
   // Risk contagion diffusion: R(t+1) = (1 - alpha) * R0 + alpha * W_norm * R(t)
+  // Benign control nodes receive low dampening baseline (0.05) and actively dampen neighbor risk
   const r0 = new Float64Array(n);
+  const benignNeighborCount = new Int32Array(n);
   for (let i = 0; i < n; i++) {
     const node = nodes[i];
+    if (benignFlags[i]) {
+      r0[i] = 0.05;
+      continue;
+    }
     const base =
       node.layer === 'sanctions_trade' || node.layer === 'adversarial' || node.layer === 'judicial_slapp'
         ? 0.9
@@ -1987,12 +2213,20 @@ export function computeGraphPageRankAndContagion(
         ? 0.65
         : 0.45;
     r0[i] = base;
+    for (const nb of outNeighbors[i]) {
+      if (benignFlags[nb.to]) benignNeighborCount[i] += 1;
+    }
   }
   let risk = Float64Array.from(r0);
   const alpha = 0.55;
   for (let it = 0; it < 15; it++) {
     const nextRisk = new Float64Array(n);
     for (let i = 0; i < n; i++) {
+      if (benignFlags[i]) {
+        // Benign controls remain dampened (never inherit high contagion risk from neighbors)
+        nextRisk[i] = 0.05;
+        continue;
+      }
       let diffused = 0;
       if (outWeightSum[i] > 0) {
         for (const nb of outNeighbors[i]) {
@@ -2001,7 +2235,9 @@ export function computeGraphPageRankAndContagion(
       } else {
         diffused = r0[i];
       }
-      nextRisk[i] = (1 - alpha) * r0[i] + alpha * diffused;
+      // Passing benign controls directly connected to a node dampen its contagion score (up to -18%)
+      const controlDampener = benignNeighborCount[i] > 0 ? Math.max(0.82, 1 - benignNeighborCount[i] * 0.06) : 1;
+      nextRisk[i] = ((1 - alpha) * r0[i] + alpha * diffused) * controlDampener;
     }
     risk = nextRisk;
   }
@@ -2016,8 +2252,15 @@ export function computeGraphPageRankAndContagion(
       contagionRisk: Number(Math.min(1, Math.max(0, risk[i])).toFixed(3)),
       degree: node.degree,
       betweennessCentrality: node.betweennessCentrality,
+      controlClassification: (benignFlags[i] ? 'BENIGN_CONTROL' : 'RISK_NODE') as 'BENIGN_CONTROL' | 'RISK_NODE',
+      isBenignControl: benignFlags[i],
     }))
-    .sort((a, b) => b.pageRank - a.pageRank || b.contagionRisk - a.contagionRisk);
+    .sort((a, b) => {
+      if (Boolean(a.isBenignControl) !== Boolean(b.isBenignControl)) {
+        return a.isBenignControl ? 1 : -1;
+      }
+      return b.pageRank - a.pageRank || b.contagionRisk - a.contagionRisk;
+    });
 }
 
 /**

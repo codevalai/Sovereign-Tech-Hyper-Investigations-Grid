@@ -421,6 +421,285 @@ export function buildFollowTheMoneyNdjson(params: {
     });
   }
 
+  // 6b. v27.0 Squad Q — Proxy Ventures, Indirect Form 4 Vehicles & Vanished Exhibit 21.1 Subsidiaries
+  const pk = live?.proxyKinship;
+  if (pk) {
+    for (const f4 of pk.form4IndirectOwnerships.slice(0, 12)) {
+      const personId = ftmId('per', f4.ownerName);
+      const vehicleId = ftmId('le', `${f4.ownerName}:${f4.indirectNature}`);
+      upsert({
+        id: personId,
+        schema: 'Person',
+        caption: f4.ownerName,
+        properties: { name: [f4.ownerName], position: cleanArr([f4.relationship]) },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: vehicleId,
+        schema: 'LegalEntity',
+        caption: f4.indirectNature,
+        properties: {
+          name: [f4.indirectNature],
+          classification: ['SEC Form 4 Indirect Kinship/Trust/LLC Vehicle'],
+          sourceUrl: cleanArr([f4.formUrl]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('own', `${personId}->${vehicleId}`),
+        schema: 'Ownership',
+        caption: `${f4.ownerName} indirectly holds via ${f4.indirectNature}`,
+        properties: {
+          owner: [personId],
+          asset: [vehicleId],
+          role: ['Form 4 Indirect Beneficial Ownership'],
+          date: cleanArr([f4.filingDate]),
+          sourceUrl: cleanArr([f4.formUrl]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+    for (const cand of pk.formDProxyCandidates.slice(0, 12)) {
+      const issuerId = ftmId('co', cand.issuerName);
+      const personId = ftmId('per', cand.matchedPerson);
+      upsert({
+        id: issuerId,
+        schema: 'Company',
+        caption: cand.issuerName,
+        properties: {
+          name: [cand.issuerName],
+          classification: [`Squad Q Form D ${cand.riskClassification}`],
+          address: cleanArr([cand.cityOrState]),
+          sourceUrl: cleanArr([cand.url]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: personId,
+        schema: 'Person',
+        caption: cand.matchedPerson,
+        properties: { name: [cand.matchedPerson] },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('dir', `${personId}->${issuerId}:proxy`),
+        schema: 'Directorship',
+        caption: `${cand.matchedPerson} -> ${cand.issuerName} (${cand.matchType})`,
+        properties: {
+          director: [personId],
+          organization: [issuerId],
+          role: [`${cand.matchType} · ${cand.riskClassification}`],
+          startDate: cleanArr([cand.filedAt]),
+          sourceUrl: cleanArr([cand.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+    for (const van of pk.exhibit21SubsidiaryDiff.renamedOrSpunOffCandidates.slice(0, 12)) {
+      const subId = ftmId('co', van.priorName);
+      upsert({
+        id: subId,
+        schema: 'Company',
+        caption: van.priorName,
+        properties: {
+          name: [van.priorName],
+          status: [van.status],
+          notes: cleanArr([
+            van.closestCurrentName
+              ? `Exhibit 21.1 diff candidate (closest current: ${van.closestCurrentName})`
+              : 'Vanished from latest 10-K Exhibit 21.1 subsidiary schedule',
+          ]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('own', `${rootId}->${subId}:ex21`),
+        schema: 'Ownership',
+        caption: `${params.legalName} historical Exhibit 21.1 subsidiary ${van.priorName} (${van.status})`,
+        properties: {
+          owner: [rootId],
+          asset: [subId],
+          role: [`Historical Exhibit 21.1 Subsidiary (${van.status})`],
+          sourceUrl: cleanArr(pk.exhibit21SubsidiaryDiff.sourceUrls),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
+  // 6c. v27.0 Squad R — Political Influence (DOJ FARA, OpenFEC PACs & Contributions, ProPublica 501(c)(3)/(c)(4))
+  const pol = live?.politicalInfluence;
+  if (pol) {
+    for (const fara of pol.faraMatches.slice(0, 10)) {
+      const regId = ftmId('le', `fara:${fara.registrationNumber}:${fara.registrantName}`);
+      upsert({
+        id: regId,
+        schema: 'LegalEntity',
+        caption: fara.registrantName,
+        properties: {
+          name: [fara.registrantName],
+          registrationNumber: cleanArr([`FARA-${fara.registrationNumber}`]),
+          country: cleanArr([fara.country]),
+          classification: ['DOJ FARA Active Registrant / Foreign Principal'],
+          sourceUrl: cleanArr([fara.url]),
+        },
+        datasets: [datasetTag],
+      });
+      if (fara.foreignPrincipalName) {
+        const fpId = ftmId('le', `fara-fp:${fara.foreignPrincipalName}`);
+        upsert({
+          id: fpId,
+          schema: 'LegalEntity',
+          caption: fara.foreignPrincipalName,
+          properties: {
+            name: [fara.foreignPrincipalName],
+            country: cleanArr([fara.country]),
+            classification: ['DOJ FARA Foreign Principal'],
+            sourceUrl: cleanArr([fara.url]),
+          },
+          datasets: [datasetTag],
+        });
+        upsert({
+          id: ftmId('dir', `${regId}->${fpId}:fara`),
+          schema: 'Directorship',
+          caption: `${fara.registrantName} represents FARA Foreign Principal ${fara.foreignPrincipalName}`,
+          properties: {
+            director: [regId],
+            organization: [fpId],
+            role: ['DOJ FARA Registered Foreign Agent'],
+            sourceUrl: cleanArr([fara.url]),
+          },
+          datasets: [datasetTag],
+        });
+      }
+    }
+    for (const pac of pol.openFecSummary.committees.slice(0, 8)) {
+      const pacId = ftmId('le', `fec:${pac.committeeId}`);
+      upsert({
+        id: pacId,
+        schema: 'LegalEntity',
+        caption: pac.name,
+        properties: {
+          name: [pac.name],
+          registrationNumber: [pac.committeeId],
+          classification: [`OpenFEC ${pac.committeeType} (${pac.party})`],
+          sourceUrl: cleanArr([pac.url]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('own', `${rootId}->${pacId}:pac`),
+        schema: 'Ownership',
+        caption: `${params.legalName} connected PAC ${pac.name}`,
+        properties: {
+          owner: [rootId],
+          asset: [pacId],
+          role: ['Connected Political Action Committee (OpenFEC)'],
+          sourceUrl: cleanArr([pac.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+    for (const ec of pol.openFecSummary.executiveContributionsByPartyCycle.slice(0, 12)) {
+      const donorId = ftmId('per', ec.contributorName);
+      const cmteId = ftmId('le', `fec-cmte:${ec.committeeName}`);
+      upsert({ id: donorId, schema: 'Person', caption: ec.contributorName, properties: { name: [ec.contributorName] }, datasets: [datasetTag] });
+      upsert({ id: cmteId, schema: 'LegalEntity', caption: ec.committeeName, properties: { name: [ec.committeeName], classification: [`Political Committee (${ec.party})`] }, datasets: [datasetTag] });
+      upsert({
+        id: ftmId('pay', `fec:${ec.contributorName}:${ec.committeeName}:${ec.cycle}`),
+        schema: 'Payment',
+        caption: `${ec.contributorName} -> ${ec.committeeName} ($${Math.round(ec.totalAmountUsd).toLocaleString()} · ${ec.cycle})`,
+        properties: {
+          payer: [donorId],
+          beneficiary: [cmteId],
+          amount: [String(Math.round(ec.totalAmountUsd))],
+          currency: ['USD'],
+          purpose: [`OpenFEC Schedule A Contribution (${ec.party} · Cycle ${ec.cycle})`],
+          sourceUrl: cleanArr([ec.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+    for (const np of pol.affiliatedNonprofits.slice(0, 8)) {
+      const npId = ftmId('le', `ein:${np.ein}`);
+      upsert({
+        id: npId,
+        schema: 'LegalEntity',
+        caption: np.name,
+        properties: {
+          name: [np.name],
+          registrationNumber: [`EIN ${np.ein}`],
+          classification: [`IRS ${np.classification} Affiliated Nonprofit`],
+          address: cleanArr([[np.city, np.state].filter(Boolean).join(', ')]),
+          sourceUrl: cleanArr([np.url]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('own', `${rootId}->${npId}:nonprofit`),
+        schema: 'Ownership',
+        caption: `${params.legalName} affiliated ${np.classification} ${np.name}`,
+        properties: {
+          owner: [rootId],
+          asset: [npId],
+          role: [`Affiliated ${np.classification} Vehicle`],
+          sourceUrl: cleanArr([np.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
+  // 6d. v27.0 Squad S — Shared Infra DNA Front Domains & USASpending Sub-Award Pass-Through Payments
+  const shInfra = live?.shadowInfraSubawards;
+  if (shInfra) {
+    for (const sub of shInfra.usaSpendingSubawards.slice(0, 12)) {
+      const subCoId = ftmId('co', sub.subawardeeName);
+      upsert({
+        id: subCoId,
+        schema: 'Company',
+        caption: sub.subawardeeName,
+        properties: {
+          name: [sub.subawardeeName],
+          classification: ['USASpending Federal Sub-Awardee Partner'],
+          sourceUrl: cleanArr([sub.url]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('pay', `subaward:${sub.primeAwardId}:${sub.subawardId}:${sub.subawardeeName}`),
+        schema: 'Payment',
+        caption: `${sub.primeRecipient} -> ${sub.subawardeeName} ($${Math.round(sub.amountUsd).toLocaleString()} Sub-Award)`,
+        properties: {
+          payer: [rootId],
+          beneficiary: [subCoId],
+          amount: [String(Math.round(sub.amountUsd))],
+          currency: ['USD'],
+          date: cleanArr([sub.actionDate]),
+          purpose: cleanArr([`USASpending Sub-Award ${sub.subawardId} (${sub.awardingAgency}): ${sub.description}`]),
+          sourceUrl: cleanArr([sub.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+    for (const dom of shInfra.sharedInfraDomains.filter((d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER').slice(0, 10)) {
+      const domId = ftmId('le', `infra:${dom.domain}`);
+      upsert({
+        id: domId,
+        schema: 'LegalEntity',
+        caption: dom.domain,
+        properties: {
+          name: [dom.domain],
+          website: [`https://${dom.domain}`],
+          classification: [`Shared Infra DNA Domain (${dom.confidence})`],
+          notes: [dom.sharedSignals.join('; ')],
+          sourceUrl: cleanArr([dom.sourceUrl]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
   // 7. Remaining Property Graph Counterparties / Legal Entities (for complete Aleph/Gephi parity)
   for (const node of params.graphNodes.slice(0, 80)) {
     if (!node.label || node.label.toLowerCase() === (params.legalName || params.entityName).toLowerCase()) continue;

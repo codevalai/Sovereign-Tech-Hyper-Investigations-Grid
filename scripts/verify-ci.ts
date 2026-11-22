@@ -3,7 +3,7 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { create160AgentSwarm } from '../src/services/swarmOrchestrator.ts';
+import { create160AgentSwarm, create200AgentSwarm } from '../src/services/swarmOrchestrator.ts';
 import { generateInvestigationDossier } from '../src/services/dossierGenerator.ts';
 import {
   computeIpfsCidV1FromSha256Hex,
@@ -36,15 +36,42 @@ import {
   computeGraphPageRankAndContagion,
   computeHawkesAnalysis,
   computeShannonEntropyMetrics,
+  isBenignControlNode,
 } from '../src/services/forensicMathEngine.ts';
 import {
   classifyWikipediaDeletionIntent,
+  escapeRegExp,
   isSpvOrFundIssuerName,
   isValidSenateLdaRecord,
   resolveCanonicalGleifLei,
+  resolveLiveMarketPublicStatus,
+  sanitizeTargetQuery,
+  validateAndNormalizeSourceTag,
   verifyEntityRelevance,
 } from '../src/engine/entityDisambiguation.ts';
+import {
+  MAX_CRTSH_SANS,
+  MAX_PHASE4_PIVOTS,
+  MAX_SEC_FILING_PULLS,
+  correlateShadowInfraDomains,
+  diffExhibit21Subsidiaries,
+  extractExecutiveSurnames,
+  parseDef14aItem404,
+  parseExhibit21Subsidiaries,
+  parseForm4IndirectXml,
+} from '../server/deepProxyPoliticalEngine.ts';
 import { liveDaemon } from '../server/liveIngestionDaemon.ts';
+import {
+  PLANETARY_FETCH_TIMEOUT_MS,
+  SEC_EDGAR_COMPLIANT_USER_AGENT,
+  computeDynamic30DayWindow,
+  mapIsoCountryToNameAndRegion,
+  parseFederalRegisterAntitrust,
+  parseGleifLeiIncorporations,
+  parseSecCurrentAtomFormD,
+  parseSecEftsMaBuyouts,
+  parseSecEftsNewVentures,
+} from '../server/planetaryRegistryEngine.ts';
 import {
   resilientFetch,
   getRateLimitRpsForHost,
@@ -114,11 +141,12 @@ import { runZkTlsProxyProvenanceBatch } from '../src/provenance/zktlsAdapter.ts'
 
 const requireBuild = process.argv.includes('--require-build');
 
-console.log('=== [1/4] Verifying 160-Agent / 16-Squad Dossier Cryptographic Seals ===');
-const squads = create160AgentSwarm('Quantum Computing');
-assert.equal(squads.length, 16, 'Expected 16 squads (Squads A-P)');
+console.log('=== [1/4] Verifying 200-Agent / 20-Squad Dossier Cryptographic Seals ===');
+assert.equal(create160AgentSwarm, create200AgentSwarm, 'Expected backwards-compatible alias create160AgentSwarm === create200AgentSwarm');
+const squads = create200AgentSwarm('Quantum Computing');
+assert.equal(squads.length, 20, 'Expected 20 squads (Squads A-T)');
 const totalAgents = squads.reduce((sum, s) => sum + s.agents.length, 0);
-assert.equal(totalAgents, 160, 'Expected 160 specialized forensic agents');
+assert.equal(totalAgents, 200, 'Expected 200 specialized forensic agents');
 
 for (const sq of squads) {
   sq.status = 'completed';
@@ -218,8 +246,8 @@ assert.ok(ledgerFile, 'Expected LEDGER_ENTRY.json');
 const ledgerJson = JSON.parse(ledgerFile.content) as { merkle_inclusion_proofs?: unknown[] };
 assert.equal(
   ledgerJson.merkle_inclusion_proofs?.length,
-  24,
-  `Expected 24 Merkle inclusion proofs (4 core + 20 raw payloads), got ${ledgerJson.merkle_inclusion_proofs?.length}`
+  28,
+  `Expected 28 Merkle inclusion proofs (4 core + 23 raw/squad payloads + 1 ACH matrix), got ${ledgerJson.merkle_inclusion_proofs?.length}`
 );
 
 const tmpDossierDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovereign-ci-dossier-'));
@@ -1104,17 +1132,35 @@ const j8File = findFile('raw/squadJ_J8_xbrl_tag_lineage_verifier.md');
 const g1File = findFile('raw/squadG_G1_asn_bgp_anomaly_hunter.md');
 const g6File = findFile('raw/squadG_G6_dns_email_authentication_auditor.md');
 
-assert.ok(l1File && l2File && l3File && l4File && l5File && l6File && l10File, 'All Squad L files must exist');
+assert.ok(l1File && l3File && l4File && l5File && l6File && l10File, 'All active Squad L files must exist');
+assert.equal(
+  l2File,
+  undefined,
+  'Zero-hit specialist L2 stub must be suppressed from raw/ ZIP bundle (FIX 5B)'
+);
+const execLogFile = findFile('pipeline_execution_log.json');
+assert.ok(execLogFile, 'pipeline_execution_log.json must exist');
+const execLogJson = JSON.parse(execLogFile.content) as {
+  skipped_not_applicable_agents_count?: number;
+  agents?: Array<{ agent_id: string; status: string; output_file: string | null }>;
+};
+const l2LogEntry = execLogJson.agents?.find((a) => a.agent_id === 'L2');
+assert.equal(
+  l2LogEntry?.status,
+  'SKIPPED_NOT_APPLICABLE',
+  `Suppressed agent L2 must be logged as SKIPPED_NOT_APPLICABLE in pipeline_execution_log.json (got ${l2LogEntry?.status})`
+);
+assert.equal(
+  l2LogEntry?.output_file,
+  null,
+  'Suppressed agent L2 must have output_file: null in pipeline_execution_log.json'
+);
 assert.ok(l1File.content.includes('Wayback_CDX') || l1File.content.includes('/about'), 'L1 must receive Wayback stealth diff / churn');
 assert.ok(!l1File.content.includes('CISA_KEV'), 'L1 must NOT receive CISA_KEV hits routed to L3');
 assert.ok(l3File.content.includes('CISA_KEV') && !l3File.content.includes('AbuseCh_'), 'L3 must receive only CISA_KEV');
 assert.ok(l4File.content.includes('AbuseCh_URLhaus') && !l4File.content.includes('CISA_KEV'), 'L4 must receive only Abuse.ch');
 assert.ok(l5File.content.includes('RIPEstat_RPKI_ROA'), 'L5 must receive RPKI ROA');
 assert.ok(l6File.content.includes('/terms') && l6File.content.includes('arbitration'), 'L6 must receive ToS high-risk stealth diff');
-assert.ok(
-  l2File.content.includes('ATTESTATION [ZERO_HIT] (agent_id:L2, probe_hash:') && l2File.content.length < 360,
-  `Zero-hit specialist L2 inside active Squad L must collapse cleanly (got ${l2File.content.length} chars)`
-);
 assert.ok(
   l1File.content.length !== l3File.content.length && l3File.content.length !== l6File.content.length,
   'Active Squad L specialists must produce distinct byte lengths and tables'
@@ -2490,6 +2536,728 @@ assert.ok(
   remainingDriftDelta && remainingDriftDelta.summary.includes('2 external/search-index or unverified URL(s)'),
   'External archive.org/DDG URLs remain LOW PAGINATION_DRIFT even if 404'
 );
+
+// 11.7 Surgical Stabilization Pass Verification (Fixes 1–6)
+// FIX 1: Live Source Precedence (Public vs. Private) overrides static Wikidata/DBpedia & activates Squad J/K
+const livePublicQuoteOverride = resolveLiveMarketPublicStatus({
+  secIsPublic: false,
+  liveMarketQuote: { symbol: 'SPCX', exchange: 'NYSE', price: 142.5 },
+  wikidataLegalForm: 'Privately held company',
+  wikidataTicker: null,
+});
+assert.equal(livePublicQuoteOverride.isPublic, true, 'Live Yahoo Finance quote (SPCX) must override static private Wikidata');
+assert.equal(livePublicQuoteOverride.ticker, 'SPCX', 'Live ticker SPCX must be preserved');
+assert.equal(livePublicQuoteOverride.source, 'YAHOO_FINANCE_QUOTE', 'Live quote source precedence must win');
+
+const irPortalOverride = resolveLiveMarketPublicStatus({
+  secIsPublic: false,
+  liveMarketQuote: null,
+  yahooSearch: null,
+  discoveredSubdomains: ['ir.spacex.com', 'api.spacex.com'],
+  primaryDomain: 'spacex.com',
+  wikidataLegalForm: 'Privately held company',
+});
+assert.equal(irPortalOverride.isPublic, true, 'Official ir.<domain> portal must override static private classification');
+assert.equal(irPortalOverride.source, 'INVESTOR_RELATIONS_PORTAL', 'IR portal precedence must activate');
+
+const livePublicIntelForJK: LiveBusinessIntelligence = {
+  ...benignWikiIntel,
+  entityType: 'Public Corporation (NYSE: SPCX)',
+  operatingStatus: 'Active (Publicly Traded · SPCX · Verified via YAHOO_FINANCE_QUOTE)',
+  businessScale: 'Public Listed Corporation',
+  stockTickerOrRegistryId: 'NYSE: SPCX',
+  accountingForensics: {
+    status: 'INSUFFICIENT_DATA',
+    currentYear: null,
+    priorYear: null,
+    beneishMScore: null,
+    sloanAccrualRatio: null,
+    altmanZScore: null,
+    altmanZone: 'UNAVAILABLE',
+    secondDigitBenford: {
+      sampleSize: 0,
+      chiSquare: null,
+      mad: null,
+      roundingAnomalyDetected: false,
+    },
+    componentRatios: {},
+    manipulationProbabilityFlag: 'UNAVAILABLE',
+    summaryVerdict: 'Newly listed public issuer awaiting comparative 2-year XBRL filings.',
+  },
+  insiderLabor: {
+    form4AndOwnershipFilings: [],
+    item4AuditorOrRestatement8Ks: [],
+    cfpbComplaintsTotal: 0,
+    cfpbSampleComplaints: [],
+    oshaAndNlrbSignals: [],
+    preEventTimingNote: '0 Form 4 / Item 4 8-K anomalies',
+  },
+  deepAttackSurface: {
+    ...benignWikiIntel.deepAttackSurface!,
+    liveMarketQuote: {
+      symbol: 'SPCX',
+      exchange: 'NYSE',
+      currency: 'USD',
+      price: 142.5,
+      previousClose: 140.0,
+      changePercent: 1.79,
+      fiveDayCloseSeries: [138.2, 139.0, 140.5, 140.0, 142.5],
+      fetchedAtIso: '2026-04-01T15:30:00.000Z',
+      sourceUrl: 'https://finance.yahoo.com/quote/SPCX',
+    },
+  },
+};
+const squadJHits = extractGroundedHitsByAgent('squadJ', livePublicIntelForJK);
+const squadKHits = extractGroundedHitsByAgent('squadK', livePublicIntelForJK);
+assert.ok((squadJHits.byAgent.J1 || []).length > 0, 'Squad J (J1) must execute on live public ticker instead of skipping');
+assert.ok((squadKHits.byAgent.K1 || []).length > 0 && (squadKHits.byAgent.K2 || []).length > 0, 'Squad K (K1/K2) Form 4 & 8-K scanners must execute on live public ticker');
+
+// FIX 2: Exclude Third-Party Secondary SPV Form Ds from Temporal Causality & ACH Chains
+const spvNoiseCausality = analyzeCrossStreamTemporalCausality({
+  targetEntity: 'SpaceX',
+  targetLegalName: 'Space Exploration Technologies Corp.',
+  windowDays: 14,
+  secFormDOfferings: [
+    { entityName: 'Dominari Master SPV LLC', form: 'D', filedAt: '2026-03-10', url: 'https://sec.gov/d1' },
+    { entityName: 'Futurum Series Fund LP', form: 'D', filedAt: '2026-03-11', url: 'https://sec.gov/d2' },
+    { entityName: 'Founders Fund SpaceX Fund III', form: 'D', filedAt: '2026-03-12', url: 'https://sec.gov/d3' },
+  ],
+  federalAwards: [
+    { program: 'NASA Commercial Crew Launch Services', amount: '$2,500,000,000', year: '2026-03-12', url: 'https://usaspending.gov/a1' },
+  ],
+  federalRegisterDocs: [
+    { title: 'FAA Launch License Notice', documentNumber: '2026-05112', publicationDate: '2026-03-13', agencies: ['FAA'], url: 'https://federalregister.gov/r1' },
+  ],
+});
+assert.equal(spvNoiseCausality.filteredThirdPartySpvCount, 3, 'All 3 third-party SPV Form Ds must be classified & excluded as THIRD_PARTY_SPV_NOISE');
+assert.equal(
+  spvNoiseCausality.clusters.some((c) => c.streamsInvolved.includes('SEC_FORM_D')),
+  false,
+  'Third-party secondary SPVs must NEVER trigger SEC_FORM_D causal clusters against federal awards or Federal Register notices'
+);
+
+// FIX 3: Benign Controls in PageRank Contagion Graph act as dampeners and are excluded from Top 10 Risk Chokepoints
+const benignRpkiGraph = buildForensicPropertyGraph(
+  spacexMockTechEntity,
+  [],
+  {
+    ...benignWikiIntel,
+    adversarialInfra: {
+      waybackSnapshotsFound: 5,
+      uniqueContentDigests: 2,
+      highFrequencyChurnDetected: false,
+      earliestSnapshotTimestamp: '20250101000000',
+      latestSnapshotTimestamp: '20260101000000',
+      sampleDigestTransitions: [],
+      adversarialPromptInjectionIndicators: {
+        invisibleUnicodeTagsCount: 0,
+        zeroWidthCharsCount: 0,
+        suspiciousDirectivePatterns: [],
+        threatLevel: 'CLEAN',
+      },
+      cisaKevMatches: [],
+      abuseChIndicators: [],
+      rpkiValidation: [{ asn: '14593', prefix: '129.222.0.0/16', validity: 'valid' }],
+    },
+  },
+  computeHawkesAnalysis([])
+);
+const rpkiNode = benignRpkiGraph.nodes.find((n) => n.label.includes('RPKI AS14593: VALID'));
+assert.ok(rpkiNode && isBenignControlNode(rpkiNode), 'RPKI: VALID node must be classified as BENIGN_CONTROL');
+const benignPrNodes = computeGraphPageRankAndContagion(benignRpkiGraph.nodes, benignRpkiGraph.edges);
+const rpkiPrNode = benignPrNodes.find((n) => n.label.includes('RPKI AS14593: VALID'));
+assert.ok(rpkiPrNode && rpkiPrNode.controlClassification === 'BENIGN_CONTROL' && rpkiPrNode.contagionRisk <= 0.1, 'RPKI: VALID must have BENIGN_CONTROL classification and dampened contagionRisk <= 0.10');
+
+// FIX 4, FIX 5A, FIX 6: Attached Lead -> ACH-LEAD & Bayesian LR, Strict Domain Source Validator, FRI vs Bayesian >20% Calibration Note
+const stabLiveIntel: LiveBusinessIntelligence = {
+  ...livePublicIntelForJK,
+  calibratedFri: 0.72,
+  officialWebsite: 'https://spacex.com',
+  cyberTelemetry: {
+    ...livePublicIntelForJK.cyberTelemetry!,
+    primaryDomain: 'spacex.com',
+    ctSubdomains: ['telemetry.spacex.com', 'api.spacex.com'],
+  },
+  technicalOrOperationalProfile: ['Telemetry endpoint /v1/telemetry-beacon uses hardware_uuid_beacon over grpc'],
+  adversarialInfra: {
+    waybackSnapshotsFound: 5,
+    uniqueContentDigests: 2,
+    highFrequencyChurnDetected: false,
+    earliestSnapshotTimestamp: '20250101000000',
+    latestSnapshotTimestamp: '20260101000000',
+    sampleDigestTransitions: [],
+    adversarialPromptInjectionIndicators: {
+      invisibleUnicodeTagsCount: 0,
+      zeroWidthCharsCount: 0,
+      suspiciousDirectivePatterns: [],
+      threatLevel: 'CLEAN',
+    },
+    cisaKevMatches: [],
+    abuseChIndicators: [],
+    rpkiValidation: [{ asn: '14593', prefix: '129.222.0.0/16', validity: 'valid' }],
+  },
+  groundingSources: [
+    {
+      title: 'CourtListener (News): SpaceX faces lawsuit over labor claims',
+      uri: 'https://news.google.com/rss/articles/CBMiSpaceXLegalReport',
+      sourceType: 'court_docket',
+    },
+    {
+      title: 'Patent Record: SpaceX Official Homepage',
+      uri: 'https://spacex.com/',
+      sourceType: 'patent_ip',
+    },
+    {
+      title: 'CourtListener (NDCA): Genuine Federal Docket',
+      uri: 'https://www.courtlistener.com/docket/12345/doe-v-spacex/',
+      sourceType: 'court_docket',
+    },
+    {
+      title: 'Patent Record: US11999999B2 Reusable Booster',
+      uri: 'https://patents.google.com/patent/US11999999B2/en',
+      sourceType: 'patent_ip',
+    },
+  ],
+};
+
+// Direct unit check on validateAndNormalizeSourceTag (FIX 5A)
+const normNewsCourt = validateAndNormalizeSourceTag(stabLiveIntel.groundingSources[0], 'spacex.com');
+assert.equal(normNewsCourt.sourceType, 'news', 'news.google.com URL must be re-tagged from court_docket to news');
+assert.equal(normNewsCourt.sourceSubLabel, 'Legal Coverage', 'Re-tagged legal news must carry sub-label Legal Coverage');
+const normHomePatent = validateAndNormalizeSourceTag(stabLiveIntel.groundingSources[1], 'spacex.com');
+assert.equal(normHomePatent.sourceType, 'official_site', 'spacex.com/ homepage must NEVER be tagged patent_ip');
+const normRealCourt = validateAndNormalizeSourceTag(stabLiveIntel.groundingSources[2], 'spacex.com');
+assert.equal(normRealCourt.sourceType, 'court_docket', 'courtlistener.com URL must preserve court_docket tag');
+const normRealPatent = validateAndNormalizeSourceTag(stabLiveIntel.groundingSources[3], 'spacex.com');
+assert.equal(normRealPatent.sourceType, 'patent_ip', 'patents.google.com URL must preserve patent_ip tag');
+
+const stabSquads = create160AgentSwarm('SpaceX', stabLiveIntel);
+const stabDossier = generateInvestigationDossier(
+  {
+    entity: 'SpaceX',
+    focus: ['cyber', 'legal'],
+    constraints: 'CI stabilization pass',
+    uploadedFileName: 'Whistleblower_Telemetry_Memo.txt',
+    uploadedFileContent:
+      'Internal engineering memo documenting unlogged telemetry beacon on telemetry.spacex.com via /v1/telemetry-beacon transmitting hardware_uuid_beacon over grpc without audit disclosure.',
+    timeRange: '2020-2026',
+    geography: 'US',
+    liveIntel: stabLiveIntel,
+  },
+  stabSquads,
+  2.8
+);
+
+const stabExecMd = stabDossier.files.find((f) => f.filename === '00_EXEC_SUMMARY.md')?.content || '';
+const stabSourceCsv = stabDossier.files.find((f) => f.filename === '08_SOURCE_INDEX.csv')?.content || '';
+const stab37Md = stabDossier.files.find((f) => f.filename === '37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md')?.content || '';
+const stab38Md = stabDossier.files.find((f) => f.filename === '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md')?.content || '';
+
+assert.ok(stab38Md.includes('| `ACH-LEAD` |'), '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md must include dedicated ACH-LEAD row when user lead is attached');
+assert.ok(stab38Md.includes('Whistleblower_Telemetry_Memo.txt'), 'ACH-LEAD must cite attached filename Whistleblower_Telemetry_Memo.txt');
+assert.ok(stab37Md.includes('ATTACHED_LEAD'), '37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md must include ATTACHED_LEAD Likelihood Ratio row');
+assert.ok(!stab37Md.split('## 5. PROPERTY GRAPH PAGERANK')[1].split('## 6. SHANNON ENTROPY')[0].split('- **Benign Control Dampeners')[0].includes('RPKI AS14593: VALID'), 'Top 10 Risk Contagion Chokepoints table must exclude BENIGN_CONTROL RPKI: VALID node');
+assert.ok(stabExecMd.includes('[NEWS · Legal Coverage]'), '00_EXEC_SUMMARY.md must re-tag news.google.com CourtListener URL as [NEWS · Legal Coverage]');
+assert.ok(!stabExecMd.includes('[PATENT_IP] **Patent Record: SpaceX Official Homepage**'), '00_EXEC_SUMMARY.md must NOT tag spacex.com/ as [PATENT_IP]');
+assert.ok(stabSourceCsv.includes('news (Legal Coverage)'), '08_SOURCE_INDEX.csv must record re-tagged legal news category');
+assert.ok(stabExecMd.includes('**Calibration Note:** Raw heuristic FRI'), '00_EXEC_SUMMARY.md must include 1-line FRI vs Bayesian calibration note when divergence >20%');
+console.log('[PASS] Phase 11.7: All 6 Surgical Stabilization Fixes (Live Precedence, SPV Causal Isolation, Benign Control Dampening, ACH-LEAD, Domain Source Validation & Stub Suppression, FRI/Bayesian Calibration) verified');
+
+// =============================================================================
+// PHASE 11.8: v27.0 — 200-AGENT DEEP PROXY, KINSHIP & POLITICAL-INFLUENCE SUITE
+// =============================================================================
+console.log('=== [11.8] Verifying v27.0 Target Sanitization, Squads Q/R/S/T, FARA Pacing & H0 Collision Steelmanning ===');
+
+// 1. Target Query Sanitization & RegExp escaping
+const sanitized = sanitizeTargetQuery('Alphabet Inc. (Google / GOOG) [test.*+?]');
+assert.ok(sanitized.primaryName.startsWith('Alphabet Inc.'), `Expected primaryName to start with Alphabet Inc., got "${sanitized.primaryName}"`);
+assert.ok(sanitized.aliases.some((a) => a.includes('Google')), 'Should extract parenthetical alias Google');
+const escapedTest = escapeRegExp('A+B*(C)?[D]$^');
+assert.doesNotThrow(() => new RegExp(escapedTest, 'i'), 'Escaped RegExp must compile safely without SyntaxError');
+assert.ok(new RegExp(escapedTest).test('A+B*(C)?[D]$^'), 'Escaped RegExp must match literal special characters');
+
+// 2. Hard crawl caps & DOJ FARA rate limit (<= 4 req/10s => <= 0.4 rps)
+assert.equal(MAX_CRTSH_SANS, 50, 'crt.sh SAN cap must equal 50');
+assert.equal(MAX_PHASE4_PIVOTS, 15, 'Phase-4 pivot cap must equal 15');
+assert.equal(MAX_SEC_FILING_PULLS, 25, 'SEC filing pull cap must equal 25');
+assert.ok(getRateLimitRpsForHost('efile.fara.gov') <= 0.4, 'DOJ FARA pacing must enforce <= 4 req/10s (<= 0.4 rps)');
+
+// 3. Squad Q pure parsers: Surnames, DEF 14A Item 404, Form 4 Indirect XML, Exhibit 21.1 Diff
+const extractedExecs = extractExecutiveSurnames([
+  { rawName: 'Jane Vance (CEO)', role: 'CEO', source: 'SEC_DEF14A' },
+  { rawName: 'Marcus Thorne Jr.', role: 'CFO', source: 'SEC_DEF14A' },
+  { rawName: 'Dr. Elena Rostova', role: 'Director', source: 'GLEIF' },
+]);
+assert.equal(extractedExecs.length, 3, 'Should extract 3 executive surnames');
+assert.equal(extractedExecs[0].surname, 'Vance');
+assert.equal(extractedExecs[1].surname, 'Thorne', 'Should strip generational suffix Jr.');
+assert.equal(extractedExecs[2].surname, 'Rostova');
+
+const sampleDef14a = `
+ITEM 404. CERTAIN RELATIONSHIPS AND RELATED PERSON TRANSACTIONS
+During fiscal year 2025, the Company paid $4,250,000 to Vance Aerospace Holdings LLC, an entity controlled by the brother-in-law of our Chief Executive Officer Jane Vance, for specialized propulsion machining services under a sole-source contract.
+`;
+const item404Hits = parseDef14aItem404(sampleDef14a, {
+  accessionNumber: '0001234567-25-000011',
+  filingDate: '2025-04-18',
+  sourceUrl: 'https://www.sec.gov/Archives/edgar/data/123456/def14a.htm',
+});
+assert.ok(item404Hits.length >= 1, 'DEF 14A Item 404 parser must detect related-person transaction');
+assert.ok(item404Hits[0].snippet.includes('Vance Aerospace Holdings LLC'), 'Item 404 excerpt must include counterparty Vance Aerospace Holdings LLC');
+
+const sampleForm4Xml = `
+<ownershipDocument>
+  <reportingOwner>
+    <reportingOwnerId><rptOwnerName>Vance Jane</rptOwnerName></reportingOwnerId>
+    <reportingOwnerRelationship><isOfficer>1</isOfficer><officerTitle>CEO</officerTitle></reportingOwnerRelationship>
+  </reportingOwner>
+  <nonDerivativeTable>
+    <nonDerivativeTransaction>
+      <transactionAmounts><transactionShares><value>125000</value></transactionShares></transactionAmounts>
+      <ownershipNature>
+        <directOrIndirectOwnership><value>I</value></directOrIndirectOwnership>
+        <natureOfOwnership><value>By Vance Family Trust LLC (Spouse Trustee)</value></natureOfOwnership>
+      </ownershipNature>
+    </nonDerivativeTransaction>
+  </nonDerivativeTable>
+</ownershipDocument>
+`;
+const form4Indirect = parseForm4IndirectXml(sampleForm4Xml, {
+  filingDate: '2025-06-01',
+  formUrl: 'https://www.sec.gov/Archives/edgar/data/123456/form4.xml',
+});
+assert.equal(form4Indirect.length, 1, 'Form 4 XML parser must extract indirect Spouse/Family Trust/LLC holding');
+assert.ok(form4Indirect[0].indirectNature.includes('Vance Family Trust LLC'));
+
+const ex21Old = parseExhibit21Subsidiaries('Alpha Orbital Services LLC | Delaware\nOrion Telemetry Systems Inc. | Nevada\nCore Launch Corp. | Texas');
+const ex21New = parseExhibit21Subsidiaries('Alpha Orbital Solutions LLC | Delaware\nCore Launch Corp. | Texas\nNova Satcom Holdings Inc. | Delaware');
+assert.ok(ex21Old.length >= 3 && ex21New.length >= 3, 'Exhibit 21.1 parser must parse multi-line subsidiary tables');
+const ex21Diff = diffExhibit21Subsidiaries(ex21New, ex21Old, {
+  latestFilingDate: '2025-02-20',
+  priorFilingDate: '2023-02-21',
+  sourceUrls: ['https://www.sec.gov/Archives/edgar/data/123456/ex21.htm'],
+});
+assert.ok(
+  ex21Diff.renamedOrSpunOffCandidates.some((d) => d.status === 'VANISHED' && d.priorName.includes('Orion Telemetry')),
+  'Exhibit 21.1 diff must flag vanished subsidiary Orion Telemetry Systems Inc.'
+);
+assert.ok(
+  ex21Diff.renamedOrSpunOffCandidates.some((d) => d.status === 'RENAMED_OR_SPUN_OFF' && d.priorName.includes('Alpha Orbital Services')),
+  'Exhibit 21.1 diff must flag renamed/restructured Alpha Orbital Services LLC'
+);
+
+// 4. Squad S pure correlator: Non-CDN shared infra flagged, CDN/SaaS filtered as CDN_SHARED_NOISE
+const shadowCorrelations = correlateShadowInfraDomains({
+  primaryDomain: 'apexorbit.com',
+  faviconMmh3: -1948273612,
+  analyticsIds: ['GTM-APEX9981', 'G-99887766'],
+  spfIncludes: ['spf.protection.outlook.com', '_spf.apex-partner-relay.org'],
+  crtShSans: ['apexorbit.com', 'portal.apex-front-group.org', 'cdn.cloudflare.net'],
+  externalPeerFingerprints: [
+    { domain: 'apex-front-group.org', faviconMmh3: -1948273612, analyticsIds: ['GTM-APEX9981'], spfIncludes: [] },
+    { domain: 'cloudflare.net', faviconMmh3: null, analyticsIds: [], spfIncludes: ['spf.protection.outlook.com'] },
+  ],
+});
+assert.ok(
+  shadowCorrelations.some((c) => c.domain === 'apex-front-group.org' && c.classification === 'UNDISCLOSED_FRONT_OR_PARTNER'),
+  'Non-CDN domain sharing Favicon MMH3 + GTM ID must be flagged UNDISCLOSED_FRONT_OR_PARTNER'
+);
+assert.ok(
+  shadowCorrelations.some((c) => c.domain.includes('cloudflare.net') && c.classification === 'CDN_SHARED_NOISE'),
+  'CDN provider domain must be classified as CDN_SHARED_NOISE'
+);
+assert.ok(
+  !shadowCorrelations.some((c) => c.domain.includes('outlook.com') && c.classification === 'UNDISCLOSED_FRONT_OR_PARTNER'),
+  'Microsoft Outlook SPF include must NEVER be flagged as UNDISCLOSED_FRONT_OR_PARTNER'
+);
+
+// 5. End-to-End 200-Agent Dossier Generation, FtM, PageRank FIX 3, ACH H0 Collision Steelmanning & verify_dossier.mjs
+const v27LiveIntel: LiveBusinessIntelligence = {
+  ...stabLiveIntel,
+  entityName: 'Apex Orbit Corp',
+  legalName: 'Apex Orbit Corporation',
+  officialWebsite: 'https://apexorbit.com',
+  sanitizedTarget: sanitized,
+  proxyKinship: {
+    extractedExecutives: extractedExecs,
+    relatedPersonTransactions: item404Hits,
+    form4IndirectOwnerships: form4Indirect,
+    formDProxyCandidates: [
+      {
+        issuerName: 'Vance Propulsion Ventures LLC',
+        matchedPerson: 'Vance',
+        matchType: 'SHARED_SURNAME_GEO',
+        cityOrState: 'Austin, TX',
+        filedAt: '2025-07-11',
+        riskClassification: 'CANDIDATE_PROXY_COLLISION_CHECK',
+        url: 'https://www.sec.gov/Archives/edgar/data/999111/formd.xml',
+      },
+    ],
+    exhibit21SubsidiaryDiff: ex21Diff,
+    secFilingsPulledCount: 12,
+    summaryVerdict: 'VERIFIED_RELATED_PARTY_AND_VANISHED_SUBSIDIARY_SIGNALS',
+  },
+  politicalInfluence: {
+    faraMatches: [],
+    senateLdaFilings: [
+      {
+        filingUuid: 'lda-2025-q4-001',
+        filingType: 'LD-2',
+        registrantName: 'Capitol Aerospace Policy Group LLC',
+        clientName: 'Apex Orbit Corporation',
+        amountUsd: 480_000,
+        filingYear: 2025,
+        filingPeriod: 'Q4',
+        lobbyingIssues: ['AER', 'DEF'],
+        contributionPayees: [],
+        url: 'https://lda.senate.gov/filings/public/filing/lda-2025-q4-001/print/',
+      },
+    ],
+    openFecSummary: {
+      apiMode: 'PUBLIC_DEMO_KEY',
+      committees: [
+        {
+          committeeId: 'C00881122',
+          name: 'APEX ORBIT CORPORATION PAC',
+          party: 'UNK',
+          committeeType: 'Q',
+          designation: 'B',
+          totalReceiptsUsd: 260_000,
+          totalDisbursementsUsd: 215_000,
+          cycle: 2026,
+          url: 'https://www.fec.gov/data/committee/C00881122/',
+        },
+      ],
+      executiveContributionsByPartyCycle: [
+        {
+          contributorName: 'VANCE, JANE',
+          party: 'DEM',
+          committeeName: 'AEROSPACE INNOVATION FUND',
+          cycle: 2026,
+          totalAmountUsd: 12_500,
+          count: 3,
+          url: 'https://www.fec.gov/data/receipts/individual-contributions/',
+        },
+      ],
+      totalPacDisbursementsUsd: 215_000,
+      totalExecutiveContributionsUsd: 12_500,
+    },
+    affiliatedNonprofits: [
+      {
+        ein: '84-9911223',
+        name: 'Apex Orbit Space Policy Action Fund',
+        subsectionCode: '04',
+        classification: '501(c)(4)',
+        city: 'Wilmington',
+        state: 'DE',
+        totalRevenueUsd: 3_400_000,
+        totalAssetsUsd: 4_100_000,
+        matchReason: 'Exact brand token match',
+        url: 'https://projects.propublica.org/nonprofits/organizations/849911223',
+      },
+    ],
+    summaryVerdict: 'ACTIVE_CORPORATE_PAC_AND_501C4_DARK_MONEY_FOOTPRINT',
+  },
+  shadowInfraSubawards: {
+    infraFingerprint: {
+      primaryDomain: 'apexorbit.com',
+      faviconMmh3: -1948273612,
+      gtmIds: ['GTM-APEX9981'],
+      gaIds: ['G-99887766'],
+      spfIncludes: ['spf.protection.outlook.com', '_spf.apex-partner-relay.org'],
+      crtShSanCount: 3,
+      crtShSanSample: ['apexorbit.com', 'portal.apex-front-group.org', 'cdn.cloudflare.net'],
+    },
+    sharedInfraDomains: shadowCorrelations,
+    usaSpendingSubawards: [
+      {
+        subawardId: 'SUB-2025-8812',
+        primeAwardId: 'CONT_AWD_80MSFC25C0011',
+        primeRecipient: 'Apex Orbit Corporation',
+        subawardeeName: 'Vance Aerospace Holdings LLC',
+        amountUsd: 1_850_000,
+        awardingAgency: 'National Aeronautics and Space Administration',
+        actionDate: '2025-08-22',
+        description: 'Propulsion avionics pass-through sub-contract',
+        url: 'https://www.usaspending.gov/search',
+      },
+    ],
+    totalSubawardPassThroughUsd: 1_850_000,
+    summaryVerdict: 'UNDISCLOSED_SHARED_INFRA_AND_SUBAWARD_PASS_THROUGH_DETECTED',
+  },
+};
+
+const v27Squads = create200AgentSwarm('Apex Orbit Corp', v27LiveIntel);
+const v27Dossier = generateInvestigationDossier(
+  {
+    entity: 'Apex Orbit Corp',
+    focus: ['proxy_kinship', 'political', 'shadow_infra'],
+    constraints: 'v27.0 CI regression verification',
+    timeRange: '2020-2026',
+    geography: 'US',
+    liveIntel: v27LiveIntel,
+  },
+  v27Squads,
+  3.1
+);
+
+const f39 = v27Dossier.files.find((f) => f.filename === '39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md');
+const f39Json = v27Dossier.files.find((f) => f.filename === 'evidence/proxy_kinship_graph.json');
+const f40 = v27Dossier.files.find((f) => f.filename === '40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md');
+const f40Json = v27Dossier.files.find((f) => f.filename === 'evidence/political_influence_ledger.json');
+const f41 = v27Dossier.files.find((f) => f.filename === '41_SHADOW_INFRA_DNA_AND_SUBAWARD_PASS_THROUGH.md');
+const f41Json = v27Dossier.files.find((f) => f.filename === 'evidence/raw_payloads/shadow_infra_subaward_payload.json');
+const v27Ftm = v27Dossier.files.find((f) => f.filename === 'evidence/followthemoney_graph.ftm.json')?.content || '';
+const v27Ach = v27Dossier.files.find((f) => f.filename === '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md')?.content || '';
+const v27Bay = v27Dossier.files.find((f) => f.filename === '37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md')?.content || '';
+const v27ExecLog = JSON.parse(v27Dossier.files.find((f) => f.filename === 'pipeline_execution_log.json')?.content || '{}');
+
+assert.ok(f39 && f39.content.includes('Vance Aerospace Holdings LLC'), '39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md must include DEF 14A Item 404 counterparty');
+assert.ok(f39Json && f39Json.content.includes('Orion Telemetry'), 'evidence/proxy_kinship_graph.json must contain Exhibit 21.1 vanished subsidiary');
+assert.ok(f40 && f40.content.includes('APEX ORBIT CORPORATION PAC'), '40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md must include OpenFEC PAC');
+assert.ok(f40Json && f40Json.content.includes('Apex Orbit Space Policy Action Fund'), 'evidence/political_influence_ledger.json must include ProPublica 501(c)(4)');
+assert.ok(f41 && f41.content.includes('apex-front-group.org') && f41.content.includes('SUB-2025-8812'), '41_SHADOW_INFRA_DNA_AND_SUBAWARD_PASS_THROUGH.md must include front domain and sub-award');
+assert.ok(f41Json && f41Json.content.includes('1850000'), 'shadow_infra_subaward_payload.json must include USASpending sub-award pass-through amount');
+
+// FollowTheMoney integration check
+assert.ok(v27Ftm.includes('APEX ORBIT CORPORATION PAC'), 'FollowTheMoney graph must include Squad R OpenFEC PAC');
+assert.ok(v27Ftm.includes('Vance Aerospace Holdings LLC'), 'FollowTheMoney graph must include Squad Q/S related entity & sub-award recipient');
+assert.ok(v27Ftm.includes('apex-front-group.org'), 'FollowTheMoney graph must include Squad S undisclosed front domain');
+
+// FIX 3 Benign Control Dampening for clean DOJ FARA screening
+const v27PageRankSection = v27Bay.split('## 5. PROPERTY GRAPH PAGERANK')[1].split('## 6. SHANNON ENTROPY')[0];
+const v27Top10TableOnly = v27PageRankSection.split('- **Benign Control Dampeners')[0];
+assert.ok(!v27Top10TableOnly.includes('Clean DOJ FARA'), 'Clean DOJ FARA benign control node must be excluded from Top 10 Risk Contagion Chokepoints');
+assert.ok(v27PageRankSection.includes('Clean DOJ FARA'), 'Clean DOJ FARA node must appear in Benign Control Dampeners summary');
+
+// Phase-5 ACH H0 Name-Collision Steelmanning check
+const v27AchJson = JSON.parse(v27Dossier.files.find((f) => f.filename === 'evidence/ach_red_team_matrix.json')?.content || '{}') as {
+  findings?: Array<{ sourceAgentOrSignal: string; category: string; verdict: string; h0BenignSteelman: string }>;
+};
+assert.ok(v27Ach.includes('SquadQ:ProxyKinship'), '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md must evaluate SquadQ:ProxyKinship verified signals');
+assert.ok(v27Ach.includes('SquadQ:FormDNameCollisionCheck'), '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md must evaluate SquadQ:FormDNameCollisionCheck');
+assert.ok(v27Ach.includes('SquadR:501c4_DarkMoney'), '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md must evaluate SquadR:501c4_DarkMoney');
+assert.ok(v27Ach.includes('SquadS:ShadowInfraDNA'), '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md must evaluate SquadS:ShadowInfraDNA');
+assert.ok(v27AchJson.findings?.some((f) => f.category === 'PROXY_KINSHIP'), 'ACH JSON must include PROXY_KINSHIP category');
+assert.ok(v27AchJson.findings?.some((f) => f.category === 'POLITICAL_INFLUENCE'), 'ACH JSON must include POLITICAL_INFLUENCE category');
+assert.ok(v27AchJson.findings?.some((f) => f.category === 'SHADOW_INFRA_SUBAWARD'), 'ACH JSON must include SHADOW_INFRA_SUBAWARD category');
+const collisionFinding = v27AchJson.findings?.find((f) => f.sourceAgentOrSignal === 'SquadQ:FormDNameCollisionCheck');
+assert.ok(collisionFinding, 'ACH JSON must include SquadQ:FormDNameCollisionCheck finding');
+assert.notEqual(
+  collisionFinding.verdict,
+  'SURVIVED_RED_TEAM',
+  'Unverified surname-only Form D collision candidate must NEVER survive Red-Team as SURVIVED_RED_TEAM'
+);
+assert.ok(
+  /collision|surname|coincidental/i.test(collisionFinding.h0BenignSteelman),
+  'ACH H0 steelman must explicitly test coincidental surname/name collision'
+);
+
+// FIX 5B Zero-Hit Stub Suppression across 200-agent swarm
+assert.equal(v27ExecLog.agents?.length, 200, 'pipeline_execution_log.json must account for all 200 agents (Squads A-T)');
+assert.ok(v27ExecLog.skipped_not_applicable_agents_count > 0, 'FIX 5B stub suppression must remain active on zero-hit agents');
+
+// Run unmodified offline verify_dossier.mjs on the complete 200-agent v27.0 dossier!
+const v27TempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovereign-v27-verify-'));
+try {
+  for (const file of v27Dossier.files) {
+    const outPath = path.join(v27TempDir, file.filename);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, file.content, 'utf8');
+  }
+  const verifyOut = execSync('node verify_dossier.mjs', { cwd: v27TempDir, encoding: 'utf8' });
+  assert.ok(verifyOut.includes('ALL CRYPTOGRAPHIC & PROVENANCE CHECKS PASSED') || verifyOut.includes('PASS'), 'Unmodified verify_dossier.mjs must pass on 200-agent v27.0 dossier');
+} finally {
+  fs.rmSync(v27TempDir, { recursive: true, force: true });
+}
+
+console.log('[PASS] Phase 11.8: v27.0 200-Agent Deep Proxy, Kinship, Political-Influence, Shadow Infra, H0 Collision Steelmanning & Unmodified verify_dossier.mjs verified');
+
+// -----------------------------------------------------------------------------
+// Phase 11.9: Section 05 Planetary Corporate Incorporations, M&A & Antitrust Engine
+// -----------------------------------------------------------------------------
+const winNow = new Date('2026-11-22T15:30:00.000Z');
+const rollingWin = computeDynamic30DayWindow(winNow);
+assert.equal(rollingWin.enddt, '2026-11-22', 'Dynamic enddt must match UTC YYYY-MM-DD of current date');
+assert.equal(rollingWin.startdt, '2026-10-23', 'Dynamic startdt must be exactly 30 days prior to enddt');
+assert.equal(
+  SEC_EDGAR_COMPLIANT_USER_AGENT,
+  'SovereignInvestigationsGrid/27.0 (audit@codevalai.local)',
+  'SEC EDGAR User-Agent must match compliant header'
+);
+assert.equal(PLANETARY_FETCH_TIMEOUT_MS, 12_000, 'Planetary fetch timeout must be 12,000ms');
+
+assert.equal(mapIsoCountryToNameAndRegion('MC').country, 'Monaco', 'ISO MC must map to Monaco');
+assert.equal(mapIsoCountryToNameAndRegion('IL').region, 'Middle East & Africa', 'ISO IL must map to Middle East & Africa');
+assert.equal(mapIsoCountryToNameAndRegion('KY').country, 'Cayman Islands', 'ISO KY must map to Cayman Islands');
+
+const ciSyncedIso = '2026-11-22T15:30:00.000Z';
+const ciGleifEvents = parseGleifLeiIncorporations(
+  {
+    data: [
+      {
+        id: 'CI_TEST_LEI_0001',
+        attributes: {
+          lei: 'CI_TEST_LEI_0001',
+          entity: {
+            legalName: { name: 'Monaco Quantum Holdings SARL' },
+            category: 'GENERAL',
+            status: 'ACTIVE',
+            jurisdiction: 'MC',
+            legalAddress: { city: 'Monte-Carlo', country: 'MC' },
+          },
+          registration: { initialRegistrationDate: '2026-11-22T09:10:00Z' },
+        },
+      },
+    ],
+  },
+  ciSyncedIso,
+  rollingWin.enddt
+).map((e) => ({ ...e, sourceRecordId: `CI_TEST_GLEIF:${e.sourceRecordId}`, id: `ci_test_${e.id}` }));
+
+const ciSecNvEvents = parseSecEftsNewVentures(
+  {
+    hits: {
+      hits: [
+        {
+          _id: '0002199999-26-000001:primary_doc.xml',
+          _source: {
+            adsh: '0002199999-26-000001',
+            form: 'D',
+            file_date: '2026-11-21',
+            display_names: ['Aether Robotics Labs Inc. (CIK 0002199999)'],
+            ciks: ['0002199999'],
+            biz_locations: ['San Francisco, CA'],
+            inc_states: ['DE'],
+            items: ['06b'],
+          },
+        },
+      ],
+    },
+  },
+  ciSyncedIso,
+  rollingWin.enddt
+).map((e) => ({ ...e, sourceRecordId: `CI_TEST_SECNV:${e.sourceRecordId}`, id: `ci_test_${e.id}` }));
+
+const ciAtomEvents = parseSecCurrentAtomFormD(
+  `<feed><entry><title>D - Orbital BioForge LLC (0002199888) (Issuer)</title><link href="https://www.sec.gov/Archives/edgar/data/2199888/000219988826000002/0002199888-26-000002-index.htm"/><id>urn:tag:sec.gov,2008:accession-number=0002199888-26-000002</id><updated>2026-11-20T18:12:00-05:00</updated></entry></feed>`,
+  ciSyncedIso,
+  rollingWin.enddt
+).map((e) => ({ ...e, sourceRecordId: `CI_TEST_ATOM:${e.sourceRecordId}`, id: `ci_test_${e.id}` }));
+
+const ciSecMaEvents = parseSecEftsMaBuyouts(
+  {
+    hits: {
+      hits: [
+        {
+          _id: '0001193125-26-999111:d123.htm',
+          _source: {
+            adsh: '0001193125-26-999111',
+            form: 'SC TO-T',
+            file_date: '2026-11-22',
+            display_names: ['Apex Sovereign Corp (CIK 0001193125)', 'Target Photonics Inc. (CIK 0001888111)'],
+            ciks: ['0001193125'],
+            biz_locations: ['New York, NY'],
+            file_description: 'Tender offer acquisition statement',
+          },
+        },
+      ],
+    },
+  },
+  ciSyncedIso,
+  rollingWin.enddt
+).map((e) => ({ ...e, sourceRecordId: `CI_TEST_SECMA:${e.sourceRecordId}`, id: `ci_test_${e.id}` }));
+
+const ciFedRegEvents = parseFederalRegisterAntitrust(
+  {
+    results: [
+      {
+        document_number: '2026-99112',
+        title: 'Premerger Notification; Reporting and Waiting Period Requirements (HSR/CFIUS)',
+        publication_date: '2026-11-19',
+        type: 'Notice',
+        agencies: [{ name: 'Federal Trade Commission' }],
+        abstract: 'Premerger antitrust review docket for cross-border semiconductor acquisitions.',
+        html_url: 'https://www.federalregister.gov/d/2026-99112',
+      },
+    ],
+  },
+  ciSyncedIso,
+  rollingWin.enddt
+).map((e) => ({ ...e, sourceRecordId: `CI_TEST_FEDREG:${e.sourceRecordId}`, id: `ci_test_${e.id}` }));
+
+assert.equal(ciGleifEvents.length, 1, 'GLEIF parser must emit 1 record');
+assert.equal(ciGleifEvents[0].sourceBadge, 'GLEIF LEI');
+assert.equal(ciGleifEvents[0].country, 'Monaco');
+assert.equal(ciSecNvEvents.length, 1, 'SEC Form D EFTS parser must emit 1 record');
+assert.equal(ciSecNvEvents[0].sourceBadge, 'SEC FORM D');
+assert.equal(ciAtomEvents.length, 1, 'SEC Current Atom parser must emit 1 record');
+assert.equal(ciSecMaEvents.length, 1, 'SEC M&A parser must emit 1 record');
+assert.equal(ciSecMaEvents[0].sourceBadge, 'SEC M&A');
+assert.equal(ciSecMaEvents[0].category, 'MA_BUYOUT');
+assert.equal(ciFedRegEvents.length, 1, 'Federal Register parser must emit 1 record');
+assert.equal(ciFedRegEvents[0].sourceBadge, 'FED REG');
+assert.equal(ciFedRegEvents[0].category, 'ANTITRUST_DOCKET');
+
+// Verify SQLite WAL persistence, INSERT OR IGNORE deduplication, filed_at DESC ordering & pagination
+const ciAllPlanetary = [
+  ...ciGleifEvents,
+  ...ciSecNvEvents,
+  ...ciAtomEvents,
+  ...ciSecMaEvents,
+  ...ciFedRegEvents,
+];
+try {
+  liveDaemon.deletePlanetaryRegistryEventsByPrefix('CI_TEST_');
+  const firstUpsert = liveDaemon.upsertPlanetaryRegistryEvents(ciAllPlanetary);
+  assert.equal(firstUpsert.inserted, 5, 'First SQLite WAL upsert must insert all 5 unique planetary records');
+  assert.equal(firstUpsert.duplicatesSkipped, 0, 'First upsert must have 0 duplicates');
+
+  const secondUpsert = liveDaemon.upsertPlanetaryRegistryEvents(ciAllPlanetary);
+  assert.equal(secondUpsert.inserted, 0, 'Repeated SQLite WAL upsert must insert 0 duplicates via INSERT OR IGNORE');
+  assert.equal(secondUpsert.duplicatesSkipped, 5, 'Repeated SQLite WAL upsert must skip all 5 existing records');
+
+  // Strict filed_at DESC ordering & pagination check
+  const page1 = liveDaemon.getPlanetaryRegistryEvents({
+    category: 'NEW_INCORPORATION',
+    search: 'Monaco Quantum',
+    limit: 1,
+    offset: 0,
+  });
+  assert.equal(page1.items.length, 1, 'Filtered search must return Monaco Quantum');
+  assert.equal(page1.items[0].filedAt, '2026-11-22');
+
+  const orderedInc = liveDaemon.getPlanetaryRegistryEvents({
+    category: 'NEW_INCORPORATION',
+    limit: 50,
+    offset: 0,
+  });
+  for (let i = 1; i < orderedInc.items.length; i++) {
+    assert.ok(
+      orderedInc.items[i - 1].filedAt >= orderedInc.items[i].filedAt,
+      `NEW_INCORPORATION must be strictly sorted by filed_at DESC (${orderedInc.items[i - 1].filedAt} < ${orderedInc.items[i].filedAt})`
+    );
+  }
+
+  const pagedCheck = liveDaemon.getPlanetaryRegistryEvents({
+    categories: ['MA_BUYOUT', 'ANTITRUST_DOCKET'],
+    limit: 1,
+    offset: 0,
+  });
+  assert.equal(pagedCheck.items.length, 1, 'Pagination limit=1 must return 1 row');
+  assert.ok(pagedCheck.totalMatching >= 2, 'MA_BUYOUT + ANTITRUST_DOCKET totalMatching must be >= 2');
+  assert.equal(pagedCheck.hasMore, true, 'Pagination hasMore must be true when totalMatching > limit');
+
+  const pStats = liveDaemon.getPlanetaryRegistryStats();
+  assert.ok(pStats.totalLiveRecords >= 5, 'Planetary stats totalLiveRecords must include persisted rows');
+  assert.ok(pStats.newIncorporationsCount >= 3, 'Planetary stats newIncorporationsCount must be >= 3');
+  assert.ok(pStats.maBuyoutsCount >= 1, 'Planetary stats maBuyoutsCount must be >= 1');
+  assert.ok(pStats.antitrustDocketsCount >= 1, 'Planetary stats antitrustDocketsCount must be >= 1');
+} finally {
+  liveDaemon.deletePlanetaryRegistryEventsByPrefix('CI_TEST_');
+}
+
+console.log('[PASS] Phase 11.9: Section 05 Real-Time Planetary Registry (GLEIF/SEC Form D/SEC M&A/FedReg), SQLite WAL Dedup, filed_at DESC Sorting & Pagination verified');
 
 if (requireBuild) {
   const distIndex = path.resolve(originalCwd, 'dist', 'index.html');

@@ -90,7 +90,7 @@ export async function streamLiveBusinessIntelligence(
 
   const processLine = (line: string) => {
     const trimmed = line.trim();
-    if (!trimmed) return;
+    if (!trimmed || trimmed.startsWith(':')) return;
     try {
       const ev = JSON.parse(trimmed) as ClientStreamEvent;
       if (ev.type === 'stage') {

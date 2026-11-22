@@ -659,3 +659,327 @@ export function classifyWikipediaDeletionIntent(
   }
   return 'SUSPICIOUS_DELETION';
 }
+
+export interface LiveMarketPublicStatusResolution {
+  isPublic: boolean;
+  ticker: string | null;
+  exchange: string | null;
+  source:
+    | 'SEC_EDGAR_LIVE'
+    | 'YAHOO_FINANCE_QUOTE'
+    | 'YAHOO_FINANCE_SEARCH'
+    | 'YAHOO_QUOTE_WEB'
+    | 'INVESTOR_RELATIONS_PORTAL'
+    | 'WIKIDATA_STATIC'
+    | 'PRIVATE_OR_UNVERIFIED';
+  irPortalUrl?: string;
+  rationale: string;
+}
+
+/**
+ * FIX 1: Enforces strict live source precedence in entity resolution (Public vs. Private).
+ * Live market & regulatory signals (SEC EDGAR active ticker/CIK, Yahoo Finance live quotes,
+ * verified finance.yahoo.com/quote/<TICKER> pages, and official ir.<domain> Investor Relations
+ * portals) ALWAYS override static knowledge graphs (Wikidata / DBpedia).
+ */
+export function resolveLiveMarketPublicStatus(params: {
+  secIsPublic?: boolean;
+  secTicker?: string | null;
+  secExchange?: string | null;
+  secCik?: string | null;
+  liveMarketQuote?: { symbol?: string; exchange?: string; price?: number | null } | null;
+  yahooSearch?: { symbol?: string; exchange?: string; quoteType?: string } | null;
+  webHitUrls?: string[];
+  discoveredSubdomains?: string[];
+  primaryDomain?: string;
+  wikidataTicker?: string | null;
+  wikidataLegalForm?: string | null;
+}): LiveMarketPublicStatusResolution {
+  const cleanTicker = (raw?: string | null): string | null => {
+    const s = String(raw || '').trim().toUpperCase().replace(/[^A-Z0-9.-]/g, '');
+    if (!s || s.length > 10 || !/^[A-Z]{1,6}(?:[.-][A-Z0-9]{1,3})?$/.test(s)) return null;
+    return s;
+  };
+
+  // Precedence 1: Live SEC EDGAR active public ticker/CIK
+  const secT = cleanTicker(params.secTicker);
+  if (params.secIsPublic && secT) {
+    return {
+      isPublic: true,
+      ticker: secT,
+      exchange: params.secExchange || 'US Exchange',
+      source: 'SEC_EDGAR_LIVE',
+      rationale: `Live SEC EDGAR active public issuer (${params.secExchange || 'US Exchange'}: ${secT}${params.secCik ? `, CIK ${params.secCik}` : ''}) overrides static knowledge graphs.`,
+    };
+  }
+
+  // Precedence 2: Live Yahoo Finance v8 market quote
+  const quoteT = cleanTicker(params.liveMarketQuote?.symbol);
+  if (quoteT && (params.liveMarketQuote?.price ?? 0) > 0) {
+    return {
+      isPublic: true,
+      ticker: quoteT,
+      exchange: params.liveMarketQuote?.exchange || 'Public Exchange',
+      source: 'YAHOO_FINANCE_QUOTE',
+      rationale: `Live Yahoo Finance quote (${quoteT} @ ${params.liveMarketQuote?.price}) overrides static Wikidata/DBpedia classification.`,
+    };
+  }
+
+  // Precedence 3: Live Yahoo Finance Equity search result
+  const yahooT = cleanTicker(params.yahooSearch?.symbol);
+  const yahooType = String(params.yahooSearch?.quoteType || 'EQUITY').toUpperCase();
+  if (yahooT && (!yahooType || yahooType === 'EQUITY' || yahooType === 'COMMON_STOCK')) {
+    return {
+      isPublic: true,
+      ticker: yahooT,
+      exchange: params.yahooSearch?.exchange || 'Public Exchange',
+      source: 'YAHOO_FINANCE_SEARCH',
+      rationale: `Live Yahoo Finance equity listing (${params.yahooSearch?.exchange || 'Exchange'}: ${yahooT}) overrides static Wikidata/DBpedia classification.`,
+    };
+  }
+
+  // Precedence 4: Verified Yahoo Finance quote URL from live open-web hits (e.g. finance.yahoo.com/quote/SPCX)
+  for (const rawUrl of params.webHitUrls || []) {
+    const m = String(rawUrl || '').match(/finance\.yahoo\.com\/quote\/([A-Z]{1,5}(?:[.-][A-Z]{1,2})?)(?:[/?#]|$)/i);
+    if (m && m[1]) {
+      const urlT = cleanTicker(m[1]);
+      if (urlT) {
+        return {
+          isPublic: true,
+          ticker: urlT,
+          exchange: 'Public Exchange',
+          source: 'YAHOO_QUOTE_WEB',
+          rationale: `Live Yahoo Finance quote page detected (${rawUrl}) with active ticker ${urlT}, overriding static knowledge graphs.`,
+        };
+      }
+    }
+  }
+
+  // Precedence 5: Official ir.<domain> or investors.<domain> Investor Relations portal
+  const baseDom = extractDomainHost(params.primaryDomain);
+  if (baseDom) {
+    const irHostRe = new RegExp(`^(?:ir|investor|investors)\\.${baseDom.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}$`, 'i');
+    const irSub = (params.discoveredSubdomains || []).find((sub) => irHostRe.test(extractDomainHost(sub)));
+    const irUrl = (params.webHitUrls || []).find((u) => irHostRe.test(extractDomainHost(u)));
+    if (irSub || irUrl) {
+      const wdT = cleanTicker(params.wikidataTicker);
+      return {
+        isPublic: true,
+        ticker: wdT,
+        exchange: wdT ? 'Public Exchange' : 'Investor Relations Verified',
+        source: 'INVESTOR_RELATIONS_PORTAL',
+        irPortalUrl: irUrl || `https://${extractDomainHost(irSub)}`,
+        rationale: `Official Investor Relations host (${extractDomainHost(irUrl || irSub)}) detected live, overriding static private classification.`,
+      };
+    }
+  }
+
+  // Precedence 6 (lowest): Static Wikidata ticker fallback (only if no live signal exists)
+  const wdT = cleanTicker(params.wikidataTicker);
+  if (wdT) {
+    return {
+      isPublic: true,
+      ticker: wdT,
+      exchange: 'Static Registry',
+      source: 'WIKIDATA_STATIC',
+      rationale: `Static Wikidata ticker fallback (${wdT}).`,
+    };
+  }
+
+  return {
+    isPublic: false,
+    ticker: null,
+    exchange: null,
+    source: 'PRIVATE_OR_UNVERIFIED',
+    rationale: 'No live public exchange ticker, active quote, or official IR portal detected.',
+  };
+}
+
+const OFFICIAL_COURT_HOST_RE =
+  /(?:^|\.)(?:courtlistener\.com|pacer\.gov|uscourts\.gov|supremecourt\.gov|justia\.com|judiciary\.uk|bailii\.org|curia\.europa\.eu|canlii\.org)$/i;
+const OFFICIAL_STATE_COURT_HOST_RE = /(?:^|\.)(?:courts?\.[a-z0-9-]+\.gov|[a-z0-9-]*courts?\.gov)$/i;
+
+const OFFICIAL_PATENT_REGISTRY_HOST_RE =
+  /(?:^|\.)(?:patents\.google\.com|uspto\.gov|epo\.org|espacenet\.com|wipo\.int|patentscope\.wipo\.int|lens\.org|ipo\.gov\.uk|j-platpat\.inpit\.go\.jp|cipo\.ic\.gc\.ca|dpma\.de|euipo\.europa\.eu)$/i;
+
+const NEWS_OUTLET_HOST_RE =
+  /(?:^|\.)(?:news\.google\.com|reuters\.com|bloomberg\.com|wsj\.com|ft\.com|cnbc\.com|forbes\.com|techcrunch\.com|theverge\.com|nytimes\.com|washingtonpost\.com|apnews\.com|bbc\.co\.uk|bbc\.com|theguardian\.com|law360\.com|courthousenews\.com|businessinsider\.com|yahoo\.com|bing\.com|msn\.com|axios\.com|politico\.com|arstechnica\.com|wired\.com|cnet\.com)$/i;
+
+export interface ValidatedSourceTagResult {
+  title: string;
+  uri: string;
+  sourceType:
+    | 'google_search'
+    | 'web_search'
+    | 'gleif_lei'
+    | 'sec_edgar'
+    | 'wikipedia'
+    | 'registry'
+    | 'uk_companies_house'
+    | 'environmental'
+    | 'official_site'
+    | 'government_grant'
+    | 'cyber_dns_bgp'
+    | 'lobbying_revolving_door'
+    | 'patent_ip'
+    | 'cve_advisory'
+    | 'sanctions_trade'
+    | 'accounting_xbrl'
+    | 'insider_labor'
+    | 'adversarial_web'
+    | 'epa_echo'
+    | 'academic_grant'
+    | 'darkpool_crypto'
+    | 'court_docket'
+    | 'news';
+  sourceSubLabel?: string;
+}
+
+/**
+ * FIX 5: Strict domain-level URL validator before assigning source tags in
+ * 00_EXEC_SUMMARY.md and 08_SOURCE_INDEX.csv.
+ * - [COURT_DOCKET] / CourtListener ONLY allowed on courtlistener.com, pacer.gov, or official court domains;
+ *   news.google.com and media outlets are re-tagged as `news` with sub-label `Legal Coverage`.
+ * - [PATENT_IP] ONLY allowed on official patent/IP registries (patents.google.com, uspto.gov, epo.org, etc.);
+ *   generic corporate homepages (e.g. spacex.com/) are NEVER tagged [PATENT_IP].
+ */
+export function validateAndNormalizeSourceTag(
+  source: ValidatedSourceTagResult,
+  primaryDomain?: string
+): ValidatedSourceTagResult {
+  const host = extractDomainHost(source.uri);
+  const targetDom = extractDomainHost(primaryDomain);
+  let nextType = source.sourceType;
+  let nextTitle = String(source.title || '').trim();
+  let nextSubLabel = source.sourceSubLabel;
+
+  const isOfficialCourtHost =
+    Boolean(host) && (OFFICIAL_COURT_HOST_RE.test(host) || OFFICIAL_STATE_COURT_HOST_RE.test(host));
+  const isOfficialPatentHost = Boolean(host) && OFFICIAL_PATENT_REGISTRY_HOST_RE.test(host);
+  const isNewsHost = Boolean(host) && NEWS_OUTLET_HOST_RE.test(host);
+  const isTargetCorporateHost =
+    Boolean(host && targetDom) && (host === targetDom || host.endsWith(`.${targetDom}`));
+
+  // Rule A: Strict [COURT_DOCKET] / CourtListener validation
+  if (nextType === 'court_docket' || /^CourtListener\b/i.test(nextTitle)) {
+    if (!isOfficialCourtHost) {
+      nextType = isNewsHost || /news\.google\.com/i.test(source.uri) ? 'news' : 'news';
+      nextSubLabel = 'Legal Coverage';
+      nextTitle = nextTitle
+        .replace(/^CourtListener\s*\([^)]*\)\s*:\s*/i, '')
+        .replace(/^CourtListener\s*:\s*/i, '')
+        .trim();
+      if (!/^Legal Coverage:/i.test(nextTitle)) {
+        nextTitle = `Legal Coverage: ${nextTitle || host || 'Litigation Report'}`;
+      }
+    }
+  }
+
+  // Rule B: Strict [PATENT_IP] validation
+  if (nextType === 'patent_ip' || /^Patent Record\s*:/i.test(nextTitle)) {
+    if (!isOfficialPatentHost) {
+      nextTitle = nextTitle.replace(/^Patent Record\s*:\s*/i, '').trim();
+      if (isTargetCorporateHost) {
+        nextType = 'official_site';
+      } else if (isNewsHost) {
+        nextType = 'news';
+        nextSubLabel = nextSubLabel || 'IP / Technology Coverage';
+      } else {
+        nextType = 'web_search';
+      }
+    }
+  }
+
+  return {
+    title: (nextTitle || source.title).slice(0, 140),
+    uri: source.uri,
+    sourceType: nextType,
+    ...(nextSubLabel ? { sourceSubLabel: nextSubLabel } : {}),
+  };
+}
+
+/**
+ * Escapes all RegExp metacharacters so user-supplied target queries or aliases
+ * can never trigger RegExp syntax errors or catastrophic backtracking.
+ */
+export function escapeRegExp(input: string): string {
+  return String(input || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+export interface SanitizedTargetQueryResult {
+  rawQuery: string;
+  primaryName: string;
+  aliases: string[];
+  searchTerms: string[];
+  escapedPrimaryRegex: string;
+  escapedAliasRegexes: string[];
+}
+
+/**
+ * v27.0 Target Sanitization:
+ * Normalizes parenthetical aliases (e.g. "Company (Alias)" -> primary + alias),
+ * strips unsafe control characters / unbalanced delimiters, and produces
+ * RegExp-escaped strings before hitting SEC EDGAR, CourtListener, EPA ECHO, or USASpending.
+ */
+export function sanitizeTargetQuery(rawInput: string): SanitizedTargetQueryResult {
+  const rawQuery = String(rawInput || '')
+    .replace(/[\u0000-\u001F\u007F-\u009F]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  if (!rawQuery) {
+    return {
+      rawQuery: '',
+      primaryName: '',
+      aliases: [],
+      searchTerms: [],
+      escapedPrimaryRegex: '',
+      escapedAliasRegexes: [],
+    };
+  }
+
+  const aliases: string[] = [];
+  const parenRe = /\(([^()]{1,80})\)/g;
+  let match: RegExpExecArray | null;
+  while ((match = parenRe.exec(rawQuery)) !== null) {
+    const inside = match[1]
+      .replace(/^(?:formerly|aka|a\.k\.a\.|dba|d\/b\/a|now|alias|ticker)\s*[:.-]?\s*/i, '')
+      .trim();
+    for (const part of inside.split(/[;,/]|\s+\bor\b\s+/i)) {
+      const cleaned = part
+        .replace(/^["'`[\]{}]+|["'`[\]{}]+$/g, '')
+        .replace(/\s+/g, ' ')
+        .trim();
+      if (cleaned.length >= 2 && !aliases.some((a) => a.toLowerCase() === cleaned.toLowerCase())) {
+        aliases.push(cleaned);
+      }
+    }
+  }
+
+  const withoutParens = rawQuery
+    .replace(/\([^()]*\)/g, ' ')
+    .replace(/[[\]{}]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const primaryName = (withoutParens || aliases[0] || rawQuery)
+    .replace(/^["'`]+|["'`]+$/g, '')
+    .replace(/\s+/g, ' ')
+    .trim();
+
+  const dedupedAliases = aliases.filter(
+    (a) => a.toLowerCase() !== primaryName.toLowerCase()
+  );
+  const searchTerms = Array.from(new Set([primaryName, ...dedupedAliases].filter(Boolean)));
+
+  return {
+    rawQuery,
+    primaryName,
+    aliases: dedupedAliases,
+    searchTerms,
+    escapedPrimaryRegex: escapeRegExp(primaryName),
+    escapedAliasRegexes: dedupedAliases.map((a) => escapeRegExp(a)),
+  };
+}
+
+

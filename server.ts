@@ -5,12 +5,17 @@ import { fileURLToPath } from 'node:url';
 import { runLiveOsintInvestigation } from './server/osintEngine.ts';
 import { fetchLiveLeaderboardMarketSync, runLightweightDeltaReprobe } from './server/deepLiveProbes.ts';
 import { liveDaemon } from './server/liveIngestionDaemon.ts';
+import { ingestPlanetaryRegistriesLive } from './server/planetaryRegistryEngine.ts';
 import { computeIpfsCidV1FromSha256Hex } from './server/adversarialShield.ts';
 import { runBoundedContagionSpider } from './server/contagionSpider.ts';
 import { getHttpResilienceStats } from './server/httpResilience.ts';
 import { anchorMerkleRootExternally } from './src/crypto/externalAnchor.ts';
 import { computeSignedDeltaPatch, type LivingSnapshot } from './src/engine/livingDossierDelta.ts';
-import type { LiveFeedEvent, PersistedInvestigationSummary } from './src/types/investigation.ts';
+import type {
+  LiveFeedEvent,
+  PersistedInvestigationSummary,
+  PlanetaryRegistryEventCategory,
+} from './src/types/investigation.ts';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -35,19 +40,23 @@ async function startServer() {
       status: 'ok',
       service: 'sovereign-live-osint-grid',
       requiresApiKey: false,
-      agents: 160,
-      squads: 16,
+      agents: 200,
+      squads: 20,
+      version: '27.0',
       daemon: liveDaemon.getCustodyStatus(),
       sources: [
         'Wikidata Knowledge Graph',
         'Wikipedia Full-Text Section Parser',
         'GLEIF Global LEI & Parent/Child Tree',
-        'SEC EDGAR Tickers, Submissions, Form 4/8-K/D/13F/NPORT & 2-Year XBRL Forensics',
+        'SEC EDGAR Tickers, Submissions, DEF 14A Item 404, Exhibit 21.1, Form 4/8-K/D/13F/NPORT & 2-Year XBRL Forensics',
         'OFAC Consolidated Sanctions / OpenSanctions Entity & PEP Screening',
         'CFPB Consumer Complaint Database (Enforcement & Arbitration Signals)',
-        'US Senate LDA Revolving-Door Lobbying Registry',
+        'US Senate LDA API v1 (LD-1/LD-2/LD-203 Lobbying & Contributions)',
+        'DOJ FARA API v1 (Active Registrants & Foreign Principals)',
+        'OpenFEC API v1 (Corporate PACs & Executive Political Contributions)',
+        'ProPublica Nonprofit Explorer API v2 (501(c)(3)/(c)(4) Affiliated Foundations)',
         'Federal Register Executive & Regulatory Notices',
-        'USASpending.gov Federal Awards & Grants',
+        'USASpending.gov Prime Federal Awards & Sub-Award Pass-Through Registry',
         'Wayback Machine CDX Digest Churn & Legal Policy Diff Auditor',
         'CISA KEV Known Exploited Vulnerabilities & Abuse.ch URLhaus/ThreatFox',
         'OpenStreetMap Nominatim Local Businesses',
@@ -55,11 +64,10 @@ async function startServer() {
         'Official Website Schema.org JSON-LD & Unicode Tag Detector',
         'Cloudflare DoH Passive DNS (A/MX/TXT/DMARC/NS/CAA)',
         'RIPEstat BGP/ASN, RPKI & Neighbours Telemetry',
-        'crt.sh Certificate Transparency Subdomain Enumerator',
+        'crt.sh Certificate Transparency Subdomain Enumerator (Capped <= 50 SANs)',
         'NIST NVD CVE 2.0 Exposure Registry',
         'robots.txt / llms.txt / security.txt Crawler Policy Auditor',
         'Yahoo Finance Quotes & Live News',
-        'ProPublica IRS Form 990 Explorer',
         'FDIC BankFind Registry',
         'OpenFDA 510(k) Clearances',
         'ClinicalTrials.gov Studies',
@@ -121,6 +129,152 @@ async function startServer() {
       const message =
         err instanceof Error ? err.message : 'Live stream refresh failed.';
       res.status(502).json({ error: message });
+    }
+  });
+
+  // ===========================================================================
+  // SECTION 05: PLANETARY CORPORATE INCORPORATIONS, M&A & ANTITRUST ENGINE
+  // ===========================================================================
+  const VALID_PLANETARY_CATEGORIES = new Set<PlanetaryRegistryEventCategory>([
+    'NEW_INCORPORATION',
+    'MA_BUYOUT',
+    'ANTITRUST_DOCKET',
+  ]);
+  const VALID_PLANETARY_REGIONS = new Set([
+    'ALL',
+    'North America',
+    'Europe',
+    'Asia-Pacific',
+    'Middle East & Africa',
+    'Global',
+  ]);
+
+  app.post('/api/registry/ingest', async (req, res) => {
+    try {
+      const body = (req.body || {}) as { page?: number };
+      const hasExplicitPage =
+        typeof body.page === 'number' && Number.isFinite(body.page) && body.page >= 0;
+      const requestedPage = hasExplicitPage ? Math.min(20, Math.floor(body.page!)) : 0;
+      const prevMeta = liveDaemon.getPlanetarySyncMeta();
+
+      let report = await ingestPlanetaryRegistriesLive(liveDaemon, { page: requestedPage });
+      let finalPage = requestedPage;
+
+      // On repeated clicks on the same UTC date when page 0 is already fully deduplicated,
+      // automatically advance to the next upstream page so repeated clicks accumulate
+      // hundreds/thousands of unique live records without duplicates.
+      if (
+        !hasExplicitPage &&
+        report.ok &&
+        report.totalInserted === 0 &&
+        report.totalDuplicatesSkipped > 0
+      ) {
+        const nextPage =
+          prevMeta && prevMeta.endDate === report.endDate
+            ? Math.min(20, (prevMeta.lastPageFetched || 0) + 1)
+            : 1;
+        if (nextPage > 0 && nextPage <= 20) {
+          const deeper = await ingestPlanetaryRegistriesLive(liveDaemon, { page: nextPage });
+          finalPage = nextPage;
+          const mergedSources = report.sources.map((baseSrc) => {
+            const deepSrc = deeper.sources.find((s) => s.sourceKey === baseSrc.sourceKey);
+            if (!deepSrc) return baseSrc;
+            return {
+              ...deepSrc,
+              ok: baseSrc.ok || deepSrc.ok,
+              fetchedCount: baseSrc.fetchedCount + deepSrc.fetchedCount,
+              insertedCount: baseSrc.insertedCount + deepSrc.insertedCount,
+              duplicateSkippedCount: baseSrc.duplicateSkippedCount + deepSrc.duplicateSkippedCount,
+              durationMs: baseSrc.durationMs + deepSrc.durationMs,
+              ...(baseSrc.error && deepSrc.error ? { error: deepSrc.error } : {}),
+            };
+          });
+          report = {
+            ...deeper,
+            ok: report.ok || deeper.ok,
+            totalFetched: mergedSources.reduce((s, r) => s + r.fetchedCount, 0),
+            totalInserted: mergedSources.reduce((s, r) => s + r.insertedCount, 0),
+            totalDuplicatesSkipped: mergedSources.reduce((s, r) => s + r.duplicateSkippedCount, 0),
+            sources: mergedSources,
+            stats: liveDaemon.getPlanetaryRegistryStats(),
+          };
+        }
+      }
+
+      liveDaemon.savePlanetarySyncMeta({
+        syncedAtIso: report.syncedAtIso,
+        startDate: report.startDate,
+        endDate: report.endDate,
+        sources: report.sources,
+        lastPageFetched: finalPage,
+      });
+
+      res.status(report.ok ? 200 : 502).json({
+        ...report,
+        pageFetched: finalPage,
+      });
+    } catch (err: unknown) {
+      const message =
+        err instanceof Error ? err.message : 'Planetary registry live ingestion failed.';
+      res.status(502).json({
+        ok: false,
+        error: message,
+        stats: liveDaemon.getPlanetaryRegistryStats(),
+      });
+    }
+  });
+
+  app.get('/api/registry/events', (req, res) => {
+    try {
+      const rawCat = String(req.query.category || '').trim();
+      const parsedCats = rawCat
+        ? rawCat
+            .split(',')
+            .map((c) => c.trim())
+            .filter((c): c is PlanetaryRegistryEventCategory =>
+              VALID_PLANETARY_CATEGORIES.has(c as PlanetaryRegistryEventCategory)
+            )
+        : [];
+      const rawRegion = String(req.query.region || 'ALL').trim();
+      const region = VALID_PLANETARY_REGIONS.has(rawRegion) ? rawRegion : 'ALL';
+      const search = String(req.query.q || '').trim().slice(0, 120);
+      const rawLimit = Number(req.query.limit ?? 50);
+      const limit = Number.isFinite(rawLimit) && rawLimit > 0 ? Math.min(200, Math.floor(rawLimit)) : 50;
+      const rawOffset = Number(req.query.offset ?? 0);
+      const offset = Number.isFinite(rawOffset) && rawOffset >= 0 ? Math.floor(rawOffset) : 0;
+
+      const result = liveDaemon.getPlanetaryRegistryEvents({
+        categories: parsedCats.length > 0 ? parsedCats : undefined,
+        region,
+        search,
+        limit,
+        offset,
+      });
+
+      res.json({
+        ...result,
+        limit,
+        offset,
+        stats: liveDaemon.getPlanetaryRegistryStats(),
+        lastSyncMeta: liveDaemon.getPlanetarySyncMeta(),
+      });
+    } catch (err: unknown) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to query planetary registry events.',
+      });
+    }
+  });
+
+  app.get('/api/registry/stats', (_req, res) => {
+    try {
+      res.json({
+        stats: liveDaemon.getPlanetaryRegistryStats(),
+        lastSyncMeta: liveDaemon.getPlanetarySyncMeta(),
+      });
+    } catch (err: unknown) {
+      res.status(500).json({
+        error: err instanceof Error ? err.message : 'Failed to load planetary registry stats.',
+      });
     }
   });
 
@@ -621,11 +775,34 @@ async function startServer() {
     });
 
     let closed = false;
+    let keepaliveTimer: ReturnType<typeof setInterval> | null = null;
+    const clearKeepalive = () => {
+      if (keepaliveTimer) {
+        clearInterval(keepaliveTimer);
+        keepaliveTimer = null;
+      }
+    };
+
     res.on('close', () => {
+      clearKeepalive();
       if (!res.writableEnded) {
         closed = true;
       }
     });
+
+    // v27.0: 15-second SSE keepalive heartbeat to prevent 300s Cloud Run / reverse-proxy idle timeouts
+    keepaliveTimer = setInterval(() => {
+      if (closed || res.writableEnded) {
+        clearKeepalive();
+        return;
+      }
+      try {
+        res.write(': keepalive\n\n');
+      } catch {
+        closed = true;
+        clearKeepalive();
+      }
+    }, 15_000);
 
     const sendLine = (obj: unknown) => {
       if (closed || res.writableEnded) return;
@@ -656,6 +833,7 @@ async function startServer() {
           : 'Live OSINT business intelligence investigation failed.';
       sendLine({ type: 'error', error: message });
     } finally {
+      clearKeepalive();
       if (!res.writableEnded) res.end();
     }
   });

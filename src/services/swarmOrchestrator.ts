@@ -11,7 +11,7 @@ import {
   computeStylometricFingerprint
 } from './forensicMathEngine';
 
-export function create160AgentSwarm(
+export function create200AgentSwarm(
   targetEntity: string,
   liveIntel?: LiveBusinessIntelligence
 ): SwarmSquad[] {
@@ -68,6 +68,13 @@ export function create160AgentSwarm(
   const sqN = liveIntel?.squadHighlights.squadN || [];
   const sqO = liveIntel?.squadHighlights.squadO || [];
   const sqP = liveIntel?.squadHighlights.squadP || [];
+  const sqQ = liveIntel?.squadHighlights.squadQ || [];
+  const sqR = liveIntel?.squadHighlights.squadR || [];
+  const sqS = liveIntel?.squadHighlights.squadS || [];
+  const sqT = liveIntel?.squadHighlights.squadT || [];
+  const pk = liveIntel?.proxyKinship;
+  const pol = liveIntel?.politicalInfluence;
+  const shInfra = liveIntel?.shadowInfraSubawards;
 
   const squadsConfig: {
     id: SquadId;
@@ -163,7 +170,7 @@ export function create160AgentSwarm(
         { id: 'E7', role: 'trajectory_forecaster', agentName: 'Agent E7: Market & Risk Trajectory Forecaster', focus: 'Projection of market concentration and compliance risk', sampleFinding: `Projected 36-month MAI/FRI trajectory for ${entityDisplay}.` },
         { id: 'E8', role: 'watchlist_builder', agentName: 'Agent E8: Unverified Watchlist & Tribunal Quarantine', focus: 'Quarantining low-corroboration signals into UNVERIFIED_INTELLIGENCE_WATCHLIST.md', sampleFinding: `Enforced Bayesian Log-Odds 3-stage tribunal separation between promoted claims, watchlist, and rejected hypotheses.` },
         { id: 'E9', role: 'consolidation_risk_forecaster', agentName: 'Agent E9: Ecosystem Spillover & Supply Shock Analyst', focus: 'Impact of supplier, regulatory, or macro shifts on operations', sampleFinding: `Assessed upstream/downstream supply exposure across ${domainsList}.` },
-        { id: 'E10', role: 'summary_writer', agentName: 'Agent E10: Master Synthesis & Ed25519/Merkle/IPFS/BTC Sealing Writer', focus: 'Read-only isolated synthesis + FIPS 180-4 SHA-256, Merkle Root, IPFS CIDv1, Bitcoin/RFC3161 anchoring & Ed25519 signing', sampleFinding: `Sealed Ed25519 signature, Binary Merkle tree, IPFS CIDv1, BFT quorum ledger (${bft?.statutoryRootSourcesCount || 0} Tier-1 roots) & 160-agent master dossier for ${entityDisplay}.` }
+        { id: 'E10', role: 'summary_writer', agentName: 'Agent E10: Master Synthesis & Ed25519/Merkle/IPFS/BTC Sealing Writer', focus: 'Read-only isolated synthesis + FIPS 180-4 SHA-256, Merkle Root, IPFS CIDv1, Bitcoin/RFC3161 anchoring & Ed25519 signing', sampleFinding: `Sealed Ed25519 signature, Binary Merkle tree, IPFS CIDv1, BFT quorum ledger (${bft?.statutoryRootSourcesCount || 0} Tier-1 roots) & 200-agent master dossier for ${entityDisplay}.` }
       ]
     },
     {
@@ -363,6 +370,78 @@ export function create160AgentSwarm(
         { id: 'P9', role: 'litigation_baserate_calibrator', agentName: 'Agent P9: Commercial Suit Base-Rate & Defendant-vs-Plaintiff Calibrator', focus: 'Separating routine defensive patent/IP suits from offensive SLAPP or venue-gaming spikes', sampleFinding: `Calibrated civil docket volume (${jud?.courtListenerDocketsCount || 0} hits) against ${liveIntel?.businessScale || matched.category} peer norms.` },
         { id: 'P10', role: 'judicial_warfare_dossier_compiler', agentName: 'Agent P10: SLAPP, Forced Arbitration & Judge-Shopping Compiler', focus: 'Compiling 27_LEGAL_SLAPP_JUDGE_SHOPPING_AND_ARBITRATION.md', sampleFinding: `Compiled judicial forum concentration, SLAPP, and arbitration report for ${entityDisplay}.` }
       ]
+    },
+    {
+      id: 'squadQ',
+      name: 'Squad Q – Kinship, Colleague & Proxy-Venture Discovery',
+      code: 'SQUAD-Q',
+      focus: `Extract DEF 14A/10-K/GLEIF executive surnames, parse Item 404 related-person transactions & Form 4 indirect family/LLC tags, scan EFTS Form D proxy LLCs, and diff historical 10-K Exhibit 21.1 subsidiaries for ${entityDisplay}.`,
+      roles: [
+        { id: 'Q1', role: 'executive_surname_extractor', agentName: 'Agent Q1: DEF 14A / 10-K & GLEIF Executive Surname Extractor', focus: 'Extracting normalized executive and director full names and surnames from statutory filings', sampleFinding: sqQ[0] || `Extracted ${pk?.extractedExecutives.length || 0} executive/director surname(s) across DEF 14A, 10-K, and GLEIF records.` },
+        { id: 'Q2', role: 'item404_related_party_parser', agentName: 'Agent Q2: SEC DEF 14A Item 404 Related-Person Transaction Parser', focus: 'Parsing Item 404 related-person disclosures for family leases, executive service agreements & affiliated entities', sampleFinding: sqQ[1] || `Parsed ${pk?.relatedPersonTransactions.length || 0} DEF 14A Item 404 related-person transaction disclosure(s).` },
+        { id: 'Q3', role: 'form4_indirect_kinship_auditor', agentName: 'Agent Q3: Form 4 XML Indirect Ownership (Spouse / Family Trust / LLC) Auditor', focus: 'Inspecting SEC Form 4 XML natureOfOwnership tags for indirect holdings via spouses, family trusts, and LLCs', sampleFinding: pk?.form4IndirectOwnerships.length ? `Identified ${pk.form4IndirectOwnerships.length} Form 4 indirect ownership vehicle(s) (${pk.form4IndirectOwnerships[0].ownerName}: ${pk.form4IndirectOwnerships[0].indirectNature}).` : `Zero Form 4 indirect family-trust/spouse/LLC holdings parsed in sampled XML filings.` },
+        { id: 'Q4', role: 'efts_formd_proxy_hunter', agentName: 'Agent Q4: SEC EDGAR EFTS Form D Proxy-LLC & Colleague Spin-Off Hunter', focus: 'Querying SEC EFTS Form D private placements matching extracted executive names', sampleFinding: pk?.formDProxyCandidates.filter((c) => c.matchType === 'EXACT_EXECUTIVE_NAME').length ? `Surfaced ${pk.formDProxyCandidates.filter((c) => c.matchType === 'EXACT_EXECUTIVE_NAME').length} exact-name Form D executive proxy/venture lead(s).` : `Zero exact-executive-name Form D proxy placements matched outside primary issuer.` },
+        { id: 'Q5', role: 'surname_geo_kinship_correlator', agentName: 'Agent Q5: Shared Surname + City/ZIP Kinship Venture Correlator', focus: 'Detecting family-run or colleague Form D vehicles sharing surname and headquarters city/ZIP', sampleFinding: pk?.formDProxyCandidates.filter((c) => c.matchType === 'SHARED_SURNAME_GEO').length ? `Flagged ${pk.formDProxyCandidates.filter((c) => c.matchType === 'SHARED_SURNAME_GEO').length} shared-surname + geo Form D candidate(s) for H0 collision screening.` : `Zero shared-surname + city/ZIP Form D kinship leads surfaced.` },
+        { id: 'Q6', role: 'exhibit21_subsidiary_differ', agentName: 'Agent Q6: Historical 10-K Exhibit 21.1 Subsidiary Diff Engine', focus: 'Comparing Exhibit 21.1 subsidiary schedules across consecutive 10-Ks to flag vanished or quietly spun-off entities', sampleFinding: sqQ[2] || `Compared ${pk?.exhibit21SubsidiaryDiff.filingsCompared || 0} Exhibit 21.1 filing(s): ${pk?.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length || 0} vanished/renamed subsidiary candidate(s).` },
+        { id: 'Q7', role: 'shadow_spinoff_classifier', agentName: 'Agent Q7: Quiet Spin-Off & Rebranding Continuity Classifier', focus: 'Separating routine internal subsidiary renames from complete off-balance-sheet entity disappearances', sampleFinding: pk?.exhibit21SubsidiaryDiff.renamedOrSpunOffCandidates.length ? `Classified ${pk.exhibit21SubsidiaryDiff.renamedOrSpunOffCandidates.filter((c) => c.status === 'VANISHED').length} vanished vs. ${pk.exhibit21SubsidiaryDiff.renamedOrSpunOffCandidates.filter((c) => c.status === 'RENAMED_OR_SPUN_OFF').length} renamed Exhibit 21.1 entities.` : `No Exhibit 21.1 subsidiary discontinuities requiring spin-off triage.` },
+        { id: 'Q8', role: 'colleague_interlock_mapper', agentName: 'Agent Q8: Cross-Vehicle Director & Colleague Interlock Mapper', focus: 'Mapping verified co-officers and family trustees into FollowTheMoney Person/Ownership edges', sampleFinding: `Serialized ${pk?.extractedExecutives.length || 0} principals and ${pk?.form4IndirectOwnerships.length || 0} indirect ownership vehicles into proxy kinship graph.` },
+        { id: 'Q9', role: 'kinship_collision_guard', agentName: 'Agent Q9: Surname Homonym & Coincidence Collision Guard', focus: 'Enforcing H0 name-collision checks so common surnames without city/ZIP or Item 404 proof are never falsely promoted', sampleFinding: `Enforced verified-related-party vs. candidate-collision separation across ${pk?.formDProxyCandidates.length || 0} Form D lead(s).` },
+        { id: 'Q10', role: 'proxy_kinship_compiler', agentName: 'Agent Q10: Proxy Ventures, Kinship & Shadow Subsidiaries Compiler', focus: 'Compiling 39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md & evidence/proxy_kinship_graph.json', sampleFinding: `Compiled proxy-venture, kinship, and Exhibit 21.1 shadow subsidiary dossier for ${entityDisplay}.` }
+      ]
+    },
+    {
+      id: 'squadR',
+      name: 'Squad R – Political Affiliation, Lobbying & Dark-Money Graph',
+      code: 'SQUAD-R',
+      focus: `Query zero-key DOJ FARA v1, US Senate LDA LD-1/LD-2/LD-203, OpenFEC public PAC & executive Schedule A contributions, and ProPublica 501(c)(3)/(c)(4) nonprofit filings for ${entityDisplay}.`,
+      roles: [
+        { id: 'R1', role: 'doj_fara_registrant_auditor', agentName: 'Agent R1: DOJ FARA API v1 Active Registrant & Foreign Principal Auditor', focus: 'Screening DOJ FARA Active Registrants & Foreign Principals (throttled <= 4 req/10s)', sampleFinding: sqR[1] || `DOJ FARA API v1 matched ${pol?.faraMatches.length || 0} active foreign-agent registrant/principal record(s).` },
+        { id: 'R2', role: 'senate_lda_ld1_ld2_auditor', agentName: 'Agent R2: US Senate LDA LD-1/LD-2 Lobbying Spend Auditor', focus: 'Auditing validated Senate LDA lobbying registrations and quarterly spend disclosures', sampleFinding: pol?.senateLdaFilings.length ? `Verified ${pol.senateLdaFilings.length} Senate LDA LD-1/LD-2/LD-203 filing(s) after strict URL/stub hygiene.` : `Zero direct Senate LDA LD-1/LD-2 filings matched for ${entityDisplay}.` },
+        { id: 'R3', role: 'senate_lda_ld203_contrib_tracker', agentName: 'Agent R3: Senate LDA LD-203 Political Contribution & Honoree Tracker', focus: 'Tracking semi-annual LD-203 lobbyist political contributions and federal honoree payments', sampleFinding: `Tracked ${pol?.senateLdaFilings.reduce((s, f) => s + f.contributionPayees.length, 0) || 0} LD-203 contribution payee/honoree record(s).` },
+        { id: 'R4', role: 'openfec_corporate_pac_auditor', agentName: 'Agent R4: OpenFEC Corporate PAC Receipts & Disbursements Auditor', focus: 'Querying OpenFEC public API for connected corporate PACs and campaign disbursements', sampleFinding: pol?.openFecSummary.committees.length ? `Matched ${pol.openFecSummary.committees.length} OpenFEC corporate PAC(s) ($${Math.round(pol.openFecSummary.totalPacDisbursementsUsd).toLocaleString('en-US')} disbursed).` : `Zero connected OpenFEC corporate PACs matched (${pol?.openFecSummary.apiMode || 'PUBLIC_DEMO_KEY'}).` },
+        { id: 'R5', role: 'openfec_exec_schedule_a_aggregator', agentName: 'Agent R5: Executive Schedule A Political Contribution Aggregator', focus: 'Aggregating executive political donations by party, recipient committee, and two-year election cycle', sampleFinding: pol?.openFecSummary.executiveContributionsByPartyCycle.length ? `Aggregated ${pol.openFecSummary.executiveContributionsByPartyCycle.length} executive contribution bucket(s) totaling $${Math.round(pol.openFecSummary.totalExecutiveContributionsUsd).toLocaleString('en-US')}.` : `Zero employer-matched executive Schedule A contributions returned in OpenFEC sample.` },
+        { id: 'R6', role: 'propublica_501c3_foundation_mapper', agentName: 'Agent R6: ProPublica 501(c)(3) Corporate Foundation Mapper', focus: 'Mapping affiliated tax-exempt 501(c)(3) foundations, assets, and annual revenue via IRS Form 990', sampleFinding: `Identified ${pol?.affiliatedNonprofits.filter((n) => n.classification === '501(c)(3)').length || 0} affiliated 501(c)(3) foundation(s) via ProPublica Nonprofit Explorer.` },
+        { id: 'R7', role: 'propublica_501c4_darkmoney_hunter', agentName: 'Agent R7: 501(c)(4) Social-Welfare & Policy Dark-Money Vehicle Hunter', focus: 'Detecting affiliated 501(c)(4) issue-advocacy vehicles with non-disclosed donor bases', sampleFinding: `Identified ${pol?.affiliatedNonprofits.filter((n) => n.classification === '501(c)(4)').length || 0} affiliated 501(c)(4) policy/dark-money vehicle(s).` },
+        { id: 'R8', role: 'foreign_influence_correlator', agentName: 'Agent R8: FARA Foreign Principal & Sovereign Lobbying Correlator', focus: 'Cross-correlating FARA foreign principal countries with corporate lobbying issue codes', sampleFinding: pol?.faraMatches.filter((f) => f.foreignPrincipalName).length ? `Flagged ${pol.faraMatches.filter((f) => f.foreignPrincipalName).length} active FARA foreign-principal relationship(s).` : `No active FARA foreign-principal sovereign influence links detected.` },
+        { id: 'R9', role: 'political_collision_calibrator', agentName: 'Agent R9: Political Contribution & Name-Collision Calibrator', focus: 'Filtering incidental personal donor name overlaps lacking employer corroboration', sampleFinding: sqR[2] || `Calibrated political influence ledger against baseline corporate PAC and lobbying norms.` },
+        { id: 'R10', role: 'political_influence_compiler', agentName: 'Agent R10: Political Affiliation, Lobbying & Dark-Money Compiler', focus: 'Compiling 40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md & evidence/political_influence_ledger.json', sampleFinding: `Compiled DOJ FARA, Senate LDA, OpenFEC, and ProPublica 990 political influence ledger for ${entityDisplay}.` }
+      ]
+    },
+    {
+      id: 'squadS',
+      name: 'Squad S – Infrastructure DNA & Sub-Award Shadow Pivoting',
+      code: 'SQUAD-S',
+      focus: `Cross-reference Favicon MMH3, GTM/GA IDs, SPF includes & capped crt.sh SANs (<=50) to expose front-group domains, and query USASpending.gov sub-awards for pass-through federal funding for ${entityDisplay}.`,
+      roles: [
+        { id: 'S1', role: 'favicon_mmh3_pivot_hunter', agentName: 'Agent S1: Favicon MMH3 & Asset-Hash Shared Infrastructure Hunter', focus: 'Pivoting on target Favicon MurmurHash3 fingerprint to expose undisclosed microsites and front domains', sampleFinding: sqS[0] || `Target Favicon MMH3=${shInfra?.infraFingerprint.faviconMmh3 ?? 'N/A'} across ${shInfra?.infraFingerprint.primaryDomain || 'primary domain'}.` },
+        { id: 'S2', role: 'gtm_ga_analytics_correlator', agentName: 'Agent S2: GTM / GA Tracking ID Cross-Domain Correlator', focus: 'Linking domains sharing identical Google Tag Manager (GTM-) or Analytics (G-/UA-) container IDs', sampleFinding: `Extracted ${shInfra?.infraFingerprint.gtmIds.length || 0} GTM ID(s) and ${shInfra?.infraFingerprint.gaIds.length || 0} GA ID(s) for cross-domain ownership pivoting.` },
+        { id: 'S3', role: 'spf_include_relay_pivotor', agentName: 'Agent S3: Custom SPF Include & Mail-Relay Domain Pivotor', focus: 'Separating custom corporate/partner SPF relay domains from generic cloud mail SaaS providers', sampleFinding: `Audited ${shInfra?.infraFingerprint.spfIncludes.length || 0} SPF include record(s) (filtering generic cloud/CDN mail noise).` },
+        { id: 'S4', role: 'crtsh_san_cohost_scanner', agentName: 'Agent S4: Capped crt.sh SAN Co-Hosted Partner Domain Scanner', focus: 'Scanning up to 50 capped crt.sh SANs for non-apex co-hosted front groups or partner portals', sampleFinding: `Inspected ${shInfra?.infraFingerprint.crtShSanCount || 0}/50 capped crt.sh SANs for off-apex partner/front domains.` },
+        { id: 'S5', role: 'undisclosed_front_domain_classifier', agentName: 'Agent S5: Undisclosed Front-Group vs. CDN Noise Classifier', focus: 'Classifying shared-infra domains into UNDISCLOSED_FRONT_OR_PARTNER, KNOWN_SUBSIDIARY, or CDN_SHARED_NOISE', sampleFinding: sqS[1] || `Classified ${shInfra?.sharedInfraDomains.filter((d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER').length || 0} undisclosed front/partner domain(s).` },
+        { id: 'S6', role: 'usaspending_subaward_harvester', agentName: 'Agent S6: USASpending.gov Federal Sub-Award Pass-Through Harvester', focus: 'Querying USASpending.gov sub-awards API to map prime-to-subawardee federal funding pass-throughs', sampleFinding: sqS[2] || `Mapped ${shInfra?.usaSpendingSubawards.length || 0} federal sub-award pass-through(s) totaling $${Math.round(shInfra?.totalSubawardPassThroughUsd || 0).toLocaleString('en-US')}.` },
+        { id: 'S7', role: 'subaward_counterparty_linker', agentName: 'Agent S7: Sub-Awardee Counterparty & Proxy-Overlap Linker', focus: 'Cross-referencing USASpending sub-awardees against Squad Q proxy LLCs and Squad D subsidiaries', sampleFinding: `Cross-checked ${shInfra?.usaSpendingSubawards.length || 0} sub-awardee partner(s) against corporate ownership & proxy registries.` },
+        { id: 'S8', role: 'csp_shadow_origin_correlator', agentName: 'Agent S8: CSP Shadow Backend Origin & Partner Portal Correlator', focus: 'Detecting non-CDN API/backend domains embedded in live Content-Security-Policy headers', sampleFinding: `Correlated ${shInfra?.sharedInfraDomains.filter((d) => d.sharedSignals.includes('SHARED_CSP_ORIGIN')).length || 0} non-CDN CSP origin(s).` },
+        { id: 'S9', role: 'infra_cdn_false_positive_filter', agentName: 'Agent S9: Multi-Tenant CDN & SaaS Shared-Host False-Positive Filter', focus: 'Ensuring shared Cloudflare/AWS/Microsoft/Google hosts never trigger false front-group alerts', sampleFinding: `Isolated ${shInfra?.sharedInfraDomains.filter((d) => d.classification === 'CDN_SHARED_NOISE').length || 0} multi-tenant CDN/SaaS host(s) as benign shared infrastructure.` },
+        { id: 'S10', role: 'shadow_infra_subaward_compiler', agentName: 'Agent S10: Shadow Infrastructure DNA & Sub-Award Pass-Through Compiler', focus: 'Compiling 41_SHADOW_INFRA_DNA_AND_SUBAWARD_PASS_THROUGH.md', sampleFinding: `Compiled shadow infrastructure DNA pivot and USASpending sub-award pass-through report for ${entityDisplay}.` }
+      ]
+    },
+    {
+      id: 'squadT',
+      name: 'Squad T – Phase-5 Red-Team ACH, Collision Steelmanning & Graph Synthesis',
+      code: 'SQUAD-T',
+      focus: `Execute Phase-5 Adversarial Red-Team ACH steelmanning across Squads A–S, separate verified proxy/political ties from coincidental name collisions, enforce FIX 3 benign-control dampening, and calibrate final Bayesian posteriors for ${entityDisplay}.`,
+      roles: [
+        { id: 'T1', role: 'target_sanitization_auditor', agentName: 'Agent T1: Target Query Sanitization & Alias Normalization Auditor', focus: 'Verifying parenthetical alias splitting and RegExp metacharacter escaping across all upstream registries', sampleFinding: sqT[2] || `Sanitized target "${liveIntel?.sanitizedTarget?.rawQuery || entityDisplay}" -> primary "${liveIntel?.sanitizedTarget?.primaryName || entityDisplay}".` },
+        { id: 'T2', role: 'proxy_collision_steelmanner', agentName: 'Agent T2: H0 Kinship & Proxy Name-Collision Steelmanner', focus: 'Falsifying surname-only Form D matches lacking Item 404, Form 4, or geo/officer corroboration', sampleFinding: sqT[0] || `Applied H0 collision steelmanning across Squad Q proxy & kinship candidates.` },
+        { id: 'T3', role: 'political_influence_steelmanner', agentName: 'Agent T3: H0 Political & Lobbying Routine-Engagement Steelmanner', focus: 'Distinguishing lawful bipartisan corporate PACs from FARA foreign influence or dark-money anomalies', sampleFinding: `Steelmanned Squad R FARA, LDA, OpenFEC, and 501(c)(4) disclosures against baseline enterprise norms.` },
+        { id: 'T4', role: 'infra_subaward_steelmanner', agentName: 'Agent T4: H0 Shared-Infrastructure & Sub-Award Steelmanner', focus: 'Separating normal prime-contractor sub-awards and CDN hosts from undisclosed front groups', sampleFinding: `Steelmanned Squad S shared-infra pivots and sub-award pass-throughs for non-diagnostic CDN/vendor noise.` },
+        { id: 'T5', role: 'ftm_graph_integrator', agentName: 'Agent T5: OCCRP FollowTheMoney (FtM) Proxy & Political Graph Integrator', focus: 'Merging Squad Q/R/S entities and payment edges into followthemoney_graph.ftm.json', sampleFinding: `Wired Squad Q proxy/kinship, Squad R political/FARA/FEC, and Squad S sub-award entities into FtM NDJSON.` },
+        { id: 'T6', role: 'pagerank_benign_dampener_verifier', agentName: 'Agent T6: PageRank Contagion & FIX 3 Benign-Control Dampening Verifier', focus: 'Ensuring passing controls dampen contagion and never outrank real risk nodes in Top 10 Chokepoints', sampleFinding: sqT[1] || `Verified FIX 3 benign-control dampening across expanded 20-squad Property Graph.` },
+        { id: 'T7', role: 'source_tag_domain_gatekeeper', agentName: 'Agent T7: FIX 5 Domain-Level Source Tag & Stub Suppression Gatekeeper', focus: 'Validating [COURT_DOCKET]/[PATENT_IP] hosts and suppressing zero-hit stubs across all 200 agents', sampleFinding: `Enforced FIX 5 domain tag validation and SKIPPED_NOT_APPLICABLE stub suppression across Squads A–T.` },
+        { id: 'T8', role: 'bayesian_logodds_calibrator', agentName: 'Agent T8: Sequential Log-Odds Bayesian & FRI Divergence Calibrator', focus: 'Integrating Squad Q/R/S Likelihood Ratios from 20% base prior and verifying FIX 6 divergence note', sampleFinding: `Calibrated Sequential Log-Odds Bayesian posterior with Squad Q/R/S evidence and Phase-5 ACH negative LRs.` },
+        { id: 'T9', role: 'stream_timeout_stability_auditor', agentName: 'Agent T9: Stream Keepalive, 12s AbortSignal & Crawl-Cap Auditor', focus: 'Auditing 15s SSE keepalive, 12s AbortSignal timeout cap, crt.sh<=50, pivots<=15, and SEC<=25 limits', sampleFinding: `Verified v27.0 stream stability bounds (crt.sh<=50, Phase-4 pivots<=15, SEC pulls<=25, 12s fetch timeout).` },
+        { id: 'T10', role: 'v27_redteam_master_compiler', agentName: 'Agent T10: v27.0 200-Agent Phase-5 Red-Team Master Compiler', focus: 'Finalizing Phase-5 ACH adjudication across 38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md and 37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md', sampleFinding: `Completed 200-agent / 20-squad Phase-5 Red-Team ACH and Bayesian synthesis for ${entityDisplay}.` }
+      ]
     }
   ];
 
@@ -419,11 +498,12 @@ export function create160AgentSwarm(
 }
 
 export function isCompilerAgent(agent: Pick<AgentTask, 'id' | 'role'>): boolean {
-  return /^[A-P]10$/i.test(agent.id) || agent.role === 'summary_writer' || /_compiler$/i.test(agent.role);
+  return /^[A-T]10$/i.test(agent.id) || agent.role === 'summary_writer' || /_compiler$/i.test(agent.role);
 }
 
-export const create120AgentSwarm = create160AgentSwarm;
-export const create80AgentSwarm = create160AgentSwarm;
-export const create50AgentSwarm = create160AgentSwarm;
+export const create160AgentSwarm = create200AgentSwarm;
+export const create120AgentSwarm = create200AgentSwarm;
+export const create80AgentSwarm = create200AgentSwarm;
+export const create50AgentSwarm = create200AgentSwarm;
 
 

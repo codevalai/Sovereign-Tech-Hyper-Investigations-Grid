@@ -1,4 +1,4 @@
-name: Sovereign 160-Agent Cryptographic CI
+name: Sovereign 200-Agent Cryptographic CI
 
 on:
   push:
@@ -16,7 +16,7 @@ concurrency:
 
 jobs:
   verify-forensic-matrix:
-    name: Typecheck, Production Build & 160-Agent Cryptographic Seals
+    name: Typecheck, Production Build, 200-Agent Seals & Live /api/health
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
@@ -38,8 +38,26 @@ jobs:
       - name: Production Vite Bundle Build
         run: npm run build
 
-      - name: Verify 160-Agent Dossier Cryptographic Seals & Ring-1/Ring-5 Defense
+      - name: Verify 200-Agent Dossier Cryptographic Seals & Ring-1/Ring-5 Defense
         run: npx tsx scripts/verify-ci.ts --require-build
+
+      - name: Verify Node 22 Production Boot & /api/health Endpoint
+        run: |
+          NODE_ENV=production PORT=3000 node server.ts &
+          SERVER_PID=$!
+          trap "kill $SERVER_PID 2>/dev/null || true" EXIT
+          for i in $(seq 1 20); do
+            if curl -sf http://localhost:3000/api/health > /tmp/health.json; then
+              cat /tmp/health.json
+              grep -q '"status":"ok"' /tmp/health.json
+              grep -q '"agents":200' /tmp/health.json
+              grep -q '"version":"27.0"' /tmp/health.json
+              exit 0
+            fi
+            sleep 0.5
+          done
+          echo "Health check failed on http://localhost:3000/api/health"
+          exit 1
 
   verify-container-build:
     name: Multi-Stage Docker Image Build Verification

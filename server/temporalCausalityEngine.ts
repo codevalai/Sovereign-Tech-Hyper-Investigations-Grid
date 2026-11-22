@@ -12,11 +12,13 @@ import type {
 } from '../src/types/investigation.ts';
 import {
   classifyWikipediaDeletionIntent,
+  isSpvOrFundIssuerName,
   isValidSenateLdaRecord,
 } from '../src/engine/entityDisambiguation.ts';
 
 export interface TemporalCausalityInput {
   targetEntity: string;
+  targetLegalName?: string;
   stealthEditDiffs?: ReadonlyArray<StealthEditDiffRecord>;
   silentDeletionAlerts?: ReadonlyArray<SilentDeletionAlertRecord>;
   courtDockets?: ReadonlyArray<{
@@ -91,6 +93,13 @@ export interface TemporalCausalityAnalysis {
   causalChains: TemporalCausalChain[];
   burstSummary: TemporalBurstSummary;
   events: TemporalCausalEvent[];
+  filteredThirdPartySpvCount: number;
+  filteredThirdPartySpvEvents: Array<{
+    entityName: string;
+    filedAt: string;
+    url?: string;
+    classification: 'THIRD_PARTY_SPV_NOISE';
+  }>;
   highestSeverity: 'NONE' | 'MEDIUM' | 'HIGH' | 'CRITICAL';
   verdict: string;
   analyzedAtIso: string;
@@ -261,6 +270,7 @@ export function analyzeCrossStreamTemporalCausality(
 ): TemporalCausalityAnalysis {
   const windowDays = Math.max(1, Math.min(30, input.windowDays ?? 14));
   const events: TemporalCausalEvent[] = [];
+  const filteredThirdPartySpvEvents: TemporalCausalityAnalysis['filteredThirdPartySpvEvents'] = [];
   const seenIds = new Set<string>();
 
   const pushEvent = (
@@ -365,6 +375,15 @@ export function analyzeCrossStreamTemporalCausality(
   }
 
   for (const fd of input.secFormDOfferings || []) {
+    if (isSpvOrFundIssuerName(fd.entityName, input.targetLegalName, input.targetEntity)) {
+      filteredThirdPartySpvEvents.push({
+        entityName: fd.entityName,
+        filedAt: fd.filedAt,
+        url: fd.url,
+        classification: 'THIRD_PARTY_SPV_NOISE',
+      });
+      continue;
+    }
     pushEvent(
       'SEC_FORM_D',
       fd.filedAt,
@@ -619,6 +638,8 @@ export function analyzeCrossStreamTemporalCausality(
     causalChains: topChains,
     burstSummary,
     events: events.slice(-80),
+    filteredThirdPartySpvCount: filteredThirdPartySpvEvents.length,
+    filteredThirdPartySpvEvents: filteredThirdPartySpvEvents.slice(0, 20),
     highestSeverity,
     verdict,
     analyzedAtIso: new Date().toISOString(),

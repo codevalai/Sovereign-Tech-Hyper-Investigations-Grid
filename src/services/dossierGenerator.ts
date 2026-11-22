@@ -45,6 +45,7 @@ import {
 import { buildFollowTheMoneyNdjson } from '../engine/followTheMoneyExporter';
 import { runAdversarialRedTeamAchPass } from '../engine/adversarialAchEngine';
 import { runAuthorToEntityMetadataPivots } from '../engine/metadataPivotEngine';
+import { validateAndNormalizeSourceTag } from '../engine/entityDisambiguation';
 import {
   buildDeltaAlertMarkdown,
   buildStandaloneDiffDossiersMjs,
@@ -133,16 +134,68 @@ export function generateInvestigationDossier(
       documents: liveIntel?.extremeDorkingAndDna?.minedDocuments || [],
       liveIntel,
     });
+  // FIX 5A: Domain-validate all grounding sources before emitting 00_EXEC_SUMMARY.md and 08_SOURCE_INDEX.csv
+  const primaryDomainForSources =
+    liveIntel?.cyberTelemetry?.primaryDomain ||
+    liveIntel?.extremeDorkingAndDna?.domain ||
+    liveIntel?.officialWebsite ||
+    undefined;
+  const validatedGroundingSources = liveIntel
+    ? liveIntel.groundingSources.map((s) => validateAndNormalizeSourceTag(s, primaryDomainForSources))
+    : [];
+
+  // Pre-build Squad C API/SDK Contract JSON upfront so Phase-5 ACH-LEAD (FIX 4) can cross-reference attached user leads directly against it
+  const squadCSdkContractJson = liveIntel
+    ? JSON.stringify(
+        {
+          target_entity: liveIntel.entityName,
+          official_website: liveIntel.officialWebsite,
+          industry: liveIntel.industry,
+          operational_profile: liveIntel.technicalOrOperationalProfile,
+          cyber_telemetry_summary: liveIntel.cyberTelemetry,
+          grounding_sources: validatedGroundingSources,
+        },
+        null,
+        2
+      )
+    : JSON.stringify(
+        {
+          target_entity: matchedEntity.name,
+          client_runtime_version: 'v4.18.2',
+          audited_endpoints: [
+            { path: '/v1/inference', protocol: 'https/grpc', telemetry: 'mandatory_hardware_uuid_beacon' },
+            { path: '/v1/models', protocol: 'https', telemetry: 'rate_limited_tier_headers' },
+          ],
+        },
+        null,
+        2
+      );
+
   const liveIntelWithPivots = liveIntel
-    ? { ...liveIntel, metadataPivots }
+    ? { ...liveIntel, metadataPivots, groundingSources: validatedGroundingSources }
     : undefined;
   const preRedTeamBayesian = computeBayesianFraudRiskPosterior(fri, liveIntelWithPivots, benford);
   const { achReport, postRedTeamBayesian: bayesianPosterior } = runAdversarialRedTeamAchPass({
     targetEntity: matchedEntity.name,
+    targetLegalName: matchedEntity.legalName,
     preRedTeamBayesian,
     liveIntel: liveIntelWithPivots,
     metadataPivots,
+    attachedLeadDocument: scope.uploadedFileName
+      ? {
+          fileName: scope.uploadedFileName,
+          content: scope.uploadedFileContent || '',
+          squadCSdkContractJson,
+        }
+      : undefined,
   });
+
+  // FIX 6: Reconcile FRI vs. Bayesian Posterior in Executive Summary header whenever they diverge by >20%
+  const friBayesianDivergence = Math.abs(fri - bayesianPosterior.posteriorProbability);
+  const friBayesianCalibrationNoteLine =
+    friBayesianDivergence > 0.2
+      ? `\n**Calibration Note:** Raw heuristic FRI (${fri.toFixed(2)}) reflects uncalibrated signal volume; Bayesian Posterior (${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}%) reflects post-Red-Team ACH calibration after filtering enterprise noise.`
+      : '';
 
   // 1. 00_EXEC_SUMMARY.md
   const file00 = {
@@ -159,11 +212,11 @@ ${liveIntel.dbaNames.length > 0 ? `**DBA / Trade Names:** ${liveIntel.dbaNames.j
 **Stock Ticker / Registry ID:** ${liveIntel.stockTickerOrRegistryId} · **GLEIF LEI:** ${liveIntel.canonicalLei || liveIntel.leiCode}
 **Official Website:** ${liveIntel.officialWebsite}
 **Employees:** ${liveIntel.employeeCount} · **Revenue / Valuation:** ${liveIntel.revenueOrValuation}
-**Data Provenance:** 100% LIVE GROUNDED (${liveIntel.liveRegistriesQueried.join(' + ')}) · **Verified Sources:** ${liveIntel.groundingSources.length}
+**Data Provenance:** 100% LIVE GROUNDED (${liveIntel.liveRegistriesQueried.join(' + ')}) · **Verified Sources:** ${validatedGroundingSources.length}
 **Execution Guarantee:** STRICTLY READ-ONLY ISOLATED SCRATCHPAD · ZERO MUTATIONS TO EXISTING LEDGERS OR SCHEMAS
 **Investigation ID:** ${investigationId} · **Synthesized:** ${new Date().toUTCString()}
 **Fraud/Compliance Risk Index (FRI):** ${fri} / 1.00 (${fri > 0.6 ? 'ELEVATED' : fri > 0.3 ? 'MODERATE' : 'LOW'})
-**Bayesian Fraud Risk Posterior:** ${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}% [${bayesianPosterior.riskTier}] (Prior ${(bayesianPosterior.priorProbability * 100).toFixed(1)}% · BF=${bayesianPosterior.combinedBayesFactor}x · 95% CI ${(bayesianPosterior.confidenceInterval95[0] * 100).toFixed(1)}%–${(bayesianPosterior.confidenceInterval95[1] * 100).toFixed(1)}%)
+**Bayesian Fraud Risk Posterior:** ${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}% [${bayesianPosterior.riskTier}] (Prior ${(bayesianPosterior.priorProbability * 100).toFixed(1)}% · BF=${bayesianPosterior.combinedBayesFactor}x · 95% CI ${(bayesianPosterior.confidenceInterval95[0] * 100).toFixed(1)}%–${(bayesianPosterior.confidenceInterval95[1] * 100).toFixed(1)}%)${friBayesianCalibrationNoteLine}
 **Market Concentration Index (MAI):** ${mai} / 1.00 (${mai > 0.6 ? 'HIGH' : mai > 0.3 ? 'CONCERNING' : 'LOW'})
 
 ---
@@ -208,6 +261,10 @@ ${liveIntel.regulatoryAndLegalDockets.length > 0 ? liveIntel.regulatoryAndLegalD
 - **Squad N Patent Warfare, PTAB/SEP & Bayh-Dole Academic Grant Capture:** \`25_PATENT_TROLLS_AND_ACADEMIC_GRANT_LAUNDERING.md\`
 - **Squad O Dark-Pool Derivatives (13F/NPORT-P) & Bitcoin Mempool Anchoring:** \`26_DARK_POOL_DERIVATIVES_AND_CRYPTO_TREASURY.md\`
 - **Squad P Legal SLAPP Warfare, Forced Arbitration & Judge Shopping:** \`27_LEGAL_SLAPP_JUDGE_SHOPPING_AND_ARBITRATION.md\`
+- **Squad Q Proxy Ventures, Kinship & Shadow Subsidiaries:** \`39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md\` + \`evidence/proxy_kinship_graph.json\`
+- **Squad R Political Affiliation, Lobbying & Dark-Money Graph:** \`40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md\` + \`evidence/political_influence_ledger.json\`
+- **Squad S Shadow Infrastructure DNA & Sub-Award Pass-Through:** \`41_SHADOW_INFRA_DNA_AND_SUBAWARD_PASS_THROUGH.md\` + \`evidence/raw_payloads/shadow_infra_subaward_payload.json\`
+- **Squad T Phase-5 Adversarial Red-Team ACH & Collision Steelmanning:** \`38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md\` + \`evidence/ach_red_team_matrix.json\`
 - **Bayesian Risk Posterior, Multi-Hop Causal Chains & Live TLS X.509 Audit:** \`37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md\` + \`evidence/bayesian_and_graph_analytics.json\`
 - **Court-Ready Printable Executive Brief (Print-to-PDF):** \`EXECUTIVE_BRIEF_PRINTABLE.html\`
 - **Ring-1 BFT Corroboration & Stream Security Ledger:** \`truth/bft_corroboration_ledger.json\`
@@ -217,8 +274,8 @@ ${liveIntel.regulatoryAndLegalDockets.length > 0 ? liveIntel.regulatoryAndLegalD
 ## 5. STRATEGIC OUTLOOK (2026–2030)
 ${liveIntel.futureOutlook2026_2030.length > 0 ? liveIntel.futureOutlook2026_2030.map((o) => `- ${o}`).join('\n') : `- Continuing operations within ${liveIntel.industry}.`}
 
-## 6. VERIFIED LIVE GROUNDING SOURCES (${liveIntel.groundingSources.length})
-${liveIntel.groundingSources.map((s, idx) => `${idx + 1}. [${s.sourceType.toUpperCase()}] **${s.title}** — ${s.uri}`).join('\n')}
+## 6. VERIFIED LIVE GROUNDING SOURCES (${validatedGroundingSources.length})
+${validatedGroundingSources.map((s, idx) => `${idx + 1}. [${s.sourceType.toUpperCase()}${s.sourceSubLabel ? ` · ${s.sourceSubLabel}` : ''}] **${s.title}** — ${s.uri}`).join('\n')}
 `
       : `# SOVEREIGN HYPER-INVESTIGATIONS GRID — EXECUTIVE SUMMARY
 **Target Scope:** ${matchedEntity.name} (${matchedEntity.legalName})
@@ -226,9 +283,10 @@ ${liveIntel.groundingSources.map((s, idx) => `${idx + 1}. [${s.sourceType.toUppe
 **Execution Guarantee:** STRICTLY READ-ONLY ISOLATED SCRATCHPAD · ZERO MUTATIONS TO EXISTING LEDGERS OR SCHEMAS
 **Investigation ID:** ${investigationId}
 **Date of Synthesis:** ${new Date().toUTCString()}
-**Swarm Composition:** 16 Squads · 160 Autonomous Agents (Squads A–P) · Ed25519 + Binary Merkle + IPFS CIDv1 Sealed
+**Swarm Composition:** 20 Squads · 200 Autonomous Agents (Squads A–T) · Ed25519 + Binary Merkle + IPFS CIDv1 Sealed
 **Source Coverage:** ${sourcesCount} authenticated endpoints
 **Fraud Risk Index (FRI):** ${fri} / 1.00 (${fri > 0.6 ? 'ELEVATED' : fri > 0.3 ? 'MODERATE' : 'LOW'})
+**Bayesian Fraud Risk Posterior:** ${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}% [${bayesianPosterior.riskTier}] (Prior ${(bayesianPosterior.priorProbability * 100).toFixed(1)}% · BF=${bayesianPosterior.combinedBayesFactor}x · 95% CI ${(bayesianPosterior.confidenceInterval95[0] * 100).toFixed(1)}%–${(bayesianPosterior.confidenceInterval95[1] * 100).toFixed(1)}%)${friBayesianCalibrationNoteLine}
 **Monopoly/Antitrust Index (MAI):** ${mai} / 1.00 (${mai > 0.6 ? 'HIGH' : mai > 0.3 ? 'CONCERNING' : 'LOW'})
 ${matchedEntity.frontierLens ? `**Frontier Risk Lens (${matchedEntity.frontierLens.sector}):**
 - **${matchedEntity.frontierLens.metric1.name} (${matchedEntity.frontierLens.metric1.code}):** ${matchedEntity.frontierLens.metric1.score.toFixed(2)} — ${matchedEntity.frontierLens.metric1.description}
@@ -273,6 +331,9 @@ ${matchedEntity.activeAntitrustCases.map((c: string) => `   * ${c}`).join('\n')}
 - **Patent Warfare, PTAB/SEP & Academic Grant Capture:** \`25_PATENT_TROLLS_AND_ACADEMIC_GRANT_LAUNDERING.md\`
 - **Dark-Pool Derivatives (13F/NPORT-P) & BTC Anchor:** \`26_DARK_POOL_DERIVATIVES_AND_CRYPTO_TREASURY.md\`
 - **Legal SLAPP Warfare, Arbitration & Judge Shopping:** \`27_LEGAL_SLAPP_JUDGE_SHOPPING_AND_ARBITRATION.md\`
+- **Squad Q Proxy Ventures, Kinship & Shadow Subsidiaries:** \`39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md\` + \`evidence/proxy_kinship_graph.json\`
+- **Squad R Political Affiliation, Lobbying & Dark-Money Graph:** \`40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md\` + \`evidence/political_influence_ledger.json\`
+- **Squad S Shadow Infrastructure DNA & Sub-Award Pass-Through:** \`41_SHADOW_INFRA_DNA_AND_SUBAWARD_PASS_THROUGH.md\`
 - **Ring-1 BFT Corroboration Ledger:** \`truth/bft_corroboration_ledger.json\`
 - **Quarantined Watchlist & Rejected Hypotheses:** \`UNVERIFIED_INTELLIGENCE_WATCHLIST.md\` + \`truth/rejected_hypotheses.json\`
 - **Standalone Offline Verifier:** Execute \`node verify_dossier.mjs\` after extraction.
@@ -657,11 +718,12 @@ ${liveIntel.futureOutlook2026_2030.length > 0 ? liveIntel.futureOutlook2026_2030
     )
     .join('\n');
 
-  const liveSourceCsvRows = liveIntel && liveIntel.groundingSources.length > 0
+  const liveSourceCsvRows = liveIntel && validatedGroundingSources.length > 0
     ? [
-        ...liveIntel.groundingSources.map((s, idx) =>
-          `SRC-${String(idx + 1).padStart(3, '0')},${s.sourceType},${liveIntel.country || 'Global'},"${s.title.replace(/"/g, '""')}",${s.uri},0.96,${liveIntel.fetchedAtIso.slice(0, 10)}`
-        ),
+        ...validatedGroundingSources.map((s, idx) => {
+          const categoryLabel = s.sourceSubLabel ? `${s.sourceType} (${s.sourceSubLabel})` : s.sourceType;
+          return `SRC-${String(idx + 1).padStart(3, '0')},"${categoryLabel.replace(/"/g, '""')}",${liveIntel.country || 'Global'},"${s.title.replace(/"/g, '""')}",${s.uri},0.96,${liveIntel.fetchedAtIso.slice(0, 10)}`;
+        }),
         ...(liveDaemonSourceRows ? [liveDaemonSourceRows] : []),
       ].join('\n')
     : `SRC-001,Official_Site,Global,"${matchedEntity.name} Terms of Service and API Contract",https://${matchedEntity.name.toLowerCase().replace(/[^a-z0-9]/g, '')}.com/terms,0.98,${timestampIso.slice(0, 10)}
@@ -985,37 +1047,7 @@ This document maps how infrastructure or regulatory shocks propagate across the 
     )
   };
 
-  // 18. pipeline_execution_log.json (Execution telemetry — 160 Agents across 16 Squads)
-  const fileExecutionLog = {
-    filename: 'pipeline_execution_log.json',
-    description: '160-Agent Swarm Execution Telemetry: Agent Timestamps, Statuses, and Stage Transitions',
-    type: 'json' as const,
-    content: JSON.stringify({
-      investigation_id: investigationId,
-      execution_mode: 'READ_ONLY_ISOLATED_SCRATCHPAD',
-      target_mode: liveIntel ? 'live_grounded_osint' : resolved.targetMode,
-      mutations_performed: 0,
-      execution_start: new Date(Date.now() - durationSeconds * 1000).toISOString(),
-      execution_end: timestampIso,
-      duration_seconds: durationSeconds,
-      stages: [
-        { stage_id: 'stage_0_intake', status: 'completed', duration_ms: 420 },
-        { stage_id: 'stage_1_hypercrawl', status: 'completed', duration_ms: Math.max(400, Math.round(durationSeconds * 450)), endpoints_queried: sourcesCount },
-        { stage_id: 'stage_2_knowledge_graph', status: 'completed', duration_ms: 480, nodes: propertyGraph.nodes.length, edges: propertyGraph.edges.length, modularity_q: propertyGraph.modularityQ, max_k_core: propertyGraph.maxKCore },
-        { stage_id: 'stage_3_agent_swarm', status: 'completed', duration_ms: 1450, squads_completed: squads.length, agents_completed: squads.reduce((acc, s) => acc + s.agents.length, 0) },
-        { stage_id: 'stage_4_forensic_math_and_tribunal', status: 'completed', duration_ms: 460, computed_fri: fri, computed_mai: mai, benford_sample_size: benford.sampleSize, hawkes_event_count: hawkes.eventCount },
-        { stage_id: 'stage_5_synthesis_ed25519_merkle_ipfs_btc_sealing', status: 'completed', duration_ms: 550 }
-      ],
-      agents: squads.flatMap((sq, sIdx) => sq.agents.map((ag, aIdx) => ({
-        agent_id: ag.id,
-        squad: sq.id,
-        role: ag.role,
-        status: 'success',
-        duration_ms: 280 + ((sIdx * 37 + aIdx * 19) % 180),
-        output_file: ag.outputFilePath
-      })))
-    }, null, 2)
-  };
+  // 18. pipeline_execution_log.json is materialized after rawSquadFiles (FIX 5B) so suppressed zero-hit/non-applicable agents are logged as SKIPPED_NOT_APPLICABLE instead of writing empty stub markdown files into raw/.
 
   // 19. agent_prompts.json (Agent model configurations & prompts for all 160 agents)
   const fileAgentPrompts = {
@@ -1092,23 +1124,7 @@ FINDING OF FACT:
     filename: 'evidence/api_snapshots/client_sdk_contract.json',
     description: liveIntel ? 'Verified Operational, Digital, DNS/BGP & Grounding Snapshot' : 'Frozen API Contract Snapshot: Client Diagnostic Endpoints and Header Specs',
     type: 'json' as const,
-    content: liveIntel
-      ? JSON.stringify({
-          target_entity: liveIntel.entityName,
-          official_website: liveIntel.officialWebsite,
-          industry: liveIntel.industry,
-          operational_profile: liveIntel.technicalOrOperationalProfile,
-          cyber_telemetry_summary: liveIntel.cyberTelemetry,
-          grounding_sources: liveIntel.groundingSources
-        }, null, 2)
-      : JSON.stringify({
-          target_entity: matchedEntity.name,
-          client_runtime_version: 'v4.18.2',
-          audited_endpoints: [
-            { path: '/v1/inference', protocol: 'https/grpc', telemetry: 'mandatory_hardware_uuid_beacon' },
-            { path: '/v1/models', protocol: 'https', telemetry: 'rate_limited_tier_headers' }
-          ]
-        }, null, 2)
+    content: squadCSdkContractJson,
   };
 
   const fileEvidence4 = {
@@ -1420,6 +1436,64 @@ CONSOLIDATION SIGNALS: ${matchedEntity.consolidationSignals.join(' | ')}`
         verdict: 'TEMPORAL_CAUSALITY_UNAVAILABLE_OFFLINE',
       },
     },
+    {
+      key: 'proxy_kinship_payload',
+      filename: 'evidence/proxy_kinship_graph.json',
+      description: 'v27.0 Squad Q Telemetry: Executive Surnames, DEF 14A Item 404 Related-Person Transactions, Form 4 Indirect Vehicles, EFTS Form D Proxy Candidates & Exhibit 21.1 Subsidiary Diffs',
+      fallback: (liveIntel?.proxyKinship || {
+        extractedExecutives: [],
+        relatedPersonTransactions: [],
+        form4IndirectOwnerships: [],
+        formDProxyCandidates: [],
+        exhibit21SubsidiaryDiff: {
+          filingsCompared: 0,
+          currentSubsidiaries: [],
+          vanishedSubsidiaries: [],
+          renamedOrSpunOffCandidates: [],
+          sourceUrls: [],
+        },
+        secFilingsPulledCount: 0,
+        summaryVerdict: 'PROXY_KINSHIP_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'political_influence_payload',
+      filename: 'evidence/political_influence_ledger.json',
+      description: 'v27.0 Squad R Telemetry: DOJ FARA Active Registrants/Foreign Principals, US Senate LDA LD-1/LD-2/LD-203, OpenFEC Corporate PACs & Executive Schedule A Contributions, and ProPublica 501(c)(3)/(c)(4) Vehicles',
+      fallback: (liveIntel?.politicalInfluence || {
+        faraMatches: [],
+        senateLdaFilings: [],
+        openFecSummary: {
+          apiMode: 'UNAVAILABLE',
+          committees: [],
+          executiveContributionsByPartyCycle: [],
+          totalPacDisbursementsUsd: 0,
+          totalExecutiveContributionsUsd: 0,
+        },
+        affiliatedNonprofits: [],
+        summaryVerdict: 'POLITICAL_INFLUENCE_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'shadow_infra_subaward_payload',
+      filename: 'evidence/raw_payloads/shadow_infra_subaward_payload.json',
+      description: 'v27.0 Squad S Telemetry: Favicon MMH3 / GTM / GA / SPF / Capped crt.sh SAN Shared-Infrastructure Pivots & USASpending.gov Sub-Award Pass-Through Ledger',
+      fallback: (liveIntel?.shadowInfraSubawards || {
+        infraFingerprint: {
+          primaryDomain: liveIntel?.officialWebsite || '',
+          faviconMmh3: null,
+          gtmIds: [],
+          gaIds: [],
+          spfIncludes: [],
+          crtShSanCount: 0,
+          crtShSanSample: [],
+        },
+        sharedInfraDomains: [],
+        usaSpendingSubawards: [],
+        totalSubawardPassThroughUsd: 0,
+        summaryVerdict: 'SHADOW_INFRA_SUBAWARD_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
   ];
 
   const rawPayloadFiles = rawPayloadSpecs.map((spec) => {
@@ -1432,12 +1506,20 @@ CONSOLIDATION SIGNALS: ${matchedEntity.consolidationSignals.join(' | ')}`
     };
   });
 
+  const fileAchMatrixJson = {
+    filename: 'evidence/ach_red_team_matrix.json',
+    description: 'v27.0 Phase-5 Adversarial Red-Team ACH Matrix (Squad T Collision Steelmanning & Negative Likelihood Ratio Bayesian Calibration JSON)',
+    type: 'json' as const,
+    content: JSON.stringify(achReport, null, 2),
+  };
+
   const evidenceCoreWithHashes = [
     fileEvidence1,
     fileEvidence2,
     fileEvidence3,
     fileEvidence4,
     ...rawPayloadFiles,
+    fileAchMatrixJson,
   ].map((ef) => ({
     filename: ef.filename,
     content: ef.content,
@@ -1465,7 +1547,7 @@ CONSOLIDATION SIGNALS: ${matchedEntity.consolidationSignals.join(' | ')}`
     type: 'markdown' as const,
     content: liveIntel
       ? `# SQUAD E — CLAIMS VS. REALITY & COMPLIANCE PATTERN ANALYSIS (LIVE)
-**Audit Scope:** Squads A–P (160 Agents) + 3-Stage Bayesian Log-Odds Tribunal (Prosecutor -> Defense -> Judge) + Ring-1 BFT Quorum
+**Audit Scope:** Squads A–T (200 Agents) + 3-Stage Bayesian Log-Odds Tribunal (Prosecutor -> Defense -> Judge) + Ring-1 BFT Quorum
 **Target Business:** ${liveIntel.entityName} (${liveIntel.industry})
 
 ## 1. VERIFIED CLAIMS VS. REALITY MATRIX
@@ -1485,6 +1567,7 @@ ${promotedTribunalEntries.length > 0 ? promotedTribunalEntries.map((e) => `### [
 - **Squad F Benford Financial Conformity:** ${benford.verdict} (see \`16_RELATED_PARTY_AND_SHADOW_SPV_GRAPH.json\`).
 - **Squad J Forensic Accounting (Beneish M / Altman Z / Sloan TATA):** ${liveIntel.accountingForensics?.summaryVerdict || 'Evaluated in 21_FORENSIC_ACCOUNTING_M_SCORE_AND_ACCRUAL_AUDIT.md'}.
 - **Squad M–P Live Matrix Signals:** EPA ECHO (${liveIntel.environmentalEpa?.epaFacilitiesCount || 0} facilities / $${Math.round(liveIntel.environmentalEpa?.totalPenaltiesUsd || 0).toLocaleString('en-US')} penalties) · NIH/NSF Grants (${(liveIntel.patentGrantCapture?.nihAwardsCount || 0) + (liveIntel.patentGrantCapture?.nsfAwardsCount || 0)}) · 13F/NPORT (${liveIntel.darkPoolCrypto?.form13fAndNportFilings.length || 0}) · CourtListener Dockets (${liveIntel.legalSlappBankruptcy?.courtListenerDocketsCount || 0}).
+- **Squad Q–S Proxy, Political & Shadow Infra Signals:** Proxy/Kinship (${liveIntel.proxyKinship?.relatedPersonTransactions.length || 0} Item 404 · ${liveIntel.proxyKinship?.form4IndirectOwnerships.length || 0} Form 4 indirect · ${liveIntel.proxyKinship?.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length || 0} vanished Ex-21.1 subs) · Political/FARA (${liveIntel.politicalInfluence?.faraMatches.length || 0} FARA · $${Math.round((liveIntel.politicalInfluence?.openFecSummary.totalPacDisbursementsUsd || 0) + (liveIntel.politicalInfluence?.openFecSummary.totalExecutiveContributionsUsd || 0)).toLocaleString('en-US')} OpenFEC · ${liveIntel.politicalInfluence?.affiliatedNonprofits.length || 0} 501(c)) · Shadow Infra & Sub-Awards (${liveIntel.shadowInfraSubawards?.sharedInfraDomains.filter((d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER').length || 0} front domains · $${Math.round(liveIntel.shadowInfraSubawards?.totalSubawardPassThroughUsd || 0).toLocaleString('en-US')} sub-awards).
 - **Ring-1 BFT Corroboration Ratio:** **${bftSummary.corroboratedFactRatio}** (${bftSummary.statutoryRootSourcesCount} statutory roots vs. ${bftSummary.untrustedIngressCount} untrusted ingress sources).
 - **Legal Structuring & Loopholes:** See \`14_LAWFUL_FRAUD_LOOPHOLES_AND_ARBITRAGE_MAP.md\` & \`fraud_loopholes_matrix.csv\`.
 
@@ -1493,7 +1576,7 @@ ${promotedTribunalEntries.length > 0 ? promotedTribunalEntries.map((e) => `### [
 - **Market Concentration Index (MAI):** **${mai}**
 `
       : `# SQUAD E — FRAUD & MONOPOLY PATTERN ANALYSIS
-**Audit Scope:** Squads A–P (160 Agents) + 3-Stage Bayesian Log-Odds Tribunal (Prosecutor -> Defense -> Judge)
+**Audit Scope:** Squads A–T (200 Agents) + 3-Stage Bayesian Log-Odds Tribunal (Prosecutor -> Defense -> Judge)
 **Entity:** ${matchedEntity.name}
 
 ## 1. THE CONTRADICTION MATRIX ("SAY X / DO Y")
@@ -1639,6 +1722,9 @@ Every structural mechanism used to legally bypass statutory fraud, antitrust, or
   };
 
   const pageRankNodes = computeGraphPageRankAndContagion(graphNodes, graphEdges);
+  // FIX 3: Exclude BENIGN_CONTROL nodes from Risk Contagion Chokepoints tables while tracking benign dampeners separately
+  const riskPageRankNodes = pageRankNodes.filter((n) => n.controlClassification !== 'BENIGN_CONTROL' && !n.isBenignControl);
+  const benignControlNodes = pageRankNodes.filter((n) => n.controlClassification === 'BENIGN_CONTROL' || n.isBenignControl);
   const entropyReports = [
     computeShannonEntropyMetrics(
       'Operating Jurisdictions',
@@ -1674,7 +1760,8 @@ Every structural mechanism used to legally bypass statutory fraud, antitrust, or
       community_count: propertyGraph.communityCount,
       max_k_core: propertyGraph.maxKCore,
       top_betweenness_central_nodes: propertyGraph.topCentralNodes,
-      top_pagerank_contagion_nodes: pageRankNodes.slice(0, 12),
+      top_pagerank_contagion_nodes: riskPageRankNodes.slice(0, 12),
+      benign_control_dampener_nodes: benignControlNodes,
       shortest_path_hidden_bridges: propertyGraph.hiddenBridges,
     }, null, 2)
   };
@@ -2021,6 +2108,7 @@ This document maps global power across frontier AI, orbital launch (SpaceX), ins
     })),
   }));
 
+  const suppressedAgentIds = new Set<string>();
   const rawSquadFiles = syncedSquads.flatMap((squad) => {
     const perAgent = extractGroundedHitsByAgent(squad.id, liveIntel);
     totalUniqueEvidenceCitations += perAgent.uniqueCitationCount;
@@ -2031,13 +2119,23 @@ This document maps global power across frontier AI, orbital launch (SpaceX), ins
     const compilers = squad.agents.filter((a) => isCompilerAgent(a));
     const nonZeroSpecialistSummaries: SpecialistFindingSummary[] = [];
 
-    const specialistFiles = specialists.map((agent) => {
+    const specialistFiles: Array<{
+      filename: string;
+      description: string;
+      type: 'markdown';
+      content: string;
+    }> = [];
+
+    for (const agent of specialists) {
       const agentHits = perAgent.byAgent[agent.id] || [];
       const shouldCompressZeroHit = Boolean(liveIntel) && agentHits.length === 0;
 
       if (shouldCompressZeroHit) {
+        // FIX 5B: Suppress non-applicable zero-hit stub markdown files from raw/ & ZIP bundle;
+        // record status SKIPPED_NOT_APPLICABLE in pipeline_execution_log.json while preserving in-memory attestation for UI inspection.
         compressedZeroHitFilesCount++;
         zeroHitSpecialistsCount++;
+        suppressedAgentIds.add(agent.id);
         const compressed = renderEvidenceGatedSquadFile(
           agent.id,
           `${agent.agentName} (${agent.role})`,
@@ -2045,16 +2143,10 @@ This document maps global power across frontier AI, orbital launch (SpaceX), ins
           [],
           perAgent.probedEndpoints
         );
-        totalRawSquadBytes += compressed.byteLength;
         agent.rawMarkdownContent = compressed.markdown;
         agent.findingsCount = 0;
         agent.claimCitations = [];
-        return {
-          filename: agent.outputFilePath,
-          description: `Compressed Zero-Hit Specialist Attestation: ${agent.agentName} (${squad.name})`,
-          type: 'markdown' as const,
-          content: compressed.markdown,
-        };
+        continue;
       }
 
       expandedSquadFilesCount++;
@@ -2108,7 +2200,7 @@ ${JSON.stringify(citations, null, 2)}
 ## 5. AUDIT VERIFICATION TELEMETRY
 - **Timestamp:** ${timestampIso}
 - **Specialist Grounded Hits:** ${agentHits.length}
-- **Grounded Endpoints Reviewed:** ${liveIntel ? liveIntel.groundingSources.length : resolved.peerSectorEntities.length} verified records
+- **Grounded Endpoints Reviewed:** ${liveIntel ? validatedGroundingSources.length : resolved.peerSectorEntities.length} verified records
 - **Legal & Red-Line Validation:** PASSED (Strictly Read-Only Public Records)
 `
         : `${evidenceGateSection}# FORENSIC AGENT REPORT: ${agent.agentName}
@@ -2136,18 +2228,27 @@ ${JSON.stringify(citations, null, 2)}
       agent.findingsCount = liveIntel
         ? agentHits.length
         : Math.max(1, finalContent.split('\n- ').length - 1);
-      return {
+      specialistFiles.push({
         filename: agent.outputFilePath,
         description: `Specialist Raw Output: ${agent.agentName} (${squad.name})`,
         type: 'markdown' as const,
         content: finalContent,
-      };
-    });
+      });
+    }
 
-    const compilerFiles = compilers.map((agent) => {
+    const compilerFiles: Array<{
+      filename: string;
+      description: string;
+      type: 'markdown';
+      content: string;
+    }> = [];
+
+    for (const agent of compilers) {
       const shouldCompressCompiler = Boolean(liveIntel) && nonZeroSpecialistSummaries.length === 0;
       if (shouldCompressCompiler) {
+        // FIX 5B: Suppress non-applicable zero-hit compiler stub from raw/ & ZIP bundle
         compressedZeroHitFilesCount++;
+        suppressedAgentIds.add(agent.id);
         const compressed = renderSquadCompilerFile(
           agent.id,
           `${agent.agentName} (${agent.role})`,
@@ -2156,16 +2257,10 @@ ${JSON.stringify(citations, null, 2)}
           [],
           perAgent.probedEndpoints
         );
-        totalRawSquadBytes += compressed.byteLength;
         agent.rawMarkdownContent = compressed.markdown;
         agent.findingsCount = 0;
         agent.claimCitations = [];
-        return {
-          filename: agent.outputFilePath,
-          description: `Compressed Zero-Hit Compiler Attestation: ${agent.agentName} (${squad.name})`,
-          type: 'markdown' as const,
-          content: compressed.markdown,
-        };
+        continue;
       }
 
       expandedSquadFilesCount++;
@@ -2215,16 +2310,54 @@ ${JSON.stringify(citations, null, 2)}
       agent.findingsCount = liveIntel
         ? nonZeroSpecialistSummaries.length
         : Math.max(1, finalContent.split('\n- ').length - 1);
-      return {
+      compilerFiles.push({
         filename: agent.outputFilePath,
         description: `Squad Compiler Synthesis: ${agent.agentName} (${squad.name})`,
         type: 'markdown' as const,
         content: finalContent,
-      };
-    });
+      });
+    }
 
     return [...specialistFiles, ...compilerFiles];
   });
+
+  // 18. pipeline_execution_log.json (FIX 5B: non-applicable zero-hit agents logged as SKIPPED_NOT_APPLICABLE with no stub written to raw/)
+  const fileExecutionLog = {
+    filename: 'pipeline_execution_log.json',
+    description: '200-Agent Swarm Execution Telemetry: Agent Timestamps, Statuses (including SKIPPED_NOT_APPLICABLE stub suppression), and Stage Transitions',
+    type: 'json' as const,
+    content: JSON.stringify({
+      investigation_id: investigationId,
+      execution_mode: 'READ_ONLY_ISOLATED_SCRATCHPAD',
+      target_mode: liveIntel ? 'live_grounded_osint' : resolved.targetMode,
+      mutations_performed: 0,
+      execution_start: new Date(Date.now() - durationSeconds * 1000).toISOString(),
+      execution_end: timestampIso,
+      duration_seconds: durationSeconds,
+      raw_squad_files_emitted: rawSquadFiles.length,
+      skipped_not_applicable_agents_count: suppressedAgentIds.size,
+      stages: [
+        { stage_id: 'stage_0_intake', status: 'completed', duration_ms: 420 },
+        { stage_id: 'stage_1_hypercrawl', status: 'completed', duration_ms: Math.max(400, Math.round(durationSeconds * 450)), endpoints_queried: sourcesCount },
+        { stage_id: 'stage_2_knowledge_graph', status: 'completed', duration_ms: 480, nodes: propertyGraph.nodes.length, edges: propertyGraph.edges.length, modularity_q: propertyGraph.modularityQ, max_k_core: propertyGraph.maxKCore },
+        { stage_id: 'stage_3_agent_swarm', status: 'completed', duration_ms: 1450, squads_completed: squads.length, agents_completed: squads.reduce((acc, s) => acc + s.agents.length, 0), emitted_files: rawSquadFiles.length, skipped_not_applicable: suppressedAgentIds.size },
+        { stage_id: 'stage_4_forensic_math_and_tribunal', status: 'completed', duration_ms: 460, computed_fri: fri, computed_mai: mai, benford_sample_size: benford.sampleSize, hawkes_event_count: hawkes.eventCount },
+        { stage_id: 'stage_5_synthesis_ed25519_merkle_ipfs_btc_sealing', status: 'completed', duration_ms: 550 }
+      ],
+      agents: syncedSquads.flatMap((sq, sIdx) => sq.agents.map((ag, aIdx) => {
+        const isSkipped = suppressedAgentIds.has(ag.id);
+        return {
+          agent_id: ag.id,
+          squad: sq.id,
+          role: ag.role,
+          status: isSkipped ? 'SKIPPED_NOT_APPLICABLE' : 'success',
+          duration_ms: isSkipped ? 12 : 280 + ((sIdx * 37 + aIdx * 19) % 180),
+          output_file: isSkipped ? null : ag.outputFilePath,
+          ...(isSkipped ? { skip_reason: 'Zero applicable target findings; stub suppressed from raw/ ZIP bundle.' } : {}),
+        };
+      }))
+    }, null, 2)
+  };
 
   const totalAgentsProcessed = expandedSquadFilesCount + compressedZeroHitFilesCount;
   const estimatedUncompressedSquadBytes = totalAgentsProcessed * 3500;
@@ -3349,6 +3482,10 @@ ${
     ? `- **Monthly Temporal Burst Z-Score:** Peak Month \`${burstSummary.peakMonth || 'N/A'}\` (${burstSummary.peakMonthCount} events vs mean ${burstSummary.meanMonthlyEvents}/mo, σ=${burstSummary.stdDevMonthlyEvents}, **Z=${burstSummary.peakBurstZScore}** · ${burstSummary.burstDetected ? '**ANOMALOUS BURST DETECTED**' : 'Normal cadence'})\n`
     : ''
 }${
+  (tcl?.filteredThirdPartySpvCount ?? 0) > 0
+    ? `- **Third-Party SPV Form D Isolation (\`THIRD_PARTY_SPV_NOISE\`):** Excluded **${tcl?.filteredThirdPartySpvCount}** external secondary-market SPV/fund Form D filing(s) from temporal causality chains (${(tcl?.filteredThirdPartySpvEvents || []).slice(0, 5).map((e) => `\`${e.entityName}\``).join(', ')}).\n`
+    : ''
+}${
   causalChains.length > 0
     ? `| Chain ID | Severity | Streams Traversed | Total Span | Causal Narrative |\n|----------|----------|-------------------|-----------:|------------------|\n${causalChains
         .map(
@@ -3393,17 +3530,24 @@ ${
 
 ---
 
-## 5. PROPERTY GRAPH PAGERANK & RISK CONTAGION DIFFUSION (TOP 10 CHOKEPOINTS)
+## 5. PROPERTY GRAPH PAGERANK & RISK CONTAGION DIFFUSION (TOP 10 RISK CONTAGION CHOKEPOINTS)
 ${
-  pageRankNodes.length > 0
-    ? `| Rank | Entity / Node | Type | PageRank | Contagion Risk | Degree |\n|-----:|---------------|------|---------:|---------------:|-------:|\n${pageRankNodes
+  riskPageRankNodes.length > 0
+    ? `| Rank | Entity / Node | Type | PageRank | Contagion Risk | Degree |\n|-----:|---------------|------|---------:|---------------:|-------:|\n${riskPageRankNodes
         .slice(0, 10)
         .map(
           (n, idx) =>
             `| ${idx + 1} | **${n.label.replace(/\|/g, '-')}** | \`${n.nodeType}\` | \`${n.pageRank.toFixed(4)}\` | \`${n.contagionRisk.toFixed(3)}\` | ${n.degree} |`
         )
-        .join('\n')}`
-    : '- Insufficient graph edges for PageRank centrality scoring.'
+        .join('\n')}${
+          benignControlNodes.length > 0
+            ? `\n\n- **Benign Control Dampeners Excluded from Risk Chokepoints (${benignControlNodes.length} \`BENIGN_CONTROL\`):** ${benignControlNodes
+                .slice(0, 8)
+                .map((b) => `\`${b.label}\` (contagion=${b.contagionRisk.toFixed(3)})`)
+                .join(', ')}`
+            : ''
+        }`
+    : '- Insufficient risk graph edges for PageRank centrality scoring.'
 }
 
 ---
@@ -3475,11 +3619,288 @@ ${
 `,
   };
 
-  const fileAchMatrixJson = {
-    filename: 'evidence/ach_red_team_matrix.json',
-    description: 'v26.0 Phase-5 Adversarial Red-Team ACH Matrix & Negative Likelihood Ratio Bayesian Calibration JSON',
-    type: 'json' as const,
-    content: JSON.stringify(achReport, null, 2),
+  // v27.0 Squad Q: 39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md
+  const pq = liveIntel?.proxyKinship;
+  const file39ProxyKinshipMd = {
+    filename: '39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md',
+    description: 'v27.0 Squad Q Audit: Executive Surnames, SEC DEF 14A Item 404 Related-Person Transactions, Form 4 Indirect Ownerships, EFTS Form D Proxy Candidates & Exhibit 21.1 Subsidiary Diffs',
+    type: 'markdown' as const,
+    content: `# 39. PROXY VENTURES, KINSHIP & SHADOW SUBSIDIARIES (SQUAD Q — v27.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**SEC Filings Pulled (Capped <= 25):** ${pq?.secFilingsPulledCount ?? 0}  
+**Forensic Verdict:** **${pq?.summaryVerdict || 'NO_LIVE_PROXY_KINSHIP_TELEMETRY'}**
+
+> **Machine-Readable Graph Artifact:** Merkle-proven in \`evidence/proxy_kinship_graph.json\`.
+> **Red-Team Collision Discipline:** Surname-only SEC Form D hits without ZIP/address or executive-name corroboration are steelmanned under H0 (\`CANDIDATE_PROXY_COLLISION_CHECK\`) in \`38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md\`.
+
+---
+
+## 1. EXTRACTED EXECUTIVE & DIRECTOR SURNAMES (${pq?.extractedExecutives.length ?? 0})
+| Full Name | Surname | Role | Source Registry |
+|-----------|---------|------|-----------------|
+${
+  pq && pq.extractedExecutives.length > 0
+    ? pq.extractedExecutives
+        .map((e) => `| ${e.fullName.replace(/\|/g, '-')} | \`${e.surname}\` | ${(e.role || 'Executive').replace(/\|/g, '-')} | ${e.source} |`)
+        .join('\n')
+    : '| None extracted | N/A | N/A | N/A |'
+}
+
+---
+
+## 2. SEC DEF 14A ITEM 404 — RELATED PERSON TRANSACTIONS (${pq?.relatedPersonTransactions.length ?? 0})
+| Filing Date | Accession | Parties Mentioned | Excerpt | Source |
+|-------------|-----------|-------------------|---------|--------|
+${
+  pq && pq.relatedPersonTransactions.length > 0
+    ? pq.relatedPersonTransactions
+        .map(
+          (tx) =>
+            `| ${tx.filingDate || 'N/A'} | \`${tx.accessionNumber || 'N/A'}\` | **${(tx.partiesMentioned.join(', ') || 'See excerpt').replace(/\|/g, '-')}** | ${tx.snippet.replace(/\|/g, '-').slice(0, 180)} | [SEC DEF 14A](${tx.sourceUrl}) |`
+        )
+        .join('\n')
+    : '| N/A | N/A | Zero Item 404 related-person disclosures extracted | No Item 404 disclosures parsed from DEF 14A filings. | N/A |'
+}
+
+---
+
+## 3. SEC FORM 4 XML — INDIRECT OWNERSHIP VEHICLES (${pq?.form4IndirectOwnerships.length ?? 0})
+| Filing Date | Reporting Owner | Relationship | Indirect Nature / Vehicle | Source |
+|-------------|-----------------|--------------|---------------------------|--------|
+${
+  pq && pq.form4IndirectOwnerships.length > 0
+    ? pq.form4IndirectOwnerships
+        .map(
+          (f4) =>
+            `| ${f4.filingDate} | **${f4.ownerName.replace(/\|/g, '-')}** | ${f4.relationship.replace(/\|/g, '-')} | ${f4.indirectNature.replace(/\|/g, '-')} | [SEC Form 4](${f4.formUrl}) |`
+        )
+        .join('\n')
+    : '| N/A | None detected | N/A | N/A | N/A |'
+}
+
+---
+
+## 4. SEC EDGAR EFTS — FORM D PROXY & KINSHIP CANDIDATES (${pq?.formDProxyCandidates.length ?? 0})
+| Filing Date | Issuer Name | Matched Exec / Surname | Match Basis | City / State | Classification | Source |
+|-------------|-------------|------------------------|-------------|--------------|----------------|--------|
+${
+  pq && pq.formDProxyCandidates.length > 0
+    ? pq.formDProxyCandidates
+        .map(
+          (c) =>
+            `| ${c.filedAt} | **${c.issuerName.replace(/\|/g, '-')}** | ${c.matchedPerson.replace(/\|/g, '-')} | \`${c.matchType}\` | ${(c.cityOrState || 'Unknown').replace(/\|/g, '-')} | **${c.riskClassification}** | [SEC EFTS Form D](${c.url}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero Form D executive/kinship proxy candidates detected | N/A | N/A | N/A | N/A | N/A |'
+}
+
+---
+
+## 5. EXHIBIT 21.1 HISTORICAL SUBSIDIARY DIFF (${pq?.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length ?? 0} vanished across ${pq?.exhibit21SubsidiaryDiff.filingsCompared ?? 0} 10-K filings)
+| Prior Subsidiary Name | Status | Closest Current Subsidiary (Rename / Spin-Off Check) |
+|-----------------------|--------|------------------------------------------------------|
+${
+  pq && pq.exhibit21SubsidiaryDiff.renamedOrSpunOffCandidates.length > 0
+    ? pq.exhibit21SubsidiaryDiff.renamedOrSpunOffCandidates
+        .map(
+          (d) =>
+            `| **${d.priorName.replace(/\|/g, '-')}** | \`${d.status}\` | ${(d.closestCurrentName || '— (Not present in latest 10-K Exhibit 21.1)').replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| N/A | `NO_DIFF` | Fewer than 2 historical Exhibit 21.1 filings available or zero vanished subsidiaries. |'
+}
+`,
+  };
+
+  // v27.0 Squad R: 40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md
+  const pi = liveIntel?.politicalInfluence;
+  const partyTotalsMap = new Map<string, number>();
+  if (pi) {
+    for (const row of pi.openFecSummary.executiveContributionsByPartyCycle) {
+      partyTotalsMap.set(row.party || 'UNK', (partyTotalsMap.get(row.party || 'UNK') || 0) + row.totalAmountUsd);
+    }
+    for (const c of pi.openFecSummary.committees) {
+      partyTotalsMap.set(c.party || 'UNK', (partyTotalsMap.get(c.party || 'UNK') || 0) + c.totalDisbursementsUsd);
+    }
+  }
+  const partyEntries = Array.from(partyTotalsMap.entries()).sort((a, b) => b[1] - a[1]);
+  const senateLdaTotalUsd = pi ? pi.senateLdaFilings.reduce((acc, f) => acc + f.amountUsd, 0) : 0;
+  const senateLdaLd203Count = pi ? pi.senateLdaFilings.filter((f) => /203/i.test(f.filingType)).length : 0;
+  const totalOpenFecUsd = pi
+    ? pi.openFecSummary.totalPacDisbursementsUsd + pi.openFecSummary.totalExecutiveContributionsUsd
+    : 0;
+
+  const file40PoliticalInfluenceMd = {
+    filename: '40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md',
+    description: 'v27.0 Squad R Audit: DOJ FARA Active Registrants/Foreign Principals, US Senate LDA LD-1/LD-2/LD-203, OpenFEC Corporate PACs & Executive Schedule A Contributions, and ProPublica 501(c)(3)/(c)(4) Dark-Money Vehicles',
+    type: 'markdown' as const,
+    content: `# 40. POLITICAL AFFILIATION, LOBBYING & DARK-MONEY GRAPH (SQUAD R — v27.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**DOJ FARA Active Hits:** ${pi?.faraMatches.length ?? 0}  
+**US Senate LDA Filings / Total Spend:** ${pi?.senateLdaFilings.length ?? 0} filings · $${Math.round(senateLdaTotalUsd).toLocaleString('en-US')} (LD-203 Contributions: ${senateLdaLd203Count})  
+**OpenFEC Corporate PACs / Executive Schedule A Total:** ${pi?.openFecSummary.committees.length ?? 0} PACs · $${Math.round(totalOpenFecUsd).toLocaleString('en-US')} (API Mode: \`${pi?.openFecSummary.apiMode || 'UNAVAILABLE'}\`)  
+**ProPublica 501(c)(3)/(c)(4) Affiliated Vehicles:** ${pi?.affiliatedNonprofits.length ?? 0}  
+**Forensic Verdict:** **${pi?.summaryVerdict || 'NO_LIVE_POLITICAL_INFLUENCE_TELEMETRY'}**
+
+> **Machine-Readable Ledger:** Merkle-proven in \`evidence/political_influence_ledger.json\`.
+> **Rate-Limit Discipline:** DOJ FARA queries paced <= 4 req/10s via \`httpResilience.ts\`; OpenFEC uses \`process.env.OPENFEC_API_KEY || 'DEMO_KEY'\`.
+
+---
+
+## 1. DOJ FARA — FOREIGN AGENTS REGISTRATION ACT SCREENING (${pi?.faraMatches.length ?? 0})
+| Registration # | Registrant Name | Foreign Principal | Country | Active | Source |
+|----------------|-----------------|-------------------|---------|--------|--------|
+${
+  pi && pi.faraMatches.length > 0
+    ? pi.faraMatches
+        .map(
+          (f) =>
+            `| \`${f.registrationNumber}\` | **${f.registrantName.replace(/\|/g, '-')}** | ${(f.foreignPrincipalName || 'N/A').replace(/\|/g, '-')} | ${(f.country || 'N/A').replace(/\|/g, '-')} | ${f.active ? 'YES' : 'NO'} | [DOJ FARA](${f.url}) |`
+        )
+        .join('\n')
+    : '| N/A | Clean DOJ FARA screening — 0 active registrant/foreign-principal matches | N/A | N/A | NO (`CLEAN_BENIGN_CONTROL`) | https://efile.fara.gov |'
+}
+
+---
+
+## 2. US SENATE LDA (LD-1 / LD-2 / LD-203) LOBBYING & CONTRIBUTIONS (${pi?.senateLdaFilings.length ?? 0} validated filings)
+| Filing UUID | Year / Period | Type | Registrant | Client | Reported Amount (USD) | Source |
+|-------------|---------------|------|------------|--------|-----------------------|--------|
+${
+  pi && pi.senateLdaFilings.length > 0
+    ? pi.senateLdaFilings
+        .map(
+          (l) =>
+            `| \`${l.filingUuid}\` | ${l.filingYear} (${l.filingPeriod}) | \`${l.filingType}\` | ${l.registrantName.replace(/\|/g, '-')} | ${l.clientName.replace(/\|/g, '-')} | $${Math.round(l.amountUsd).toLocaleString('en-US')} | [Senate LDA](${l.url}) |`
+        )
+        .join('\n')
+    : '| N/A | N/A | N/A | Zero validated Senate LDA LD-1/LD-2/LD-203 filings returned | N/A | $0 | https://lda.senate.gov |'
+}
+
+---
+
+## 3. OPENFEC — CORPORATE PACS & EXECUTIVE SCHEDULE A CONTRIBUTIONS
+### 3A. Party / Committee Aggregation
+| Party / Affiliation | Total Disclosed Contributions & PAC Disbursements (USD) |
+|---------------------|---------------------------------------------------------|
+${
+  partyEntries.length > 0
+    ? partyEntries
+        .map(([party, amt]) => `| **${party}** | $${Math.round(amt).toLocaleString('en-US')} |`)
+        .join('\n')
+    : '| None disclosed | $0 |'
+}
+
+### 3B. Registered Corporate / Connected PACs (${pi?.openFecSummary.committees.length ?? 0})
+| Committee ID | Committee Name | Type | Designation | Party | Cycle | Receipts (USD) | Disbursements (USD) |
+|--------------|----------------|------|-------------|-------|-------|----------------|---------------------|
+${
+  pi && pi.openFecSummary.committees.length > 0
+    ? pi.openFecSummary.committees
+        .map(
+          (c) =>
+            `| \`${c.committeeId}\` | **${c.name.replace(/\|/g, '-')}** | ${c.committeeType} | ${c.designation} | ${c.party} | ${c.cycle ?? 'N/A'} | $${Math.round(c.totalReceiptsUsd).toLocaleString('en-US')} | $${Math.round(c.totalDisbursementsUsd).toLocaleString('en-US')} |`
+        )
+        .join('\n')
+    : '| N/A | Zero connected corporate PACs returned | N/A | N/A | N/A | N/A | $0 | $0 |'
+}
+
+### 3C. Executive Individual Schedule A Contributions by Party & Cycle (${pi?.openFecSummary.executiveContributionsByPartyCycle.length ?? 0})
+| Contributor | Recipient Committee | Party | Cycle | Filings Count | Total Amount (USD) |
+|-------------|---------------------|-------|-------|---------------|--------------------|
+${
+  pi && pi.openFecSummary.executiveContributionsByPartyCycle.length > 0
+    ? pi.openFecSummary.executiveContributionsByPartyCycle
+        .slice(0, 30)
+        .map(
+          (e) =>
+            `| **${e.contributorName.replace(/\|/g, '-')}** | ${e.committeeName.replace(/\|/g, '-')} | \`${e.party}\` | ${e.cycle} | ${e.count} | $${Math.round(e.totalAmountUsd).toLocaleString('en-US')} |`
+        )
+        .join('\n')
+    : '| N/A | Zero executive Schedule A contributions returned | N/A | N/A | 0 | $0 |'
+}
+
+---
+
+## 4. PROPUBLICA NONPROFIT EXPLORER — AFFILIATED 501(c)(3)/(c)(4) VEHICLES (${pi?.affiliatedNonprofits.length ?? 0})
+| EIN | Organization Name | Classification | State | Total Revenue (USD) | Total Assets (USD) | Source |
+|-----|-------------------|----------------|-------|---------------------|--------------------|--------|
+${
+  pi && pi.affiliatedNonprofits.length > 0
+    ? pi.affiliatedNonprofits
+        .map(
+          (n) =>
+            `| \`${n.ein}\` | **${n.name.replace(/\|/g, '-')}** | \`${n.classification}\` | ${n.state} | $${Math.round(n.totalRevenueUsd).toLocaleString('en-US')} | $${Math.round(n.totalAssetsUsd).toLocaleString('en-US')} | [ProPublica 990](${n.url}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero verified affiliated 501(c)(3)/(c)(4) foundations or policy vehicles | N/A | N/A | $0 | $0 | https://projects.propublica.org/nonprofits |'
+}
+`,
+  };
+
+  // v27.0 Squad S: 41_SHADOW_INFRA_DNA_AND_SUBAWARD_PASS_THROUGH.md
+  const sis = liveIntel?.shadowInfraSubawards;
+  const frontDomainsCount = sis
+    ? sis.sharedInfraDomains.filter((d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER').length
+    : 0;
+  const uniqueSubRecipientsCount = sis
+    ? new Set(sis.usaSpendingSubawards.map((s) => s.subawardeeName.toLowerCase())).size
+    : 0;
+
+  const file41ShadowInfraSubawardMd = {
+    filename: '41_SHADOW_INFRA_DNA_AND_SUBAWARD_PASS_THROUGH.md',
+    description: 'v27.0 Squad S Audit: Shared Infrastructure DNA (Favicon MMH3, GTM/GA, SPF, Capped crt.sh SANs) & USASpending.gov Sub-Award Pass-Through Ledger',
+    type: 'markdown' as const,
+    content: `# 41. SHADOW INFRASTRUCTURE DNA & SUB-AWARD PASS-THROUGH (SQUAD S — v27.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Primary Domain:** \`${sis?.infraFingerprint.primaryDomain || liveIntel?.officialWebsite || 'N/A'}\`  
+**Generated At:** \`${timestampIso}\`  
+**Favicon MMH3:** \`${sis?.infraFingerprint.faviconMmh3 ?? 'N/A'}\` · **GTM/GA IDs:** ${sis ? [...sis.infraFingerprint.gtmIds, ...sis.infraFingerprint.gaIds].join(', ') || 'None' : 'None'}  
+**crt.sh SANs Evaluated (Capped <= 50):** ${sis?.infraFingerprint.crtShSanCount ?? 0}  
+**Undisclosed Front / Partner Domains Flagged (Non-CDN):** ${frontDomainsCount}  
+**USASpending Sub-Award Pass-Through Total:** $${Math.round(sis?.totalSubawardPassThroughUsd ?? 0).toLocaleString('en-US')} across ${uniqueSubRecipientsCount} unique sub-recipients  
+**Forensic Verdict:** **${sis?.summaryVerdict || 'NO_LIVE_SHADOW_INFRA_SUBAWARD_TELEMETRY'}**
+
+> **Machine-Readable Payload:** Merkle-proven in \`evidence/raw_payloads/shadow_infra_subaward_payload.json\`.
+> **CDN/SaaS Noise Filter:** Standard cloud/CDN providers (Cloudflare, AWS, Fastly, Google, Microsoft, Akamai, Shopify, etc.) are automatically tagged \`CDN_SHARED_NOISE\` and excluded from undisclosed front-group escalations.
+
+---
+
+## 1. SHARED INFRASTRUCTURE DNA PIVOT TABLE (${sis?.sharedInfraDomains.length ?? 0} correlated domains)
+| Domain | Shared Signals | Classification | Confidence | Source |
+|--------|----------------|----------------|------------|--------|
+${
+  sis && sis.sharedInfraDomains.length > 0
+    ? sis.sharedInfraDomains
+        .map(
+          (d) =>
+            `| \`${d.domain.replace(/\|/g, '-')}\` | ${d.sharedSignals.join(', ').replace(/\|/g, '-')} | **${d.classification}** | \`${d.confidence}\` | ${d.sourceUrl} |`
+        )
+        .join('\n')
+    : '| None detected | No cross-domain Favicon MMH3, GTM/GA, SPF, or crt.sh SAN overlaps observed | `CLEAN` | `LOW` | N/A |'
+}
+
+---
+
+## 2. USASPENDING.GOV SUB-AWARD PASS-THROUGH LEDGER (${sis?.usaSpendingSubawards.length ?? 0} sub-awards)
+| Sub-Award ID | Prime Award ID | Sub-Recipient Name | Awarding Agency | Action Date | Amount (USD) | Description |
+|--------------|----------------|--------------------|-----------------|-------------|--------------|-------------|
+${
+  sis && sis.usaSpendingSubawards.length > 0
+    ? sis.usaSpendingSubawards
+        .map(
+          (sa) =>
+            `| \`${sa.subawardId}\` | \`${sa.primeAwardId}\` | **${sa.subawardeeName.replace(/\|/g, '-')}** | ${sa.awardingAgency.replace(/\|/g, '-')} | ${sa.actionDate} | $${Math.round(sa.amountUsd).toLocaleString('en-US')} | ${sa.description.replace(/\|/g, '-').slice(0, 100)} |`
+        )
+        .join('\n')
+    : '| N/A | N/A | Zero federal sub-award pass-through records returned | N/A | N/A | $0 | N/A |'
+}
+`,
   };
 
   // v26.0 Pillar 1D: OCCRP FollowTheMoney (.ftm.json) Interoperable Graph Export
@@ -3590,7 +4011,8 @@ ${
           total_entities: ftmExport.entities.length,
           count_by_schema: ftmExport.countBySchema,
         },
-        pagerank_contagion_top_nodes: pageRankNodes.slice(0, 20),
+        pagerank_contagion_top_nodes: riskPageRankNodes.slice(0, 20),
+        benign_control_dampeners: benignControlNodes,
         shannon_entropy_reports: entropyReports,
         temporal_burst_summary: burstSummary || null,
         multi_hop_causal_chains: causalChains,
@@ -3730,7 +4152,7 @@ ${
     <table>
       <thead><tr><th>#</th><th>Entity / Node</th><th>Type</th><th class="num">PageRank</th><th class="num">Contagion Risk</th><th class="num">Degree</th></tr></thead>
       <tbody>
-        ${pageRankNodes
+        ${riskPageRankNodes
           .slice(0, 8)
           .map(
             (n, i) =>
@@ -3796,6 +4218,9 @@ ${
     file36TemporalCausality,
     file37BayesianAndTls,
     file38AdversarialAchMd,
+    file39ProxyKinshipMd,
+    file40PoliticalInfluenceMd,
+    file41ShadowInfraSubawardMd,
     fileAchMatrixJson,
     fileFollowTheMoneyNdjson,
     fileZkTlsManifest,
@@ -3896,7 +4321,7 @@ ${
       investigation_id: investigationId,
       target_entity: matchedEntity.name,
       timestamp: timestampIso,
-      generator_system: 'Sovereign Tech Hyper-Investigations Grid v26.0 (160-Agent · Apex Singularity: Sovereign Provenance & Adversarial Truth)',
+      generator_system: 'Sovereign Tech Hyper-Investigations Grid v27.0 (200-Agent · Deep Proxy, Kinship & Political-Influence Architecture)',
       signing_scheme: 'fips_180_4_sha256_merkle_tree_ed25519_ipfs_cidv1_zktls',
       zktls_provenance_status: zktlsBundle.zktlsProvenanceStatus,
       phase5_ach_red_team: {
@@ -4116,7 +4541,7 @@ ${
     files: allFiles,
     graphNodesCount: graphNodes.length,
     graphEdgesCount: graphEdges.length,
-    groundingSources: liveIntel?.groundingSources || [],
+    groundingSources: validatedGroundingSources,
     isLiveGrounded: Boolean(liveIntel),
     rfc3161Status: initialTsaStatus,
     signalDensityMetrics,

@@ -98,7 +98,7 @@ export default function App() {
   const [squads, setSquads] = useState(() => create160AgentSwarm('SpaceX'));
   const formatLogLine = (msg: string) => `[${new Date().toISOString().slice(11, 19)}] ${msg}`;
   const [logs, setLogs] = useState<string[]>(() => [
-    formatLogLine('Sovereign Hyper-Investigations Grid initialized (160-Agent / 16-Squad Matrix).'),
+    formatLogLine('Sovereign Hyper-Investigations Grid initialized (200-Agent / 20-Squad Matrix).'),
     formatLogLine('Civilization Frontier Stack: Space, Neurotech, Bioscience, Finance, Semiconductors, EPA, Patent/Grants, Dark-Pool & CourtListener indexed.'),
     formatLogLine('24/7 SQLite WAL Daemon & 5-Ring Sovereign Defense Watchdog online.'),
   ]);
@@ -600,7 +600,7 @@ export default function App() {
 
       setStageProgress(100);
       setCurrentStage('Stage 6: Sealed Cryptographic Dossier Ready');
-      addLog(`[COMPLETE] Sovereign 160-agent dossier complete (${finalResult.sourcesCount} live sources · ${finalResult.files.length} artifacts · ${elapsedSeconds}s). SHA256SUMS, IPFS CIDv1, Bitcoin/RFC 3161 anchor & offline HTML viewer verified.`);
+      addLog(`[COMPLETE] Sovereign 200-agent dossier complete (${finalResult.sourcesCount} live sources · ${finalResult.files.length} artifacts · ${elapsedSeconds}s). SHA256SUMS, IPFS CIDv1, Bitcoin/RFC 3161 anchor & offline HTML viewer verified.`);
     } finally {
       setIsRunning(false);
     }
@@ -781,7 +781,7 @@ export default function App() {
       {/* Top 3-Zone Header */}
       <Header
         onOpenPowerMap={() => setIsPowerMapOpen(true)}
-        activeAgentsCount={160}
+        activeAgentsCount={200}
         onNavigateToMatrix={() => setWorkspaceTab('grid')}
       />
 
@@ -814,7 +814,7 @@ export default function App() {
               }`}
             >
               <Radar className="w-3.5 h-3.5" />
-              <span>Live Investigation Matrix &amp; Top-20s (160 Agents)</span>
+              <span>Live Investigation Matrix &amp; Top-20s (200 Agents)</span>
             </button>
             <button
               type="button"

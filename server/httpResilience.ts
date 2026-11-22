@@ -49,6 +49,11 @@ const HOST_RATE_LIMITS_RPS: Array<{ pattern: RegExp; rps: number }> = [
   { pattern: /(?:^|\.)courtlistener\.com$/i, rps: 4 },
   { pattern: /(?:^|\.)shodan\.io$/i, rps: 4 },
   { pattern: /(?:^|\.)crt\.sh$/i, rps: 2 },
+  // DOJ FARA API v1 strict throttle: <= 4 req / 10s (0.4 rps => 2500ms min spacing)
+  { pattern: /(?:^|\.)fara\.gov$/i, rps: 0.4 },
+  { pattern: /(?:^|\.)open\.fec\.gov$/i, rps: 1 },
+  { pattern: /(?:^|\.)usaspending\.gov$/i, rps: 3 },
+  { pattern: /(?:^|\.)propublica\.org$/i, rps: 3 },
 ];
 
 const DEFAULT_HOST_RPS = 8;
@@ -133,9 +138,10 @@ async function paceHostRequest(url: string): Promise<void> {
   const bucket = hostBuckets.get(hostname) || { nextAllowedAtMs: 0 };
 
   if (bucket.nextAllowedAtMs > now) {
-    const waitMs = Math.min(2000, bucket.nextAllowedAtMs - now);
+    const maxWaitCap = rps < 1 ? 3000 : 2000;
+    const waitMs = Math.min(maxWaitCap, bucket.nextAllowedAtMs - now);
     // Clamp lookahead so concurrent bursts cannot push future timestamps minutes ahead
-    bucket.nextAllowedAtMs = Math.min(now + 4000, bucket.nextAllowedAtMs + minIntervalMs);
+    bucket.nextAllowedAtMs = Math.min(now + Math.max(4000, minIntervalMs * 2), bucket.nextAllowedAtMs + minIntervalMs);
     hostBuckets.set(hostname, bucket);
     stats.rateLimitedWaits++;
     await new Promise((resolve) => setTimeout(resolve, waitMs));
@@ -265,7 +271,7 @@ export async function resilientFetch(
   const shouldWriteCache = isCacheableGet && !options.bypassCacheWrite;
   const softTtlMs = options.softTtlMs ?? 90_000;
   const maxBytes = options.maxBytes ?? 512 * 1024;
-  const timeoutMs = options.timeoutMs ?? 8000;
+  const timeoutMs = Math.min(12_000, Math.max(1000, options.timeoutMs ?? 12_000));
 
   const cached = isCacheableGet ? readCachedEntry(url) : null;
   if (cached && softTtlMs > 0 && Date.now() - cached.fetchedAt <= softTtlMs) {
@@ -287,7 +293,7 @@ export async function resilientFetch(
   await paceHostRequest(url);
 
   const reqHeaders: Record<string, string> = {
-    'User-Agent': 'SovereignHyperInvestigationsGrid/23.0 (+public-osint-research)',
+    'User-Agent': 'SovereignHyperInvestigationsGrid/27.0 (+public-osint-research)',
     ...(options.headers || {}),
   };
   if (cached?.etag && !reqHeaders['If-None-Match']) {
@@ -297,15 +303,12 @@ export async function resilientFetch(
     reqHeaders['If-Modified-Since'] = cached.lastModified;
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), timeoutMs);
-
   try {
     stats.networkFetches++;
     const fetchInit: RequestInit = {
       method,
       headers: reqHeaders,
-      signal: controller.signal,
+      signal: AbortSignal.timeout(timeoutMs),
     };
     if (options.body !== undefined) {
       fetchInit.body =
@@ -406,8 +409,6 @@ export async function resilientFetch(
       truncated: false,
       latencyMs: Date.now() - t0,
     };
-  } finally {
-    clearTimeout(timer);
   }
 }
 

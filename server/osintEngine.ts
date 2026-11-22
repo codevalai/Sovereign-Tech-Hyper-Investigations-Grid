@@ -47,9 +47,20 @@ import {
   extractDomainHost,
   isValidSenateLdaRecord,
   resolveCanonicalGleifLei,
+  resolveLiveMarketPublicStatus,
+  sanitizeTargetQuery,
+  validateAndNormalizeSourceTag,
   verifyEntityRelevance,
   type TargetEntityProfile,
 } from '../src/engine/entityDisambiguation.ts';
+import {
+  fetchPoliticalInfluenceTelemetry,
+  fetchProxyKinshipTelemetry,
+  fetchShadowInfraSubawardTelemetry,
+  MAX_CRTSH_SANS,
+  MAX_PHASE4_PIVOTS,
+  MAX_SEC_FILING_PULLS,
+} from './deepProxyPoliticalEngine.ts';
 import { analyzeCrossStreamTemporalCausality } from './temporalCausalityEngine.ts';
 import { getHttpResilienceStats } from './httpResilience.ts';
 import {
@@ -165,10 +176,10 @@ function normalizeTokens(text: string): string[] {
 
 function isNoisyFinancialWrapper(candidate: string, query: string): boolean {
   const qLower = query.toLowerCase();
-  if (/\b(etf|fund|trust|2x|3x|short|bear|bull|leveraged|graniteshares|direxion|proshares|savvylong|spcx)\b/i.test(qLower)) {
+  if (/\b(etf|fund|trust|2x|3x|short|bear|bull|leveraged|graniteshares|direxion|proshares|savvylong|spac and new issue)\b/i.test(qLower)) {
     return false;
   }
-  return /\b(etf|etn|2x|3x|short|bear|bull|leveraged|savvylong|graniteshares|direxion|proshares|spinnaker|crossingbridge|roundhill|shares tracker|ucits|spcx|daily target)\b/i.test(
+  return /\b(etf|etn|2x|3x|short|bear|bull|leveraged|savvylong|graniteshares|direxion|proshares|spinnaker|crossingbridge|roundhill|shares tracker|ucits|spac and new issue|daily target)\b/i.test(
     candidate
   );
 }
@@ -280,13 +291,14 @@ function normalizeHeadersRecord(headers?: RequestInit['headers']): Record<string
 async function fetchJsonSafe<T>(
   url: string,
   options: RequestInit = {},
-  timeoutMs = 4500,
+  timeoutMs = 12_000,
   maxBytes = 524_288
 ): Promise<T | null> {
+  const boundedTimeoutMs = Math.min(12_000, Math.max(1000, timeoutMs));
   try {
     const method = (options.method || 'GET').toUpperCase();
     if (method === 'GET' && !options.body) {
-      const res = await safeForensicFetch(url, maxBytes, timeoutMs, {
+      const res = await safeForensicFetch(url, maxBytes, boundedTimeoutMs, {
         'User-Agent': DEFAULT_UA,
         Accept: 'application/json',
         ...normalizeHeadersRecord(options.headers),
@@ -299,7 +311,7 @@ async function fetchJsonSafe<T>(
 
     const resp = await fetch(url, {
       ...options,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(boundedTimeoutMs),
       headers: {
         'User-Agent': DEFAULT_UA,
         Accept: 'application/json',
@@ -316,12 +328,13 @@ async function fetchJsonSafe<T>(
 async function fetchTextSafe(
   url: string,
   options: RequestInit = {},
-  timeoutMs = 4500
+  timeoutMs = 12_000
 ): Promise<string | null> {
+  const boundedTimeoutMs = Math.min(12_000, Math.max(1000, timeoutMs));
   try {
     const method = (options.method || 'GET').toUpperCase();
     if (method === 'GET' && !options.body) {
-      const res = await safeForensicFetch(url, 524_288, timeoutMs, {
+      const res = await safeForensicFetch(url, 524_288, boundedTimeoutMs, {
         'User-Agent': BROWSER_UA,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
         'Accept-Language': 'en-US,en;q=0.9',
@@ -335,7 +348,7 @@ async function fetchTextSafe(
 
     const resp = await fetch(url, {
       ...options,
-      signal: AbortSignal.timeout(timeoutMs),
+      signal: AbortSignal.timeout(boundedTimeoutMs),
       headers: {
         'User-Agent': BROWSER_UA,
         Accept: 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
@@ -1341,18 +1354,27 @@ async function getSecTickers(): Promise<Array<{ cik_str: number; ticker: string;
   return secTickersCache;
 }
 
-async function fetchSecIntelligence(query: string, wikidataCik?: string): Promise<SecResult | null> {
-  const { coreName } = extractBusinessAndLocationHint(query);
-  const searchName = coreName || query;
+async function fetchSecIntelligence(
+  query: string,
+  wikidataCik?: string,
+  liveTickerHint?: string
+): Promise<SecResult | null> {
+  const sanitized = sanitizeTargetQuery(query);
+  const { coreName } = extractBusinessAndLocationHint(sanitized.primaryName || query);
+  const searchName = coreName || sanitized.primaryName || query;
   let matchedCik = wikidataCik ? wikidataCik.replace(/\D/g, '') : '';
 
   if (!matchedCik) {
     const tickers = await getSecTickers();
     const qUpper = searchName.trim().toUpperCase();
+    const hintUpper = String(liveTickerHint || '').trim().toUpperCase();
     const nonEtfTickers = tickers.filter(
       (t) => !isNoisyFinancialWrapper(`${t.title} ${t.ticker}`, searchName)
     );
-    const exactTicker = nonEtfTickers.find((t) => t.ticker.toUpperCase() === qUpper);
+    const exactHintTicker = hintUpper
+      ? nonEtfTickers.find((t) => t.ticker.toUpperCase() === hintUpper)
+      : undefined;
+    const exactTicker = exactHintTicker || nonEtfTickers.find((t) => t.ticker.toUpperCase() === qUpper);
     const exactTitle =
       exactTicker ||
       nonEtfTickers.find((t) => t.title.toLowerCase() === searchName.trim().toLowerCase()) ||
@@ -1470,8 +1492,12 @@ async function fetchSecIntelligence(query: string, wikidataCik?: string): Promis
     }
   });
 
-  const hasPublicPeriodicFilings = recentFilings.some((f) => /^(10-K|10-Q|20-F|S-1|DEF 14A)/.test(f.form));
-  const isPublicEquityIssuer = filteredTickers.length > 0 && hasPublicPeriodicFilings;
+  const hasPublicPeriodicFilings =
+    recentFilings.some((f) => /^(10-K|10-Q|20-F|S-1|DEF 14A)/.test(f.form)) ||
+    (Array.isArray(recent.form) &&
+      recent.form.slice(0, 150).some((form: unknown) => /^(10-K|10-Q|20-F|S-1|DEF 14A)/.test(String(form || ''))));
+  const isPublicEquityIssuer =
+    filteredTickers.length > 0 && (hasPublicPeriodicFilings || filteredExchanges.length > 0);
 
   return {
     cik: matchedCik,
@@ -1517,6 +1543,8 @@ interface UsaAward {
 }
 
 async function fetchUsaSpendingAwards(query: string): Promise<UsaAward[]> {
+  const sanitized = sanitizeTargetQuery(query);
+  const cleanSearch = sanitized.primaryName || query;
   const fields = [
     'Award ID',
     'Recipient Name',
@@ -1535,7 +1563,7 @@ async function fetchUsaSpendingAwards(query: string): Promise<UsaAward[]> {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           fields,
-          filters: { recipient_search_text: [query], award_type_codes: codes },
+          filters: { recipient_search_text: [cleanSearch], award_type_codes: codes },
           limit: 55,
           page: 1,
           sort: 'Award Amount',
@@ -1766,8 +1794,9 @@ interface EpaFacilityHit {
 }
 
 async function fetchEpaEchoFacilities(query: string): Promise<EpaFacilityHit[]> {
-  const { coreName } = extractBusinessAndLocationHint(query);
-  const searchName = coreName || query;
+  const sanitized = sanitizeTargetQuery(query);
+  const { coreName } = extractBusinessAndLocationHint(sanitized.primaryName || query);
+  const searchName = coreName || sanitized.primaryName || query;
   const json = await fetchJsonSafe<{ Results?: { Facilities?: any[] } }>(
     `https://echodata.epa.gov/echo/cwa_rest_services.get_facilities?output=JSON&p_fn=${encodeURIComponent(searchName)}&responseset=5`,
     {},
@@ -2461,9 +2490,9 @@ async function fetchCyberInfraTelemetry(
     });
   }
 
-  // Parse crt.sh + CertSpotter CT + HackerTarget passive hostsearch
-  const ctRows = Array.isArray(crtJson) ? crtJson.slice(0, 80) : [];
-  const csRows = Array.isArray(certSpotterJson) ? certSpotterJson.slice(0, 80) : [];
+  // Parse crt.sh (capped <= 50 SANs per v27.0 stability bounds) + CertSpotter CT + HackerTarget passive hostsearch
+  const ctRows = Array.isArray(crtJson) ? crtJson.slice(0, MAX_CRTSH_SANS) : [];
+  const csRows = Array.isArray(certSpotterJson) ? certSpotterJson.slice(0, MAX_CRTSH_SANS) : [];
   const subdomainSet = new Set<string>();
   const issuerSet = new Set<string>();
   const ctTimestamps: string[] = [];
@@ -2472,7 +2501,7 @@ async function fetchCyberInfraTelemetry(
     const nv = String(row?.name_value || '');
     for (const part of nv.split('\n')) {
       const clean = part.trim().toLowerCase().replace(/^\*\./, '');
-      if (clean && clean.endsWith(primaryDomain)) subdomainSet.add(clean);
+      if (clean && clean.endsWith(primaryDomain) && subdomainSet.size < MAX_CRTSH_SANS) subdomainSet.add(clean);
     }
     const issuer = String(row?.issuer_name || '');
     const cnMatch = issuer.match(/O=([^,]+)/) || issuer.match(/CN=([^,]+)/);
@@ -2484,7 +2513,7 @@ async function fetchCyberInfraTelemetry(
     const names = Array.isArray(row?.dns_names) ? row.dns_names : [];
     for (const rawName of names) {
       const clean = String(rawName || '').trim().toLowerCase().replace(/^\*\./, '');
-      if (clean && clean.endsWith(primaryDomain)) subdomainSet.add(clean);
+      if (clean && clean.endsWith(primaryDomain) && subdomainSet.size < MAX_CRTSH_SANS) subdomainSet.add(clean);
     }
     const issuerName = String(row?.issuer?.friendly_name || row?.issuer?.name || '');
     if (issuerName) {
@@ -2497,7 +2526,7 @@ async function fetchCyberInfraTelemetry(
   if (hackerTargetTxt && !/API count exceeded|error/i.test(hackerTargetTxt)) {
     for (const line of hackerTargetTxt.split('\n').slice(0, 40)) {
       const host = line.split(',')[0]?.trim().toLowerCase();
-      if (host && host.endsWith(primaryDomain) && /^[a-z0-9.-]+$/.test(host)) {
+      if (host && host.endsWith(primaryDomain) && /^[a-z0-9.-]+$/.test(host) && subdomainSet.size < MAX_CRTSH_SANS) {
         subdomainSet.add(host);
       }
     }
@@ -2515,7 +2544,7 @@ async function fetchCyberInfraTelemetry(
       dmarcRecord,
       caaRecords: caaRecs.slice(0, 4),
       asnInfo,
-      ctSubdomains: Array.from(subdomainSet).slice(0, 25),
+      ctSubdomains: Array.from(subdomainSet).slice(0, MAX_CRTSH_SANS),
       ctCertIssuers: Array.from(issuerSet).slice(0, 8),
       ctTotalCertsSampled: ctRows.length + csRows.length,
       robotsTxtPresent: Boolean(robotsTxt && robotsTxt.trim().length > 5 && !/<html/i.test(robotsTxt)),
@@ -3298,7 +3327,9 @@ async function fetchDarkPoolAndCryptoTelemetry(
   };
 }
 
-async function fetchLegalSlappBankruptcyTelemetry(searchName: string): Promise<LegalSlappBankruptcyTelemetry> {
+async function fetchLegalSlappBankruptcyTelemetry(rawSearchName: string): Promise<LegalSlappBankruptcyTelemetry> {
+  const sanitized = sanitizeTargetQuery(rawSearchName);
+  const searchName = sanitized.primaryName || rawSearchName;
   const [clJson, rawSlappHits, webDocketHits, secLitJson] = await Promise.all([
     fetchJsonSafe<{ count?: number; results?: any[] }>(
       `https://www.courtlistener.com/api/rest/v4/search/?q=${encodeURIComponent(`"${searchName}"`)}&type=d&page_size=6`,
@@ -3456,13 +3487,15 @@ export async function runLiveOsintInvestigation(
   params: LiveSearchParams,
   onProgress?: (event: LiveInvestigationStreamEvent) => void
 ): Promise<LiveBusinessIntelligence> {
-  const query = params.query.trim();
+  const rawQuery = params.query.trim();
+  const sanitizedTarget = sanitizeTargetQuery(rawQuery);
+  const query = sanitizedTarget.primaryName || rawQuery;
   const { coreName, locationHint } = extractBusinessAndLocationHint(query);
   const registriesQueried: string[] = [];
   const startTrapsCount = globalPromptTrapsObserved;
   const startTruncationsCount = globalStreamTruncationsObserved;
   const probeTelemetry: ProbeExecutionRecord[] = [];
-  const ESTIMATED_TOTAL_PROBES = 34;
+  const ESTIMATED_TOTAL_PROBES = 37;
 
   const emitStage = (stage: string, progress: number, detail: string) => {
     onProgress?.({
@@ -3882,7 +3915,16 @@ export async function runLiveOsintInvestigation(
       ),
       trackProbe(
         { probeId: 'sec_edgar', sourceName: 'SEC EDGAR Submissions & Filings Index', phase: 'Phase 2', squads: ['B', 'F', 'J', 'K'] },
-        () => (allowSecTickerGuess || wd?.secCik ? fetchSecIntelligence(query, wd?.secCik) : Promise.resolve(null)),
+        () => {
+          const webQuoteTicker = webHits
+            .map((h) => h.url.match(/finance\.yahoo\.com\/quote\/([A-Z]{1,5}(?:[.-][A-Z]{1,2})?)(?:[/?#]|$)/i)?.[1])
+            .find(Boolean);
+          const liveTickerHint =
+            (yahoo?.symbol && !yahoo.symbol.includes(' ') ? yahoo.symbol : undefined) || webQuoteTicker;
+          return allowSecTickerGuess || wd?.secCik || liveTickerHint
+            ? fetchSecIntelligence(query, wd?.secCik, liveTickerHint)
+            : Promise.resolve(null);
+        },
         (v) => ({
           recordsFound: v ? 1 + v.recentFilings.length : 0,
           summary: v ? `CIK ${v.cik} (${v.tickers[0] || 'Private'}) · ${v.recentFilings.length} filings` : 'No SEC EDGAR issuer match',
@@ -4056,9 +4098,13 @@ export async function runLiveOsintInvestigation(
     `Running live attack-surface fingerprinting, open-source CVE audit, judicial dockets & 14d attention velocity`
   );
 
+  const webQuoteTickerHint = webHits
+    .map((h) => h.url.match(/finance\.yahoo\.com\/quote\/([A-Z]{1,5}(?:[.-][A-Z]{1,2})?)(?:[/?#]|$)/i)?.[1])
+    .find(Boolean);
   const primaryTickerForQuote =
     (sec?.isPublicEquityIssuer && sec.tickers[0]) ||
-    (yahoo?.symbol && !yahoo.symbol.includes(' ') ? yahoo.symbol : undefined);
+    (yahoo?.symbol && !yahoo.symbol.includes(' ') ? yahoo.symbol : undefined) ||
+    webQuoteTickerHint;
 
   // Resolve recursive GLEIF Level-2 tree, v19.0 Private-Entity Shadow Discovery & v22.0 Extreme Dork Suite before Phase 3/4
   const [gleifSubTree, privateDiscovery, extremeDorkHop1] = await Promise.all([
@@ -4385,15 +4431,19 @@ export async function runLiveOsintInvestigation(
     ),
   ]);
   const deepAttackSurface = deepProbeOut.telemetry;
+  // v27.0 Cap Phase-4 recursive pivots strictly at 15 to prevent proxy timeouts & graph explosion
+  if (Array.isArray(deepAttackSurface.recursivePivots) && deepAttackSurface.recursivePivots.length > MAX_PHASE4_PIVOTS) {
+    deepAttackSurface.recursivePivots = deepAttackSurface.recursivePivots.slice(0, MAX_PHASE4_PIVOTS);
+  }
 
-  // Merge live TLS X.509 SAN domains and discovered archive subdomains into cyberProbe.telemetry.ctSubdomains
+  // Merge live TLS X.509 SAN domains and discovered archive subdomains into cyberProbe.telemetry.ctSubdomains (capped <= 50)
   if (deepAttackSurface.tlsCertificate?.sanDomains?.length) {
     const mergedCtSubs = new Set<string>(cyberProbe.telemetry.ctSubdomains);
     for (const san of deepAttackSurface.tlsCertificate.sanDomains) {
       const cleanSan = san.trim().toLowerCase().replace(/^\*\./, '');
-      if (cleanSan && cleanSan.includes('.')) mergedCtSubs.add(cleanSan);
+      if (cleanSan && cleanSan.includes('.') && mergedCtSubs.size < MAX_CRTSH_SANS) mergedCtSubs.add(cleanSan);
     }
-    cyberProbe.telemetry.ctSubdomains = Array.from(mergedCtSubs).slice(0, 30);
+    cyberProbe.telemetry.ctSubdomains = Array.from(mergedCtSubs).slice(0, MAX_CRTSH_SANS);
     if (deepAttackSurface.tlsCertificate.issuerCn || deepAttackSurface.tlsCertificate.issuerOrg) {
       const issuer = deepAttackSurface.tlsCertificate.issuerOrg || deepAttackSurface.tlsCertificate.issuerCn;
       if (issuer && !cyberProbe.telemetry.ctCertIssuers.includes(issuer)) {
@@ -4510,13 +4560,17 @@ export async function runLiveOsintInvestigation(
     );
   }
 
-  // Collect verified grounding sources
+  // Collect verified grounding sources (FIX 5: strict domain-level tag validation)
   const groundingSources: LiveGroundingSource[] = [];
   const seenUris = new Set<string>();
   const addSource = (title: string, uri: string, sourceType: LiveGroundingSource['sourceType']) => {
     if (!uri || !isSafePublicUrl(uri) || seenUris.has(uri)) return;
     seenUris.add(uri);
-    groundingSources.push({ title: title.slice(0, 120), uri, sourceType });
+    const normalized = validateAndNormalizeSourceTag(
+      { title: title.slice(0, 140), uri, sourceType },
+      dorkDomain || resolvedPrimaryDomain
+    );
+    groundingSources.push(normalized);
   };
 
   if (siteMeta?.url) addSource(`Official Website: ${siteMeta.title || siteMeta.url}`, siteMeta.url, 'official_site');
@@ -4723,11 +4777,38 @@ export async function runLiveOsintInvestigation(
     ])
   ).slice(0, 5);
 
+  // FIX 1: Enforce live source precedence (Public vs. Private) — live Yahoo Finance quotes, SEC EDGAR active tickers/CIK,
+  // and official ir.<domain> portals ALWAYS override static Wikidata/DBpedia knowledge graphs.
+  const livePublicStatus = resolveLiveMarketPublicStatus({
+    secIsPublic: Boolean(sec?.isPublicEquityIssuer),
+    secTicker: sec?.tickers?.[0] || null,
+    secExchange: sec?.exchanges?.[0] || null,
+    secCik: sec?.cik || null,
+    liveMarketQuote: deepAttackSurface.liveMarketQuote
+      ? {
+          symbol: deepAttackSurface.liveMarketQuote.symbol,
+          exchange: deepAttackSurface.liveMarketQuote.exchange,
+          price: deepAttackSurface.liveMarketQuote.price,
+        }
+      : null,
+    yahooSearch: yahoo
+      ? { symbol: yahoo.symbol, exchange: yahoo.exchange, quoteType: 'EQUITY' }
+      : null,
+    webHitUrls: [
+      ...webHits.map((h) => h.url),
+      ...extremeDorkHop1.artifacts.map((a) => a.url),
+    ],
+    discoveredSubdomains: mergedArchiveAndCtSubdomains,
+    primaryDomain: dorkDomain || resolvedPrimaryDomain,
+    wikidataTicker: wd?.ticker || null,
+    wikidataLegalForm: wd?.legalForm || null,
+  });
+
   const readableGleifForm =
     gleif?.legalForm && !/^[A-Z0-9]{4}$/.test(gleif.legalForm) ? gleif.legalForm : '';
   const entityType =
-    (sec?.isPublicEquityIssuer && sec.tickers.length
-      ? `Public Corporation (${sec.exchanges[0] || 'US Exchange'}: ${sec.tickers[0]})`
+    (livePublicStatus.isPublic && livePublicStatus.source !== 'WIKIDATA_STATIC'
+      ? `Public Corporation (${livePublicStatus.exchange || 'Public Exchange'}${livePublicStatus.ticker ? `: ${livePublicStatus.ticker}` : ''})`
       : '') ||
     (isUkPrimary && activeUkCh ? `UK Registered Company (#${activeUkCh.companyNumber})` : '') ||
     wd?.legalForm ||
@@ -4739,19 +4820,20 @@ export async function runLiveOsintInvestigation(
     (nominatim[0] ? `Operating Commercial Establishment (${nominatim[0].category}/${nominatim[0].type})` : '') ||
     (ddgIa?.entityType ? ddgIa.entityType : 'Verified Operating / Historical Enterprise');
 
-  const operatingStatus = wd?.dissolvedDate
-    ? `Dissolved / Defunct (${wd.dissolvedDate})`
-    : sec?.isPublicEquityIssuer
-    ? 'Active (Publicly Traded SEC Reporting Issuer)'
-    : isUkPrimary && activeUkCh?.statusMeta
-    ? `${activeUkCh.statusMeta} (UK Companies House)`
-    : gleifMatchesHomeCountry && gleif?.status
-    ? `${gleif.status} (GLEIF Registered)`
-    : spec.fdicBank
-    ? spec.fdicBank.active
-      ? 'Active FDIC Charter'
-      : 'Closed / Merged Bank Charter'
-    : 'Active (Verified Public Record)';
+  const operatingStatus =
+    livePublicStatus.isPublic && livePublicStatus.source !== 'WIKIDATA_STATIC'
+      ? `Active (Publicly Traded${livePublicStatus.ticker ? ` · ${livePublicStatus.ticker}` : ''} · Verified via ${livePublicStatus.source})`
+      : wd?.dissolvedDate
+      ? `Dissolved / Defunct (${wd.dissolvedDate})`
+      : isUkPrimary && activeUkCh?.statusMeta
+      ? `${activeUkCh.statusMeta} (UK Companies House)`
+      : gleifMatchesHomeCountry && gleif?.status
+      ? `${gleif.status} (GLEIF Registered)`
+      : spec.fdicBank
+      ? spec.fdicBank.active
+        ? 'Active FDIC Charter'
+        : 'Closed / Merged Bank Charter'
+      : 'Active (Verified Public Record)';
 
   const industry =
     (sec?.isPublicEquityIssuer ? sec.sicDescription : '') ||
@@ -4763,7 +4845,7 @@ export async function runLiveOsintInvestigation(
     (isTrueNonprofit && spec.nonprofit?.ntee ? `Nonprofit NTEE ${spec.nonprofit.ntee}` : '') ||
     'Verified Commercial / Industrial Enterprise';
 
-  const isLocalBusiness = !wd && !sec && !isUkPrimary && nominatim.length > 0;
+  const isLocalBusiness = !livePublicStatus.isPublic && !wd && !sec && !isUkPrimary && nominatim.length > 0;
 
   const naicsOrSicCode = sec?.sic
     ? `SEC SIC ${sec.sic} — ${sec.sicDescription}`
@@ -4776,17 +4858,18 @@ export async function runLiveOsintInvestigation(
     : 'Not explicitly mapped in US SEC SIC';
 
   const empNum = Number((wd?.employees || '').replace(/,/g, ''));
-  const businessScale = sec?.isPublicEquityIssuer
-    ? 'Public Listed Corporation'
-    : Number.isFinite(empNum) && empNum >= 10000
-    ? 'Large Enterprise / Multinational'
-    : Number.isFinite(empNum) && empNum >= 250
-    ? 'Mid-Market / Regional Enterprise'
-    : nominatim.length > 0 && !sec && !wd && !activeUkCh
-    ? 'Local / Small Independent Business'
-    : wd?.dissolvedDate
-    ? 'Historical / Defunct Enterprise'
-    : 'Verified Enterprise';
+  const businessScale =
+    livePublicStatus.isPublic && livePublicStatus.source !== 'WIKIDATA_STATIC'
+      ? 'Public Listed Corporation'
+      : Number.isFinite(empNum) && empNum >= 10000
+      ? 'Large Enterprise / Multinational'
+      : Number.isFinite(empNum) && empNum >= 250
+      ? 'Mid-Market / Regional Enterprise'
+      : nominatim.length > 0 && !sec && !wd && !activeUkCh
+      ? 'Local / Small Independent Business'
+      : wd?.dissolvedDate
+      ? 'Historical / Defunct Enterprise'
+      : 'Verified Enterprise';
 
   const infoFounded = ddgIa?.infobox['Founded'] || siteMeta?.schemaFoundedDate || '';
   const wikiFounded = wiki?.leadSummary
@@ -4875,10 +4958,10 @@ export async function runLiveOsintInvestigation(
     'Private / Not publicly disclosed';
 
   const stockTickerOrRegistryId =
-    sec?.isPublicEquityIssuer && sec.tickers.length
-      ? `${sec.exchanges[0] || 'Exchange'}: ${sec.tickers[0]} (CIK ${sec.cik})`
-      : yahoo?.symbol
-      ? `${yahoo.exchange}: ${yahoo.symbol}`
+    livePublicStatus.isPublic && livePublicStatus.ticker && livePublicStatus.source !== 'WIKIDATA_STATIC'
+      ? `${livePublicStatus.exchange || 'Public Exchange'}: ${livePublicStatus.ticker}${sec?.cik ? ` (CIK ${sec.cik})` : ''}`
+      : livePublicStatus.isPublic && livePublicStatus.irPortalUrl
+      ? `Public (IR Portal: ${livePublicStatus.irPortalUrl})${sec?.cik ? ` · CIK ${sec.cik}` : ''}`
       : isUkPrimary && activeUkCh
       ? `UK Co. #${activeUkCh.companyNumber}`
       : wd?.ticker
@@ -5862,6 +5945,7 @@ export async function runLiveOsintInvestigation(
 
   const temporalCausalityReport = analyzeCrossStreamTemporalCausality({
     targetEntity: entityName,
+    targetLegalName: legalName,
     windowDays: 14,
     stealthEditDiffs: extremeDorkHop1.stealthEditDiffs,
     silentDeletionAlerts,
@@ -5941,6 +6025,8 @@ export async function runLiveOsintInvestigation(
     eventsByStream: temporalCausalityReport.eventsByStream,
     highestSeverity: temporalCausalityReport.highestSeverity,
     events: temporalCausalityReport.events,
+    filteredThirdPartySpvCount: temporalCausalityReport.filteredThirdPartySpvCount,
+    filteredThirdPartySpvEvents: temporalCausalityReport.filteredThirdPartySpvEvents,
     clusters: temporalCausalityReport.clusters,
     causalChains: temporalCausalityReport.causalChains,
     burstSummary: temporalCausalityReport.burstSummary,
@@ -6153,6 +6239,178 @@ export async function runLiveOsintInvestigation(
   };
   rawPayloads.sovereign_registries_payload = sovereignRegistries;
 
+  // v27.0 Squads Q, R, S Live Parallel Telemetry Collectors (Proxy/Kinship, Political/FARA/FEC/990, Shadow Infra & Sub-Awards)
+  emitStage(
+    'Phase 4B: Executing v27.0 Deep Proxy/Kinship (Squad Q), Political/FARA/FEC (Squad R) & Shadow Infra/Sub-Award (Squad S)',
+    86,
+    `Auditing DEF 14A/Exhibit 21.1/Form 4, DOJ FARA/Senate LDA/OpenFEC/990, and Infra DNA/USASpending sub-awards (SEC cap=${MAX_SEC_FILING_PULLS})`
+  );
+  const [proxyKinship, politicalInfluence, shadowInfraSubawards] = await Promise.all([
+    trackProbe(
+      {
+        probeId: 'squad_q_proxy_kinship',
+        sourceName: 'Squad Q: SEC DEF 14A Item 404, Form 4 Indirect, Exhibit 21.1 Diff & Form D Proxy',
+        phase: 'Phase 4',
+        squads: ['Q', 'T'],
+      },
+      () =>
+        fetchProxyKinshipTelemetry({
+          sanitizedTarget,
+          legalName,
+          secCik: sec?.cik,
+          headquarters,
+          keyExecutives,
+          founders,
+        }),
+      (q) => ({
+        recordsFound:
+          q.relatedPersonTransactions.length +
+          q.form4IndirectOwnerships.length +
+          q.formDProxyCandidates.length +
+          q.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length,
+        summary: q.summaryVerdict,
+        url: q.relatedPersonTransactions[0]?.sourceUrl || q.formDProxyCandidates[0]?.url,
+      }),
+      {
+        extractedExecutives: [],
+        relatedPersonTransactions: [],
+        form4IndirectOwnerships: [],
+        formDProxyCandidates: [],
+        exhibit21SubsidiaryDiff: {
+          filingsCompared: 0,
+          currentSubsidiaries: [],
+          vanishedSubsidiaries: [],
+          renamedOrSpunOffCandidates: [],
+          sourceUrls: [],
+        },
+        secFilingsPulledCount: 0,
+        summaryVerdict: 'Squad Q proxy & kinship collector timed out or unavailable.',
+      }
+    ),
+    trackProbe(
+      {
+        probeId: 'squad_r_political_influence',
+        sourceName: 'Squad R: DOJ FARA v1, US Senate LDA LD-1/2/203, OpenFEC & ProPublica 990',
+        phase: 'Phase 4',
+        squads: ['R', 'T'],
+      },
+      () =>
+        fetchPoliticalInfluenceTelemetry({
+          sanitizedTarget,
+          legalName,
+          keyExecutives,
+          founders,
+        }),
+      (r) => ({
+        recordsFound:
+          r.faraMatches.length +
+          r.senateLdaFilings.length +
+          r.openFecSummary.committees.length +
+          r.openFecSummary.executiveContributionsByPartyCycle.length +
+          r.affiliatedNonprofits.length,
+        summary: r.summaryVerdict,
+        url: r.faraMatches[0]?.url || r.senateLdaFilings[0]?.url || r.openFecSummary.committees[0]?.url,
+      }),
+      {
+        faraMatches: [],
+        senateLdaFilings: [],
+        openFecSummary: {
+          apiMode: 'UNAVAILABLE' as const,
+          committees: [],
+          executiveContributionsByPartyCycle: [],
+          totalPacDisbursementsUsd: 0,
+          totalExecutiveContributionsUsd: 0,
+        },
+        affiliatedNonprofits: [],
+        summaryVerdict: 'Squad R political influence collector timed out or unavailable.',
+      }
+    ),
+    trackProbe(
+      {
+        probeId: 'squad_s_shadow_infra_subawards',
+        sourceName: 'Squad S: Infra DNA Pivot (Favicon/GTM/SPF/SAN) & USASpending Sub-Awards',
+        phase: 'Phase 4',
+        squads: ['S', 'T'],
+      },
+      () =>
+        fetchShadowInfraSubawardTelemetry({
+          sanitizedTarget,
+          legalName,
+          primaryDomain: dorkDomain || cyberProbe.telemetry.primaryDomain,
+          faviconMmh3: infraDnaProfile.faviconMmh3 ?? null,
+          analyticsIds: infraDnaProfile.analyticsIds || [],
+          spfIncludes: infraDnaProfile.spfIncludes || [],
+          crtShSans: cyberProbe.telemetry.ctSubdomains.slice(0, MAX_CRTSH_SANS),
+          cspOrigins: deepAttackSurface.httpSecurityAudit?.cspDiscoveredOrigins || [],
+          knownSubsidiaryNames: subsidiaries,
+        }),
+      (s) => ({
+        recordsFound:
+          s.sharedInfraDomains.filter((d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER').length +
+          s.usaSpendingSubawards.length,
+        summary: s.summaryVerdict,
+        url: s.usaSpendingSubawards[0]?.url || s.sharedInfraDomains[0]?.sourceUrl,
+      }),
+      {
+        infraFingerprint: {
+          primaryDomain: dorkDomain || cyberProbe.telemetry.primaryDomain,
+          faviconMmh3: null,
+          gtmIds: [],
+          gaIds: [],
+          spfIncludes: [],
+          crtShSanCount: 0,
+          crtShSanSample: [],
+        },
+        sharedInfraDomains: [],
+        usaSpendingSubawards: [],
+        totalSubawardPassThroughUsd: 0,
+        summaryVerdict: 'Squad S shadow infrastructure & sub-award collector timed out or unavailable.',
+      }
+    ),
+  ]);
+
+  if (proxyKinship.secFilingsPulledCount > 0 || proxyKinship.formDProxyCandidates.length > 0) {
+    registriesQueried.push('SEC DEF 14A Item 404, Form 4 Indirect XML & Exhibit 21.1 Subsidiary Diff');
+  }
+  if (politicalInfluence.faraMatches.length > 0) {
+    registriesQueried.push('DOJ FARA API v1 (Active Registrants & Foreign Principals)');
+  }
+  if (politicalInfluence.openFecSummary.committees.length > 0 || politicalInfluence.openFecSummary.executiveContributionsByPartyCycle.length > 0) {
+    registriesQueried.push('OpenFEC API v1 (Corporate PACs & Executive Schedule A Contributions)');
+  }
+  if (politicalInfluence.affiliatedNonprofits.length > 0) {
+    registriesQueried.push('ProPublica Nonprofit Explorer API v2 (501(c)(3)/(c)(4) Vehicles)');
+  }
+  if (shadowInfraSubawards.usaSpendingSubawards.length > 0) {
+    registriesQueried.push('USASpending.gov Sub-Awards Pass-Through Registry');
+  }
+
+  for (const rpt of proxyKinship.relatedPersonTransactions.slice(0, 3)) {
+    addSource(`SEC DEF 14A Item 404 Related-Person Disclosure (${rpt.filingDate || 'Filing'})`, rpt.sourceUrl, 'sec_edgar');
+  }
+  for (const f4 of proxyKinship.form4IndirectOwnerships.slice(0, 3)) {
+    addSource(`SEC Form 4 Indirect Ownership (${f4.ownerName} · ${f4.indirectNature})`, f4.formUrl, 'sec_edgar');
+  }
+  for (const cand of proxyKinship.formDProxyCandidates.slice(0, 3)) {
+    addSource(`SEC Form D Proxy Candidate (${cand.issuerName})`, cand.url, 'sec_edgar');
+  }
+  for (const f of politicalInfluence.faraMatches.slice(0, 3)) {
+    addSource(`DOJ FARA Registration #${f.registrationNumber}: ${f.registrantName}`, f.url, 'lobbying_revolving_door');
+  }
+  for (const c of politicalInfluence.openFecSummary.committees.slice(0, 3)) {
+    addSource(`OpenFEC Committee ${c.committeeId}: ${c.name}`, c.url, 'lobbying_revolving_door');
+  }
+  for (const np of politicalInfluence.affiliatedNonprofits.slice(0, 3)) {
+    addSource(`ProPublica 990 (${np.classification}): ${np.name}`, np.url, 'registry');
+  }
+  for (const sub of shadowInfraSubawards.usaSpendingSubawards.slice(0, 3)) {
+    addSource(`USASpending Sub-Award -> ${sub.subawardeeName} ($${Math.round(sub.amountUsd).toLocaleString('en-US')})`, sub.url, 'government_grant');
+  }
+
+  rawPayloads.proxy_kinship_payload = proxyKinship;
+  rawPayloads.political_influence_payload = politicalInfluence;
+  rawPayloads.shadow_infra_subaward_payload = shadowInfraSubawards;
+
   // v26.0 Pillar 5: Fail-Closed TLSNotary Proxy-Mode zkTLS Web Provenance (Top 5 High-Value Fetches)
   const zktlsTargets: ZkTlsTargetFetch[] = [];
   const primarySecUrl =
@@ -6189,14 +6447,51 @@ export async function runLiveOsintInvestigation(
   // v26.0 Pillar 3: Retrieve latest prior longitudinal snapshot from SQLite WAL Vault for automatic T1 vs T2 Delta Alerting
   const previousVaultSnapshot = liveDaemon.getLatestLongitudinalSnapshot(entityName);
 
+  const squadQHighlights = [
+    proxyKinship.summaryVerdict,
+    proxyKinship.relatedPersonTransactions.length > 0
+      ? `SEC DEF 14A Item 404: ${proxyKinship.relatedPersonTransactions.length} related-person transaction disclosure(s) parsed.`
+      : `SEC DEF 14A Item 404: 0 related-person transactions surfaced in sampled filings.`,
+    proxyKinship.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length > 0
+      ? `Exhibit 21.1 Diff: ${proxyKinship.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length} vanished/renamed subsidiary candidate(s) flagged.`
+      : `Exhibit 21.1 Diff: ${proxyKinship.exhibit21SubsidiaryDiff.filingsCompared} historical 10-K exhibit(s) compared (0 vanished).`,
+  ];
+  const squadRHighlights = [
+    politicalInfluence.summaryVerdict,
+    politicalInfluence.faraMatches.length > 0
+      ? `DOJ FARA Active Matches: ${politicalInfluence.faraMatches.map((f) => `${f.registrantName} (#${f.registrationNumber})`).slice(0, 3).join(', ')}.`
+      : `DOJ FARA API v1: 0 active foreign-agent registrant or foreign-principal hits matched.`,
+    politicalInfluence.openFecSummary.committees.length > 0 || politicalInfluence.affiliatedNonprofits.length > 0
+      ? `Political/Dark-Money Footprint: ${politicalInfluence.openFecSummary.committees.length} FEC PAC(s) · ${politicalInfluence.affiliatedNonprofits.length} affiliated 501(c)(3)/(c)(4) vehicle(s).`
+      : `OpenFEC & ProPublica 990: 0 corporate PACs or affiliated 501(c)(4) dark-money vehicles matched.`,
+  ];
+  const squadSHighlights = [
+    shadowInfraSubawards.summaryVerdict,
+    shadowInfraSubawards.sharedInfraDomains.filter((d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER').length > 0
+      ? `Shared Infra DNA Pivots: ${shadowInfraSubawards.sharedInfraDomains.filter((d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER').slice(0, 3).map((d) => d.domain).join(', ')}.`
+      : `Infra DNA Pivot: 0 undisclosed non-CDN front domains sharing Favicon/GTM/SPF/SAN fingerprints.`,
+    shadowInfraSubawards.usaSpendingSubawards.length > 0
+      ? `USASpending Sub-Awards: ${shadowInfraSubawards.usaSpendingSubawards.length} pass-through sub-award(s) totaling $${Math.round(shadowInfraSubawards.totalSubawardPassThroughUsd).toLocaleString('en-US')}.`
+      : `USASpending Sub-Awards: 0 secondary pass-through sub-awards indexed.`,
+  ];
+  const squadTHighlights = [
+    `Phase-5 Red-Team ACH H0 Name-Collision Steelmanning active across Squads Q/R/S (distinguishing verified SEC/FARA/Infra links from homonyms).`,
+    `FIX 3 Benign-Control Dampening + FIX 5 Strict Domain Validation & Zero-Hit Stub Suppression active across all 20 squads (200 agents).`,
+    `Target Sanitization: "${rawQuery}" -> primary "${sanitizedTarget.primaryName}" (${sanitizedTarget.aliases.length} alias(es)).`,
+  ];
+
   emitStage(
-    'Phase 4: Forensic Synthesis Complete — Handing Off to 160-Agent Matrix, Phase-5 ACH Red-Team & Cryptographic Sealer',
+    'Phase 4: Forensic Synthesis Complete — Handing Off to 200-Agent Matrix, Phase-5 ACH Red-Team & Cryptographic Sealer',
     92,
     `Synthesized ${groundingSources.length} verified live sources across ${registriesQueried.length} public registries`
   );
 
   return {
     query,
+    sanitizedTarget,
+    proxyKinship,
+    politicalInfluence,
+    shadowInfraSubawards,
     entityName,
     legalName,
     dbaNames,
@@ -6375,6 +6670,10 @@ export async function runLiveOsintInvestigation(
       squadN: squadNHighlights,
       squadO: squadOHighlights,
       squadP: squadPHighlights,
+      squadQ: squadQHighlights,
+      squadR: squadRHighlights,
+      squadS: squadSHighlights,
+      squadT: squadTHighlights,
     },
     shadowFinance,
     cyberTelemetry: cyber,
