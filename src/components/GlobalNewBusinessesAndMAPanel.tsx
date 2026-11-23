@@ -1,4 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import { toSafeExternalUrl } from '../utils/safeUrl';
 import {
   Building2,
   Sparkles,
@@ -847,7 +848,7 @@ export const GlobalNewBusinessesAndMAPanel: React.FC<GlobalNewBusinessesAndMAPan
                     <span className="truncate">{biz.filingId}</span>
                     {isSafeHttpUrl(biz.sourceUrl) && (
                       <a
-                        href={biz.sourceUrl}
+                        href={toSafeExternalUrl(biz.sourceUrl)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="inline-flex items-center gap-0.5 text-cyan-400 hover:text-cyan-300 shrink-0"
@@ -920,7 +921,7 @@ export const GlobalNewBusinessesAndMAPanel: React.FC<GlobalNewBusinessesAndMAPan
                         <span>{deal.sector}</span>
                         {isSafeHttpUrl(deal.sourceUrl) && (
                           <a
-                            href={deal.sourceUrl}
+                            href={toSafeExternalUrl(deal.sourceUrl)}
                             target="_blank"
                             rel="noopener noreferrer"
                             className="inline-flex items-center gap-0.5 text-cyan-400 hover:text-cyan-300"
@@ -1015,7 +1016,7 @@ export const GlobalNewBusinessesAndMAPanel: React.FC<GlobalNewBusinessesAndMAPan
 
                 <div>
                   <div className="text-[11px] font-mono text-slate-400 mb-1.5">
-                    Select any national flagship node to launch 200-agent audit:
+                    Select any national flagship node to launch 260-agent audit:
                   </div>
                   <div className="flex flex-wrap gap-1.5">
                     {stat.flagshipSovereigns.map((comp) => (

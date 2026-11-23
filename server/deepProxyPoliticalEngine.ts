@@ -1,8 +1,15 @@
 import { resilientFetch } from './httpResilience.ts';
 import {
+  fetchCompaniesHouseUboTree,
+  fetchRegulationsGovComments,
+  getOpenFecApiKey,
+  getSenateLdaHeaders,
+} from './authenticatedConnectors.ts';
+import {
   escapeRegExp,
   isValidSenateLdaRecord,
 } from '../src/engine/entityDisambiguation.ts';
+import type { EntityDisambiguationGate } from '../src/engine/entityDisambiguationGate.ts';
 import type {
   PoliticalInfluenceTelemetry,
   ProxyKinshipTelemetry,
@@ -408,6 +415,482 @@ export function diffExhibit21Subsidiaries(
 }
 
 // =============================================================================
+// v27.1 / v28.0 PURE PARSERS — PARTISAN SPLIT, LDA REVOLVING DOOR, SCHEDULE E,
+// 13F INSTITUTIONAL OWNERSHIP & BOARD INTERLOCKS
+// =============================================================================
+
+export type PartisanBucket = 'DEM' | 'REP' | 'IND_OTHER';
+
+function classifyPartyBucket(rawParty: string, committeeName = ''): PartisanBucket {
+  const combined = `${rawParty || ''} ${committeeName || ''}`.toUpperCase();
+  if (/\bDEM(?:OCRAT(?:IC)?)?\b|\bACTBLUE\b|\bDCCC\b|\bDSCC\b|\bDNC\b/.test(combined)) {
+    return 'DEM';
+  }
+  if (/\bREP(?:UBLICAN)?\b|\bWINRED\b|\bNRCC\b|\bNRSC\b|\bRNC\b|\bGOP\b/.test(combined)) {
+    return 'REP';
+  }
+  return 'IND_OTHER';
+}
+
+export function aggregateExecutivePartisanSplit(
+  contributions: Array<{
+    contributorName?: string;
+    party: string;
+    committeeName: string;
+    totalAmountUsd: number;
+    count?: number;
+  }>
+): NonNullable<PoliticalInfluenceTelemetry['openFecSummary']['partisanSplit']> {
+  let demUsd = 0;
+  let repUsd = 0;
+  let indOtherUsd = 0;
+  const committeeTotals = new Map<
+    string,
+    { committeeName: string; party: string; totalAmountUsd: number; count: number }
+  >();
+
+  for (const row of contributions || []) {
+    const amt = Number(row?.totalAmountUsd || 0);
+    if (!Number.isFinite(amt) || amt <= 0) continue;
+    const bucket = classifyPartyBucket(row.party, row.committeeName);
+    if (bucket === 'DEM') demUsd += amt;
+    else if (bucket === 'REP') repUsd += amt;
+    else indOtherUsd += amt;
+
+    const cName = String(row.committeeName || 'Unknown Committee').trim();
+    const partyTag = bucket === 'DEM' ? 'DEM' : bucket === 'REP' ? 'REP' : 'IND/OTHER';
+    const key = `${cName.toLowerCase()}|${partyTag}`;
+    const existing = committeeTotals.get(key);
+    const rowCount = Number(row.count || 1) || 1;
+    if (existing) {
+      existing.totalAmountUsd = Number((existing.totalAmountUsd + amt).toFixed(2));
+      existing.count += rowCount;
+    } else {
+      committeeTotals.set(key, {
+        committeeName: cName,
+        party: partyTag,
+        totalAmountUsd: Number(amt.toFixed(2)),
+        count: rowCount,
+      });
+    }
+  }
+
+  demUsd = Number(demUsd.toFixed(2));
+  repUsd = Number(repUsd.toFixed(2));
+  indOtherUsd = Number(indOtherUsd.toFixed(2));
+  const totalUsd = Number((demUsd + repUsd + indOtherUsd).toFixed(2));
+
+  const demPct = totalUsd > 0 ? Number(((demUsd / totalUsd) * 100).toFixed(1)) : 0;
+  const repPct = totalUsd > 0 ? Number(((repUsd / totalUsd) * 100).toFixed(1)) : 0;
+  const indOtherPct = totalUsd > 0 ? Number(((indOtherUsd / totalUsd) * 100).toFixed(1)) : 0;
+
+  const topRecipientCommittees = Array.from(committeeTotals.values())
+    .sort((a, b) => b.totalAmountUsd - a.totalAmountUsd)
+    .slice(0, 5);
+
+  return {
+    demUsd,
+    repUsd,
+    indOtherUsd,
+    totalUsd,
+    demPct,
+    repPct,
+    indOtherPct,
+    topRecipientCommittees,
+  };
+}
+
+export function parseSenateLdaRevolvingDoorAndEntities(
+  rawRows: any[],
+  federalAwards: Array<{ agency: string; amountUsd?: number; amount?: string }> = []
+): {
+  filings: PoliticalInfluenceTelemetry['senateLdaFilings'];
+  revolvingDoorSummary: NonNullable<PoliticalInfluenceTelemetry['revolvingDoorSummary']>;
+} {
+  const filings: PoliticalInfluenceTelemetry['senateLdaFilings'] = [];
+  const seenLda = new Set<string>();
+  const targetedAgenciesSet = new Set<string>();
+  const specificBillsSet = new Set<string>();
+  const agencyLobbyCount = new Map<string, number>();
+  const revolvingDoorRoster: NonNullable<
+    PoliticalInfluenceTelemetry['revolvingDoorSummary']
+  >['revolvingDoorRoster'] = [];
+  const seenRevKey = new Set<string>();
+  let quarterlySpendUsd = 0;
+
+  for (const row of rawRows || []) {
+    const filingUuid = String(row?.filing_uuid || '').trim();
+    const registrantName = String(row?.registrant?.name || '').trim();
+    const clientName = String(row?.client?.name || registrantName).trim();
+    const amountUsd =
+      Number(row?.income || row?.expenses || 0) ||
+      (Array.isArray(row?.contribution_items)
+        ? row.contribution_items.reduce((sum: number, c: any) => sum + (Number(c?.amount) || 0), 0)
+        : 0);
+
+    if (
+      !isValidSenateLdaRecord({
+        filingUuid,
+        registrantName,
+        clientName,
+        amountUsd,
+      })
+    ) {
+      continue;
+    }
+    if (seenLda.has(filingUuid)) continue;
+    seenLda.add(filingUuid);
+
+    const activities = Array.isArray(row?.lobbying_activities) ? row.lobbying_activities : [];
+    const issuesSet = new Set<string>();
+    const govEntitiesSet = new Set<string>();
+    const specificIssuesSet = new Set<string>();
+    const revLobbyists: Array<{ name: string; coveredPosition: string }> = [];
+    const seenFilingRev = new Set<string>();
+
+    for (const act of activities) {
+      const issueCode = String(act?.general_issue_code_display || act?.general_issue_code || '').trim();
+      if (issueCode) issuesSet.add(issueCode);
+
+      const desc = String(act?.description || act?.specific_issues || '').replace(/\s+/g, ' ').trim();
+      if (desc) {
+        specificIssuesSet.add(desc.slice(0, 220));
+        specificBillsSet.add(desc.slice(0, 220));
+      }
+
+      if (Array.isArray(act?.government_entities)) {
+        for (const ge of act.government_entities) {
+          const geName = String(ge?.name || ge || '').trim();
+          if (!geName) continue;
+          govEntitiesSet.add(geName);
+          targetedAgenciesSet.add(geName);
+          agencyLobbyCount.set(geName, (agencyLobbyCount.get(geName) || 0) + 1);
+        }
+      }
+
+      if (Array.isArray(act?.lobbyists)) {
+        for (const lob of act.lobbyists) {
+          const coveredPos = String(lob?.covered_position || '').replace(/\s+/g, ' ').trim();
+          if (!coveredPos || /^(?:none|n\/a|na|-)$/i.test(coveredPos)) continue;
+          const lobObj = lob?.lobbyist || lob || {};
+          const lobName = [lobObj?.first_name, lobObj?.middle_name, lobObj?.last_name]
+            .map((p) => String(p || '').trim())
+            .filter(Boolean)
+            .join(' ') || String(lob?.name || '').trim();
+          if (!lobName) continue;
+          const fKey = `${lobName.toLowerCase()}|${coveredPos.toLowerCase()}`;
+          if (!seenFilingRev.has(fKey)) {
+            seenFilingRev.add(fKey);
+            revLobbyists.push({ name: lobName, coveredPosition: coveredPos });
+          }
+          const gKey = `${lobName.toLowerCase()}|${coveredPos.toLowerCase()}|${registrantName.toLowerCase()}`;
+          if (!seenRevKey.has(gKey)) {
+            seenRevKey.add(gKey);
+            revolvingDoorRoster.push({
+              lobbyistName: lobName,
+              coveredPosition: coveredPos,
+              registrantName,
+              filingYear: Number(row?.filing_year || 0),
+              agencies: Array.from(govEntitiesSet).slice(0, 6),
+              url: String(row?.filing_document_url || `https://lda.senate.gov/filings/public/filing/${filingUuid}/print/`),
+            });
+          }
+        }
+      }
+    }
+
+    const contributionPayees = Array.isArray(row?.contribution_items)
+      ? Array.from(
+          new Set<string>(
+            row.contribution_items
+              .map((c: any) => String(c?.payee_name || c?.honoree_name || '').trim())
+              .filter(Boolean)
+          )
+        ).slice(0, 8)
+      : [];
+
+    const filingPeriod = String(row?.filing_period_display || row?.filing_period || '');
+    const filingType = String(
+      row?.filing_type_display || row?.filing_type || (contributionPayees.length ? 'LD-203' : 'LD-2')
+    );
+    if (!/203/i.test(filingType) && amountUsd > 0) {
+      quarterlySpendUsd += amountUsd;
+    }
+
+    filings.push({
+      filingUuid,
+      filingType,
+      registrantName,
+      clientName,
+      amountUsd,
+      filingYear: Number(row?.filing_year || 0),
+      filingPeriod,
+      lobbyingIssues: Array.from(issuesSet).slice(0, 6),
+      governmentEntities: Array.from(govEntitiesSet).slice(0, 8),
+      specificIssues: Array.from(specificIssuesSet).slice(0, 4),
+      revolvingDoorLobbyists: revLobbyists.slice(0, 8),
+      contributionPayees,
+      url: String(row?.filing_document_url || `https://lda.senate.gov/filings/public/filing/${filingUuid}/print/`),
+    });
+  }
+
+  // Correlate lobbied agencies against USASpending federal awards
+  const agencyContractOverlaps: NonNullable<
+    PoliticalInfluenceTelemetry['revolvingDoorSummary']
+  >['agencyContractOverlaps'] = [];
+  const normalizeAgencyToken = (name: string): string =>
+    name
+      .toLowerCase()
+      .replace(/department of (?:the )?/g, '')
+      .replace(/u\.?s\.?\s+/g, '')
+      .replace(/[^a-z0-9\s]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+
+  const agencyAliasMap: Array<{ canonical: string; re: RegExp }> = [
+    { canonical: 'Department of Defense (DoD)', re: /\b(?:defense|dod|army|navy|air force|pentagon|darpa)\b/i },
+    { canonical: 'Department of Justice (DOJ)', re: /\b(?:justice|doj|fbi|dea|atf|marshals)\b/i },
+    { canonical: 'Department of Homeland Security (DHS)', re: /\b(?:homeland security|dhs|cbp|ice|tsa|fema|cisa)\b/i },
+    { canonical: 'Federal Trade Commission (FTC)', re: /\b(?:federal trade commission|ftc)\b/i },
+    { canonical: 'Federal Aviation Administration (FAA)', re: /\b(?:federal aviation|faa|transportation|dot)\b/i },
+    { canonical: 'Federal Communications Commission (FCC)', re: /\b(?:federal communications|fcc)\b/i },
+    { canonical: 'Department of Health & Human Services (HHS)', re: /\b(?:health and human|hhs|fda|nih|cdc|cms)\b/i },
+    { canonical: 'NASA', re: /\b(?:nasa|national aeronautics)\b/i },
+  ];
+
+  const canonicalizeAgency = (raw: string): string => {
+    for (const rule of agencyAliasMap) {
+      if (rule.re.test(raw)) return rule.canonical;
+    }
+    return raw.trim();
+  };
+
+  const lobbiedCanonical = new Map<string, number>();
+  for (const [ag, cnt] of agencyLobbyCount.entries()) {
+    const can = canonicalizeAgency(ag);
+    lobbiedCanonical.set(can, (lobbiedCanonical.get(can) || 0) + cnt);
+  }
+
+  const awardByCanonical = new Map<string, { count: number; totalUsd: number }>();
+  for (const aw of federalAwards || []) {
+    if (!aw?.agency) continue;
+    const can = canonicalizeAgency(aw.agency);
+    const parsedAmt =
+      typeof aw.amountUsd === 'number' && Number.isFinite(aw.amountUsd)
+        ? aw.amountUsd
+        : Number(String(aw.amount || '').replace(/[^0-9.-]/g, '')) || 0;
+    const prev = awardByCanonical.get(can) || { count: 0, totalUsd: 0 };
+    prev.count += 1;
+    prev.totalUsd += Math.max(0, parsedAmt);
+    awardByCanonical.set(can, prev);
+  }
+
+  for (const [canAgency, lCount] of lobbiedCanonical.entries()) {
+    let matchedAward = awardByCanonical.get(canAgency);
+    if (!matchedAward) {
+      const normL = normalizeAgencyToken(canAgency);
+      for (const [awAg, awStats] of awardByCanonical.entries()) {
+        const normA = normalizeAgencyToken(awAg);
+        if (normL.length >= 4 && (normA.includes(normL) || normL.includes(normA))) {
+          matchedAward = awStats;
+          break;
+        }
+      }
+    }
+    if (matchedAward && matchedAward.count > 0) {
+      agencyContractOverlaps.push({
+        agency: canAgency,
+        lobbyingCount: lCount,
+        federalAwardCount: matchedAward.count,
+        federalObligatedUsd: Number(matchedAward.totalUsd.toFixed(2)),
+      });
+    }
+  }
+  agencyContractOverlaps.sort((a, b) => b.federalObligatedUsd - a.federalObligatedUsd || b.lobbyingCount - a.lobbyingCount);
+
+  return {
+    filings,
+    revolvingDoorSummary: {
+      totalFormerGovLobbyists: revolvingDoorRoster.length,
+      targetedAgencies: Array.from(targetedAgenciesSet).slice(0, 20),
+      specificBillsOrIssues: Array.from(specificBillsSet).slice(0, 12),
+      quarterlySpendUsd: Number(quarterlySpendUsd.toFixed(2)),
+      revolvingDoorRoster: revolvingDoorRoster.slice(0, 20),
+      agencyContractOverlaps: agencyContractOverlaps.slice(0, 10),
+    },
+  };
+}
+
+export function parseOpenFecScheduleE(
+  results: any[]
+): NonNullable<PoliticalInfluenceTelemetry['openFecSummary']['scheduleEIndependentExpenditures']> {
+  const out: NonNullable<PoliticalInfluenceTelemetry['openFecSummary']['scheduleEIndependentExpenditures']> = [];
+  const seen = new Set<string>();
+  for (const r of results || []) {
+    const amountUsd = Number(r?.expenditure_amount || 0);
+    if (!Number.isFinite(amountUsd) || amountUsd <= 0) continue;
+    const committeeId = String(r?.committee_id || r?.committee?.committee_id || '').trim();
+    const committeeName = String(r?.committee?.name || r?.committee_name || 'Super PAC').trim();
+    const candidateName = String(r?.candidate_name || r?.candidate?.name || 'Federal Candidate').trim();
+    const candidateParty = String(r?.candidate_party || r?.candidate?.party || 'UNK').trim().toUpperCase();
+    const soRaw = String(r?.support_oppose_indicator || '').trim().toUpperCase();
+    const supportOppose: 'SUPPORT' | 'OPPOSE' | 'UNKNOWN' =
+      soRaw === 'S' || soRaw === 'SUPPORT'
+        ? 'SUPPORT'
+        : soRaw === 'O' || soRaw === 'OPPOSE'
+          ? 'OPPOSE'
+          : 'UNKNOWN';
+    const expenditureDate = String(r?.expenditure_date || r?.filing_date || '').slice(0, 10);
+    const purpose = String(r?.expenditure_description || r?.category_code_full || 'Independent Expenditure').trim();
+    const key = `${committeeId}|${candidateName.toLowerCase()}|${expenditureDate}|${amountUsd}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+
+    out.push({
+      committeeId: committeeId || 'N/A',
+      committeeName,
+      candidateName,
+      candidateParty,
+      supportOppose,
+      amountUsd: Number(amountUsd.toFixed(2)),
+      expenditureDate: expenditureDate || 'N/A',
+      purpose: purpose.slice(0, 140),
+      url: committeeId
+        ? `https://www.fec.gov/data/independent-expenditures/?committee_id=${encodeURIComponent(committeeId)}`
+        : 'https://www.fec.gov/data/independent-expenditures/',
+    });
+    if (out.length >= 15) break;
+  }
+  return out.sort((a, b) => b.amountUsd - a.amountUsd);
+}
+
+const KNOWN_INSTITUTIONAL_13F_MANAGERS = [
+  'Vanguard Group',
+  'BlackRock',
+  'State Street',
+  'FMR LLC',
+  'Fidelity',
+  'Geode Capital',
+  'Capital Research',
+  'Morgan Stanley',
+  'JPMorgan Chase',
+  'T. Rowe Price',
+  'Bank of America',
+  'Wellington Management',
+  'Goldman Sachs',
+  'Northern Trust',
+  'Dimensional Fund',
+  'Charles Schwab',
+  'Invesco',
+  'UBS Group',
+  'Citadel',
+  'Millennium Management',
+];
+
+export function extractInstitutional13fAndBoardInterlocks(params: {
+  targetLegalName: string;
+  extractedExecutives: ProxyKinshipTelemetry['extractedExecutives'];
+  formDProxyCandidates: ProxyKinshipTelemetry['formDProxyCandidates'];
+  externalSpvInvestors?: Array<{ name: string; role: string; spvIssuerName: string }>;
+  institutionalFilings?: Array<{ entityName: string; form: string; filedAt: string; url: string }>;
+  def14aPlainTextSamples?: string[];
+}): {
+  institutional13fHolders: NonNullable<ProxyKinshipTelemetry['institutional13fHolders']>;
+  boardInterlocks: NonNullable<ProxyKinshipTelemetry['boardInterlocks']>;
+} {
+  const holdersMap = new Map<
+    string,
+    NonNullable<ProxyKinshipTelemetry['institutional13fHolders']>[number]
+  >();
+
+  for (const f of params.institutionalFilings || []) {
+    const rawName = String(f.entityName || '').replace(/\s*\(CIK[^)]*\)/i, '').trim();
+    if (!rawName) continue;
+    const isKnown = KNOWN_INSTITUTIONAL_13F_MANAGERS.some((k) =>
+      rawName.toLowerCase().includes(k.toLowerCase())
+    );
+    const is13Filing = /13F|13G|13D/i.test(String(f.form || ''));
+    if (!isKnown && !is13Filing) continue;
+    const key = normalizeNameKey(rawName);
+    if (!key || holdersMap.has(key)) continue;
+    holdersMap.set(key, {
+      holderName: rawName,
+      filingDate: f.filedAt || undefined,
+      formType: f.form || '13F-HR',
+      sourceUrl: f.url || 'https://www.sec.gov/edgar/search/',
+    });
+  }
+
+  for (const sample of params.def14aPlainTextSamples || []) {
+    for (const mgr of KNOWN_INSTITUTIONAL_13F_MANAGERS) {
+      const key = normalizeNameKey(mgr);
+      if (holdersMap.has(key)) continue;
+      const re = new RegExp(`(${escapeRegExp(mgr)}[^\\n]{0,120}?(\\d{1,2}(?:\\.\\d{1,2})?%))`, 'i');
+      const m = sample.match(re);
+      if (m) {
+        holdersMap.set(key, {
+          holderName: mgr,
+          sharesOrValue: m[2],
+          formType: 'DEF 14A Beneficial Ownership (13G/13F)',
+          sourceUrl: 'https://www.sec.gov/edgar/search/',
+        });
+      }
+    }
+  }
+
+  // Detect BOARD_INTERLOCK nodes: executives/directors appearing across >= 2 distinct organizations/filings
+  const personOrgs = new Map<string, { displayName: string; orgs: Set<string>; sources: Set<string> }>();
+  const registerPerson = (rawName: string, org: string, source: string) => {
+    const cleaned = String(rawName || '')
+      .replace(/\s*\([^)]*\)/g, '')
+      .replace(/\s+/g, ' ')
+      .trim();
+    if (cleaned.split(/\s+/).length < 2) return;
+    const key = normalizeNameKey(cleaned);
+    if (!key || key.length < 5) return;
+    const existing = personOrgs.get(key) || {
+      displayName: cleaned,
+      orgs: new Set<string>(),
+      sources: new Set<string>(),
+    };
+    if (org.trim()) existing.orgs.add(org.trim());
+    if (source.trim()) existing.sources.add(source.trim());
+    personOrgs.set(key, existing);
+  };
+
+  const targetLabel = params.targetLegalName || 'Target Entity';
+  for (const ex of params.extractedExecutives || []) {
+    registerPerson(ex.fullName, targetLabel, ex.source);
+  }
+  for (const cand of params.formDProxyCandidates || []) {
+    if (cand.matchType === 'EXACT_EXECUTIVE_NAME') {
+      registerPerson(cand.matchedPerson, cand.issuerName, 'SEC_FORM_D_EFTS');
+    }
+  }
+  for (const spv of params.externalSpvInvestors || []) {
+    registerPerson(spv.name, spv.spvIssuerName, `SEC_FORM_D_SPV (${spv.role})`);
+  }
+
+  const boardInterlocks: NonNullable<ProxyKinshipTelemetry['boardInterlocks']> = [];
+  for (const entry of personOrgs.values()) {
+    const uniqueOrgs = Array.from(entry.orgs);
+    if (uniqueOrgs.length >= 2) {
+      boardInterlocks.push({
+        personName: entry.displayName,
+        organizations: uniqueOrgs.slice(0, 8),
+        sources: Array.from(entry.sources).slice(0, 6),
+        classification: 'BOARD_INTERLOCK',
+      });
+    }
+  }
+
+  return {
+    institutional13fHolders: Array.from(holdersMap.values()).slice(0, 15),
+    boardInterlocks: boardInterlocks.slice(0, 15),
+  };
+}
+
+// =============================================================================
 // SQUAD Q LIVE COLLECTOR — KINSHIP, COLLEAGUE & PROXY-VENTURE DISCOVERY
 // =============================================================================
 export async function fetchProxyKinshipTelemetry(params: {
@@ -415,11 +898,30 @@ export async function fetchProxyKinshipTelemetry(params: {
   legalName: string;
   secCik?: string;
   headquarters?: string;
+  targetCountry?: string;
   keyExecutives: string[];
   founders: string[];
   gleifEntities?: string[];
+  verifiedSubsidiariesAndDbas?: string[];
+  disambiguationGate?: EntityDisambiguationGate;
+  externalSpvInvestors?: Array<{ name: string; role: string; spvIssuerName: string }>;
+  institutional13fFilings?: Array<{ entityName: string; form: string; filedAt: string; url: string }>;
 }): Promise<ProxyKinshipTelemetry> {
-  const { sanitizedTarget, legalName, secCik, headquarters, keyExecutives, founders, gleifEntities } = params;
+  const {
+    sanitizedTarget,
+    legalName,
+    secCik,
+    headquarters,
+    targetCountry,
+    keyExecutives,
+    founders,
+    gleifEntities,
+    verifiedSubsidiariesAndDbas,
+    disambiguationGate,
+    externalSpvInvestors,
+    institutional13fFilings,
+  } = params;
+  const def14aPlainSamples: string[] = [];
   let secPullsUsed = 0;
   const consumeSecPull = (): boolean => {
     if (secPullsUsed >= MAX_SEC_FILING_PULLS) return false;
@@ -492,6 +994,7 @@ export async function fetchProxyKinshipTelemetry(params: {
         relatedPersonTransactions.push(...hits);
         // Extract executive/director names mentioned near "Director" or "Chief Executive Officer"
         const plain = stripHtmlTags(html).slice(0, 60_000);
+        def14aPlainSamples.push(plain);
         const execRe = /\b([A-Z][a-z]{2,18}\s+(?:[A-Z]\.\s+)?[A-Z][a-z]{2,20})\b(?=.{0,60}\b(?:Chief Executive|Chief Financial|Chief Operating|Director|Chairman|General Counsel|President)\b)/g;
         let em: RegExpExecArray | null;
         let found = 0;
@@ -645,11 +1148,92 @@ export async function fetchProxyKinshipTelemetry(params: {
     })
   );
 
+  // 5. Query SEC EDGAR EFTS for SC 13G / SC 13D / 13F-HR institutional ownership if within pull cap
+  const discovered13fFilings: Array<{ entityName: string; form: string; filedAt: string; url: string }> = [
+    ...(institutional13fFilings || []),
+  ];
+  if (sanitizedTarget.primaryName && consumeSecPull()) {
+    const instUrl = `https://efts.sec.gov/LATEST/search-index?q=${encodeURIComponent(`"${sanitizedTarget.primaryName}"`)}&forms=SC%2013G,SC%2013G/A,SC%2013D,13F-HR`;
+    const instJson = await fetchJsonBounded<{ hits?: { hits?: any[] } }>(instUrl, { timeoutMs: 6500 });
+    for (const h of (instJson?.hits?.hits || []).slice(0, 12)) {
+      const src = h._source || {};
+      const holder = Array.isArray(src.display_names) ? String(src.display_names[0] || '') : '';
+      if (!holder) continue;
+      const ciks = Array.isArray(src.ciks) ? String(src.ciks[0] || '') : '';
+      const adsh = String(src.adsh || '').replace(/-/g, '');
+      discovered13fFilings.push({
+        entityName: holder,
+        form: String(src.form || 'SC 13G'),
+        filedAt: String(src.file_date || ''),
+        url:
+          ciks && adsh
+            ? `https://www.sec.gov/Archives/edgar/data/${Number(ciks)}/${adsh}`
+            : `https://www.sec.gov/edgar/search/#/q=${encodeURIComponent(sanitizedTarget.primaryName)}&forms=SC%2013G`,
+      });
+    }
+  }
+
+  const { institutional13fHolders, boardInterlocks } = extractInstitutional13fAndBoardInterlocks({
+    targetLegalName: legalName || sanitizedTarget.primaryName,
+    extractedExecutives,
+    formDProxyCandidates,
+    externalSpvInvestors,
+    institutionalFilings: discovered13fFilings,
+    def14aPlainTextSamples: def14aPlainSamples,
+  });
+
+  // 6. Optional authenticated UK Companies House REST API (Subsidiaries, Officers & PSC UBOs)
+  // v31.0 Fix 1: Gate UK Companies House entities via EntityDisambiguationGate before merging officers
+  const rawUkCompaniesHouseUbo = await fetchCompaniesHouseUboTree(sanitizedTarget.primaryName || legalName);
+  const verifiedSubPool = Array.from(
+    new Set([
+      ...(verifiedSubsidiariesAndDbas || []),
+      ...(gleifEntities || []),
+      ...exhibit21Diff.currentSubsidiaries,
+    ])
+  );
+  const verifiedPrincipalPool = Array.from(
+    new Set([
+      ...founders,
+      ...keyExecutives,
+      ...extractedExecutives.map((e) => e.fullName),
+    ])
+  );
+  const gatedUkCompanies = disambiguationGate
+    ? rawUkCompaniesHouseUbo.companies.filter((comp) =>
+        disambiguationGate.gateUkCompaniesHouseEntity({
+          companyName: comp.title,
+          companyNumber: comp.companyNumber,
+          registeredAddress: comp.addressSnippet,
+          officers: comp.officers,
+          pscs: comp.personsWithSignificantControl,
+          url: comp.url,
+          targetCountry,
+          targetHeadquarters: headquarters,
+          verifiedSubsidiariesAndDbas: verifiedSubPool,
+          verifiedPrincipals: verifiedPrincipalPool,
+        })
+      )
+    : rawUkCompaniesHouseUbo.companies;
+  const quarantinedUkCount = rawUkCompaniesHouseUbo.companies.length - gatedUkCompanies.length;
+  const ukCompaniesHouseUbo = {
+    ...rawUkCompaniesHouseUbo,
+    companies: gatedUkCompanies,
+    totalPscUbos: gatedUkCompanies.reduce((sum, c) => sum + c.personsWithSignificantControl.length, 0),
+    summaryVerdict:
+      quarantinedUkCount > 0
+        ? `${rawUkCompaniesHouseUbo.summaryVerdict} [v31.0 Homonym Gate: ${gatedUkCompanies.length} verified / ${quarantinedUkCount} uncorroborated UK homonym(s) quarantined]`
+        : rawUkCompaniesHouseUbo.summaryVerdict,
+  };
+
   const summaryVerdict =
     `Squad Q audited ${extractedExecutives.length} executive/director surname(s) (${secPullsUsed}/${MAX_SEC_FILING_PULLS} SEC pulls): ` +
     `${relatedPersonTransactions.length} DEF 14A Item 404 disclosure(s), ` +
     `${form4IndirectOwnerships.length} Form 4 indirect family/LLC holding(s), ` +
-    `${formDProxyCandidates.length} Form D proxy-venture lead(s), and ` +
+    `${formDProxyCandidates.length} Form D proxy-venture lead(s), ` +
+    `${institutional13fHolders.length} institutional 13F/13G holder(s), ` +
+    `${boardInterlocks.length} BOARD_INTERLOCK node(s), ` +
+    `${ukCompaniesHouseUbo.companies.length} UK Companies House UBO entit(y/ies) (${ukCompaniesHouseUbo.totalPscUbos} PSCs; ${quarantinedUkCount} homonym(s) filtered), and ` +
     `${exhibit21Diff.vanishedSubsidiaries.length} vanished/spun-off Exhibit 21.1 subsidiary candidate(s).`;
 
   return {
@@ -658,6 +1242,9 @@ export async function fetchProxyKinshipTelemetry(params: {
     form4IndirectOwnerships: form4IndirectOwnerships.slice(0, 15),
     formDProxyCandidates: formDProxyCandidates.slice(0, 20),
     exhibit21SubsidiaryDiff: exhibit21Diff,
+    institutional13fHolders,
+    boardInterlocks,
+    ukCompaniesHouseUbo,
     secFilingsPulledCount: secPullsUsed,
     summaryVerdict,
   };
@@ -669,59 +1256,70 @@ export async function fetchProxyKinshipTelemetry(params: {
 export async function fetchPoliticalInfluenceTelemetry(params: {
   sanitizedTarget: SanitizedTargetQuery;
   legalName: string;
+  headquarters?: string;
   keyExecutives: string[];
   founders: string[];
+  disambiguationGate?: EntityDisambiguationGate;
+  federalAwards?: Array<{ agency: string; amountUsd?: number; amount?: string }>;
 }): Promise<PoliticalInfluenceTelemetry> {
-  const { sanitizedTarget, legalName, keyExecutives, founders } = params;
+  const { sanitizedTarget, legalName, headquarters, keyExecutives, founders, disambiguationGate, federalAwards } = params;
   const primarySearch = sanitizedTarget.primaryName || legalName;
   const escapedTerms = [sanitizedTarget.escapedPrimaryRegex, ...sanitizedTarget.escapedAliasRegexes].filter(Boolean);
   const targetMatchRe = escapedTerms.length
     ? new RegExp(`\\b(?:${escapedTerms.join('|')})\\b`, 'i')
     : new RegExp(escapeRegExp(primarySearch), 'i');
 
-  const openFecKey = process.env.OPENFEC_API_KEY?.trim() || 'DEMO_KEY';
-  const apiMode: PoliticalInfluenceTelemetry['openFecSummary']['apiMode'] = process.env.OPENFEC_API_KEY?.trim()
-    ? 'ENV_KEY'
-    : 'PUBLIC_DEMO_KEY';
+  const { apiKey: openFecKey, apiMode } = getOpenFecApiKey();
+  const ldaAuthHeaders = getSenateLdaHeaders();
+  const bypassFecCache = apiMode === 'ENV_KEY';
 
   const executives = extractExecutiveSurnames([
     ...founders.map((f) => ({ rawName: f, role: 'Founder', source: 'EXECUTIVE_ROSTER' as const })),
     ...keyExecutives.map((e) => ({ rawName: e, role: 'Executive', source: 'EXECUTIVE_ROSTER' as const })),
   ]);
 
-  const [faraRegistrants, faraPrincipals, ldaFilingsJson, ldaContribJson, fecCommitteesJson, proPublicaJson] =
-    await Promise.all([
-      // 1. DOJ FARA API v1 (strictly throttled <= 4 req/10s via httpResilience 0.4 rps rule)
-      fetchJsonBounded<any>('https://efile.fara.gov/api/v1/Registrants/json/Active', {
-        timeoutMs: 9000,
-        maxBytes: 1_500_000,
-        softTtlMs: 600_000,
-      }),
-      fetchJsonBounded<any>('https://efile.fara.gov/api/v1/ForeignPrincipals/json/Active', {
-        timeoutMs: 9000,
-        maxBytes: 1_500_000,
-        softTtlMs: 600_000,
-      }),
-      // 2. US Senate LDA API v1 (LD-1/LD-2 filings + LD-203 contributions)
-      fetchJsonBounded<{ results?: any[] }>(
-        `https://lda.senate.gov/api/v1/filings/?client_name=${encodeURIComponent(primarySearch)}&page_size=15`,
-        { timeoutMs: 8500 }
-      ),
-      fetchJsonBounded<{ results?: any[] }>(
-        `https://lda.senate.gov/api/v1/contributions/?registrant_name=${encodeURIComponent(primarySearch)}&page_size=15`,
-        { timeoutMs: 8500 }
-      ),
-      // 3. OpenFEC API v1 (corporate PACs)
-      fetchJsonBounded<{ results?: any[] }>(
-        `https://api.open.fec.gov/v1/committees/?q=${encodeURIComponent(primarySearch)}&per_page=10&api_key=${encodeURIComponent(openFecKey)}`,
-        { timeoutMs: 8500 }
-      ),
-      // 4. ProPublica Nonprofit Explorer API v2 (affiliated 501(c)(3)/(c)(4) vehicles)
-      fetchJsonBounded<{ organizations?: any[] }>(
-        `https://projects.propublica.org/nonprofits/api/v2/search.json?q=${encodeURIComponent(primarySearch)}`,
-        { timeoutMs: 8500 }
-      ),
-    ]);
+  const [
+    faraRegistrants,
+    faraPrincipals,
+    ldaFilingsJson,
+    ldaContribJson,
+    fecCommitteesJson,
+    proPublicaJson,
+    regulationsGovComments,
+  ] = await Promise.all([
+    // 1. DOJ FARA API v1 (strictly throttled <= 4 req/10s via httpResilience 0.4 rps rule)
+    fetchJsonBounded<any>('https://efile.fara.gov/api/v1/Registrants/json/Active', {
+      timeoutMs: 9000,
+      maxBytes: 1_500_000,
+      softTtlMs: 600_000,
+    }),
+    fetchJsonBounded<any>('https://efile.fara.gov/api/v1/ForeignPrincipals/json/Active', {
+      timeoutMs: 9000,
+      maxBytes: 1_500_000,
+      softTtlMs: 600_000,
+    }),
+    // 2. US Senate LDA API v1 (LD-1/LD-2 filings + LD-203 contributions, optional Authorization: Token LDA_API_KEY)
+    fetchJsonBounded<{ results?: any[] }>(
+      `https://lda.senate.gov/api/v1/filings/?client_name=${encodeURIComponent(primarySearch)}&page_size=15`,
+      { timeoutMs: 8500, headers: ldaAuthHeaders }
+    ),
+    fetchJsonBounded<{ results?: any[] }>(
+      `https://lda.senate.gov/api/v1/contributions/?registrant_name=${encodeURIComponent(primarySearch)}&page_size=15`,
+      { timeoutMs: 8500, headers: ldaAuthHeaders }
+    ),
+    // 3. OpenFEC API v1 (corporate PACs; bypass local http_cache when ENV_KEY is set so key never touches disk)
+    fetchJsonBounded<{ results?: any[] }>(
+      `https://api.open.fec.gov/v1/committees/?q=${encodeURIComponent(primarySearch)}&per_page=10&api_key=${encodeURIComponent(openFecKey)}`,
+      { timeoutMs: 8500, bypassCache: bypassFecCache }
+    ),
+    // 4. ProPublica Nonprofit Explorer API v2 (affiliated 501(c)(3)/(c)(4) vehicles)
+    fetchJsonBounded<{ organizations?: any[] }>(
+      `https://projects.propublica.org/nonprofits/api/v2/search.json?q=${encodeURIComponent(primarySearch)}`,
+      { timeoutMs: 8500 }
+    ),
+    // 5. Regulations.gov v4 corporate public-comment letters (reuses OPENFEC_API_KEY as X-Api-Key)
+    fetchRegulationsGovComments(primarySearch),
+  ]);
 
   // Parse DOJ FARA matches safely with escaped regex
   const faraMatches: PoliticalInfluenceTelemetry['faraMatches'] = [];
@@ -776,63 +1374,11 @@ export async function fetchPoliticalInfluenceTelemetry(params: {
     if (faraMatches.length >= 15) break;
   }
 
-  // Parse US Senate LDA LD-1/LD-2 filings + LD-203 contributions (strict v26.1 hygiene)
-  const senateLdaFilings: PoliticalInfluenceTelemetry['senateLdaFilings'] = [];
-  const seenLda = new Set<string>();
-  for (const row of [...(ldaFilingsJson?.results || []), ...(ldaContribJson?.results || [])]) {
-    const filingUuid = String(row?.filing_uuid || '').trim();
-    const registrantName = String(row?.registrant?.name || '').trim();
-    const clientName = String(row?.client?.name || registrantName).trim();
-    const amountUsd = Number(row?.income || row?.expenses || 0) ||
-      (Array.isArray(row?.contribution_items)
-        ? row.contribution_items.reduce((sum: number, c: any) => sum + (Number(c?.amount) || 0), 0)
-        : 0);
-
-    if (
-      !isValidSenateLdaRecord({
-        filingUuid,
-        registrantName,
-        clientName,
-        amountUsd,
-      })
-    ) {
-      continue;
-    }
-    if (seenLda.has(filingUuid)) continue;
-    seenLda.add(filingUuid);
-
-    const issues = Array.isArray(row?.lobbying_activities)
-      ? Array.from(
-          new Set<string>(
-            row.lobbying_activities
-              .map((a: any) => String(a?.general_issue_code_display || a?.general_issue_code || '').trim())
-              .filter(Boolean)
-          )
-        )
-      : [];
-    const contributionPayees = Array.isArray(row?.contribution_items)
-      ? Array.from(
-          new Set<string>(
-            row.contribution_items
-              .map((c: any) => String(c?.payee_name || c?.honoree_name || '').trim())
-              .filter(Boolean)
-          )
-        ).slice(0, 8)
-      : [];
-
-    senateLdaFilings.push({
-      filingUuid,
-      filingType: String(row?.filing_type_display || row?.filing_type || (contributionPayees.length ? 'LD-203' : 'LD-2')),
-      registrantName,
-      clientName,
-      amountUsd,
-      filingYear: Number(row?.filing_year || 0),
-      filingPeriod: String(row?.filing_period_display || row?.filing_period || ''),
-      lobbyingIssues: issues.slice(0, 6),
-      contributionPayees,
-      url: String(row?.filing_document_url || `https://lda.senate.gov/filings/public/filing/${filingUuid}/print/`),
-    });
-  }
+  // Parse US Senate LDA LD-1/LD-2/LD-203 + revolving-door covered_position, government_entities & specific_issues
+  const { filings: senateLdaFilings, revolvingDoorSummary } = parseSenateLdaRevolvingDoorAndEntities(
+    [...(ldaFilingsJson?.results || []), ...(ldaContribJson?.results || [])],
+    federalAwards || []
+  );
 
   // Parse OpenFEC corporate PACs & query executive Schedule A contributions (bounded to top 2 executives)
   const committees: PoliticalInfluenceTelemetry['openFecSummary']['committees'] = [];
@@ -863,7 +1409,10 @@ export async function fetchPoliticalInfluenceTelemetry(params: {
       const fecUrl =
         `https://api.open.fec.gov/v1/schedules/schedule_a/?contributor_name=${encodeURIComponent(exec.fullName)}` +
         `&contributor_employer=${encodeURIComponent(primarySearch)}&per_page=15&sort=-contribution_receipt_date&api_key=${encodeURIComponent(openFecKey)}`;
-      const sched = await fetchJsonBounded<{ results?: any[] }>(fecUrl, { timeoutMs: 7500 });
+      const sched = await fetchJsonBounded<{ results?: any[] }>(fecUrl, {
+        timeoutMs: 7500,
+        bypassCache: bypassFecCache,
+      });
       for (const r of sched?.results || []) {
         const amt = Number(r?.contribution_receipt_amount || 0);
         if (!Number.isFinite(amt) || amt <= 0) continue;
@@ -892,21 +1441,86 @@ export async function fetchPoliticalInfluenceTelemetry(params: {
   const executiveContributionsByPartyCycle = Array.from(contribAggMap.values())
     .sort((a, b) => b.totalAmountUsd - a.totalAmountUsd)
     .slice(0, 20);
+  const partisanSplit = aggregateExecutivePartisanSplit(executiveContributionsByPartyCycle);
+
+  // OpenFEC Schedule E: Independent Expenditures (Support/Oppose) for matched corporate or founder-linked Super PACs
+  const scheduleEQueries: string[] = [];
+  for (const c of committees.slice(0, 2)) {
+    scheduleEQueries.push(
+      `https://api.open.fec.gov/v1/schedules/schedule_e/?committee_id=${encodeURIComponent(c.committeeId)}&per_page=10&sort=-expenditure_amount&api_key=${encodeURIComponent(openFecKey)}`
+    );
+  }
+  if (scheduleEQueries.length === 0 && primarySearch.length >= 3) {
+    scheduleEQueries.push(
+      `https://api.open.fec.gov/v1/schedules/schedule_e/?q=${encodeURIComponent(primarySearch)}&per_page=10&sort=-expenditure_amount&api_key=${encodeURIComponent(openFecKey)}`
+    );
+  }
+  const scheduleERawRows: any[] = [];
+  await Promise.all(
+    scheduleEQueries.slice(0, 2).map(async (u) => {
+      const json = await fetchJsonBounded<{ results?: any[] }>(u, {
+        timeoutMs: 9000,
+        bypassCache: bypassFecCache,
+      });
+      if (Array.isArray(json?.results)) {
+        for (const r of json.results) {
+          const cName = String(r?.committee?.name || r?.committee_name || '');
+          const cId = String(r?.committee_id || '');
+          if (committees.some((c) => c.committeeId === cId) || targetMatchRe.test(cName)) {
+            scheduleERawRows.push(r);
+          }
+        }
+      }
+    })
+  );
+  const scheduleEIndependentExpenditures = parseOpenFecScheduleE(scheduleERawRows);
 
   // Parse ProPublica Nonprofit Explorer affiliated 501(c)(3) / 501(c)(4) foundations
+  // v31.0 Fix 2: Strict ProPublica 990 Disambiguation Gate (exact Foundation/Philanthropies name,
+  // shared HQ city/state, or verified executive/board officer overlap; quarantine loose substring hits)
   const affiliatedNonprofits: PoliticalInfluenceTelemetry['affiliatedNonprofits'] = [];
   const seenEin = new Set<string>();
   const primaryNorm = normalizeNameKey(primarySearch);
+  const verifiedPrincipals = [...founders, ...keyExecutives];
   for (const org of (proPublicaJson?.organizations || []).slice(0, 15)) {
     const ein = String(org?.ein || '').trim();
     const orgName = String(org?.name || '').trim();
     if (!ein || !orgName || seenEin.has(ein)) continue;
     const orgNorm = normalizeNameKey(orgName);
-    const strongNameHit =
+    const orgCity = String(org?.city || '').trim();
+    const orgState = String(org?.state || '').trim();
+    const orgUrl = `https://projects.propublica.org/nonprofits/organizations/${encodeURIComponent(ein)}`;
+
+    const basicNameMatch =
       targetMatchRe.test(orgName) &&
       (orgNorm.includes(primaryNorm) ||
         /(foundation|fund|institute|philanthrop|charity|action|policy|council|initiative|pac|alliance)/i.test(orgName));
-    if (!strongNameHit) continue;
+    if (!basicNameMatch) continue;
+
+    if (disambiguationGate) {
+      const passed990Gate = disambiguationGate.gateProPublicaNonprofit({
+        name: orgName,
+        ein,
+        city: orgCity,
+        state: orgState,
+        url: orgUrl,
+        targetHeadquarters: headquarters,
+        verifiedPrincipals,
+      });
+      if (!passed990Gate) continue;
+    } else {
+      // Fallback when no gate instance supplied: require exact "[Primary] Foundation/Philanthropies" or shared HQ city
+      const exactFound =
+        orgNorm === `${primaryNorm} foundation` ||
+        orgNorm === `${primaryNorm} philanthropies` ||
+        orgNorm === `${primaryNorm} charitable foundation`;
+      const sharedCity =
+        Boolean(headquarters) &&
+        orgCity.length >= 3 &&
+        String(headquarters).toLowerCase().includes(orgCity.toLowerCase());
+      if (!exactFound && !sharedCity) continue;
+    }
+
     seenEin.add(ein);
 
     const subCode = String(org?.subseccd ?? org?.subsection_code ?? '');
@@ -922,12 +1536,12 @@ export async function fetchPoliticalInfluenceTelemetry(params: {
       name: orgName,
       subsectionCode: subCode || 'N/A',
       classification,
-      city: String(org?.city || ''),
-      state: String(org?.state || ''),
+      city: orgCity,
+      state: orgState,
       totalRevenueUsd: Number(org?.totrevenue || org?.income_amount || 0),
       totalAssetsUsd: Number(org?.totassetsend || org?.asset_amount || 0),
-      matchReason: `Target-affiliated ${classification} entity matched via ProPublica Nonprofit Explorer`,
-      url: `https://projects.propublica.org/nonprofits/organizations/${encodeURIComponent(ein)}`,
+      matchReason: `Corroborated ${classification} entity verified via ProPublica Nonprofit Explorer & v31.0 Disambiguation Gate`,
+      url: orgUrl,
     });
     if (affiliatedNonprofits.length >= 10) break;
   }
@@ -940,21 +1554,26 @@ export async function fetchPoliticalInfluenceTelemetry(params: {
   const totalLdaUsd = senateLdaFilings.reduce((s, f) => s + f.amountUsd, 0);
 
   const summaryVerdict =
-    `Squad R audited DOJ FARA (${faraMatches.length} active match(es)), US Senate LDA (${senateLdaFilings.length} LD-1/LD-2/LD-203 filing(s), $${Math.round(totalLdaUsd).toLocaleString('en-US')}), ` +
-    `OpenFEC (${committees.length} corporate PAC(s), ${executiveContributionsByPartyCycle.length} executive contribution bucket(s) totaling $${Math.round(totalExecutiveContributionsUsd).toLocaleString('en-US')}), ` +
+    `Squad R audited DOJ FARA (${faraMatches.length} active match(es)), US Senate LDA (${senateLdaFilings.length} LD-1/LD-2/LD-203 filing(s), $${Math.round(totalLdaUsd).toLocaleString('en-US')}, ${revolvingDoorSummary.totalFormerGovLobbyists} former federal official(s), ${revolvingDoorSummary.agencyContractOverlaps.length} agency-contract overlap(s)), ` +
+    `OpenFEC (${committees.length} corporate PAC(s), Schedule A split DEM ${partisanSplit.demPct}% / REP ${partisanSplit.repPct}% / IND ${partisanSplit.indOtherPct}% totaling $${Math.round(totalExecutiveContributionsUsd).toLocaleString('en-US')}, ${scheduleEIndependentExpenditures.length} Schedule E Super PAC expenditure(s)), ` +
+    `Regulations.gov (${regulationsGovComments.length} agency comment letter(s)), ` +
     `and ProPublica 990 (${affiliatedNonprofits.length} affiliated 501(c)(3)/(c)(4) vehicle(s)).`;
 
   return {
     faraMatches,
     senateLdaFilings: senateLdaFilings.slice(0, 20),
+    revolvingDoorSummary,
     openFecSummary: {
       apiMode: fecCommitteesJson === null && executiveContributionsByPartyCycle.length === 0 ? 'UNAVAILABLE' : apiMode,
       committees,
       executiveContributionsByPartyCycle,
+      partisanSplit,
+      scheduleEIndependentExpenditures,
       totalPacDisbursementsUsd,
       totalExecutiveContributionsUsd,
     },
     affiliatedNonprofits,
+    regulationsGovComments,
     summaryVerdict,
   };
 }

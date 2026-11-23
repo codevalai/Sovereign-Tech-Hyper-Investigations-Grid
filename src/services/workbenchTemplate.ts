@@ -1,8 +1,10 @@
 import type {
   BftCorroborationSummary,
+  FollowTheMoneySankeyData,
   LiveBusinessIntelligence,
   PropertyGraphEdge,
   PropertyGraphNode,
+  QuarantinedCollisionRecord,
   TechEntity,
 } from '../types/investigation';
 import type {
@@ -115,6 +117,48 @@ export function buildRevolvingDoorCsv(
     }
   }
 
+  // v27.1 / v28.0 Squad R: Senate LDA Revolving Door covered_position & Agency-Contract Overlaps
+  const polRev = liveIntel?.politicalInfluence?.revolvingDoorSummary;
+  if (polRev) {
+    const seenCsvKey = new Set<string>(rows.map((r) => r.toLowerCase()));
+    for (const rev of polRev.revolvingDoorRoster || []) {
+      const line = [
+        'SQUAD_R_SENATE_LDA_REVOLVING_DOOR',
+        rev.filingYear || 'N/A',
+        'N/A',
+        `"${rev.registrantName.replace(/"/g, '""')}"`,
+        `"${matchedEntity.legalName.replace(/"/g, '""')}"`,
+        `"${rev.lobbyistName.replace(/"/g, '""')}"`,
+        `"${rev.coveredPosition.replace(/"/g, '""')}"`,
+        `"${(rev.agencies.join('; ') || 'Federal Legislative/Executive').replace(/"/g, '""')}"`,
+        0,
+        '"Former Federal Official Lobbyist (Squad R LDA Parse)"',
+        rev.url,
+      ].join(',');
+      if (!seenCsvKey.has(line.toLowerCase())) {
+        seenCsvKey.add(line.toLowerCase());
+        rows.push(line);
+      }
+    }
+    for (const ov of polRev.agencyContractOverlaps || []) {
+      rows.push(
+        [
+          'AGENCY_LOBBYING_VS_CONTRACT_OVERLAP',
+          new Date().getUTCFullYear(),
+          new Date().toISOString().slice(0, 10),
+          `"${ov.agency.replace(/"/g, '""')}"`,
+          `"${matchedEntity.legalName.replace(/"/g, '""')}"`,
+          `"${ov.lobbyingCount} LDA lobbying mention(s) vs ${ov.federalAwardCount} USASpending award(s)"`,
+          'LOBBYING_CONTRACT_CORRELATION',
+          `"${ov.agency.replace(/"/g, '""')}"`,
+          Math.round(ov.federalObligatedUsd),
+          `"Agency simultaneously lobbied via Senate LDA and awarding $${Math.round(ov.federalObligatedUsd).toLocaleString('en-US')} in federal contracts"`,
+          'https://www.usaspending.gov/',
+        ].join(',')
+      );
+    }
+  }
+
   if (rows.length === 0) {
     rows.push(
       `NONE_DETECTED,N/A,N/A,"US Senate LDA / Federal Register","${matchedEntity.legalName.replace(/"/g, '""')}",None Indexed,None Indexed,None Indexed,0,"No direct Senate LDA lobbying or revolving-door covered official disclosures matched client name.",https://lda.senate.gov/`
@@ -191,6 +235,33 @@ ${cyber.cyberNewsHits.length > 0
       .map((h, i) => `${i + 1}. **${h.title}** (${h.domain} · ${h.date}) — ${h.url}`)
       .join('\n')
   : '- No major cyber breach or outage headlines surfaced in open-web search.'}
+
+## 6. VIRUSTOTAL v3 DOMAIN REPUTATION & PASSIVE DNS (${cyber.virusTotalIntel ? cyber.virusTotalIntel.domain : 'OPTIONAL CONNECTOR'})
+${cyber.virusTotalIntel
+  ? [
+      `- **Engine Verdicts:** **${cyber.virusTotalIntel.maliciousCount} Malicious** · **${cyber.virusTotalIntel.suspiciousCount} Suspicious** · ${cyber.virusTotalIntel.harmlessCount} Harmless · ${cyber.virusTotalIntel.undetectedCount} Undetected`,
+      `- **Community Reputation Score:** \`${cyber.virusTotalIntel.reputationScore}\` · **Registrar:** ${cyber.virusTotalIntel.registrar} · **Creation Date:** ${cyber.virusTotalIntel.creationDate}`,
+      `- **Categories:** ${cyber.virusTotalIntel.categories.join(', ') || 'Uncategorized'} · **Report:** ${cyber.virusTotalIntel.url}`,
+      `- **Passive DNS Records (${cyber.virusTotalIntel.lastDnsRecords.length}):** ${
+        cyber.virusTotalIntel.lastDnsRecords.length > 0
+          ? cyber.virusTotalIntel.lastDnsRecords.slice(0, 8).map((r) => `\`${r.type} ${r.value}\``).join(' | ')
+          : 'None returned'
+      }`,
+    ].join('\n')
+  : '- Optional `VT_API_KEY` not configured or primary domain unavailable (zero-key passive DNS/DoH mode active).'}
+
+## 7. ALIENVAULT OTX THREAT INTELLIGENCE (${cyber.otxThreatIntel ? cyber.otxThreatIntel.classification : 'OPTIONAL CONNECTOR'})
+${cyber.otxThreatIntel
+  ? [
+      `- **Threat Pulse Count:** **${cyber.otxThreatIntel.pulseCount}** · **Classification:** \`${cyber.otxThreatIntel.classification}\`${cyber.otxThreatIntel.cleanBenignControl ? ' *(0-pulse clean screening tagged `BENIGN_CONTROL`)*' : ''}`,
+      `- **Malware Families:** ${cyber.otxThreatIntel.malwareFamilies.join(', ') || 'None'} · **Attributed Adversaries:** ${cyber.otxThreatIntel.adversaries.join(', ') || 'None'} · **Source:** ${cyber.otxThreatIntel.url}`,
+      ...(cyber.otxThreatIntel.pulses.length > 0
+        ? cyber.otxThreatIntel.pulses.map(
+            (p, idx) => `  ${idx + 1}. **${p.name}** (${p.created}${p.adversary ? ` · Adversary: ${p.adversary}` : ''}) — Tags: ${p.tags.join(', ') || 'None'}`
+          )
+        : ['  * Zero active threat pulses or C2 indicators linked to this domain (`BENIGN_CONTROL`).']),
+    ].join('\n')
+  : '- Optional `OTX_API_KEY` not configured or primary domain unavailable (zero-key CISA KEV / Abuse.ch mode active).'}
 `;
 }
 
@@ -730,15 +801,29 @@ ${adv.rpkiValidation.length > 0
 export function buildRejectedHypothesesJson(
   matchedEntity: TechEntity,
   tribunal: AdversarialTribunalResult,
-  timestampIso: string
+  timestampIso: string,
+  quarantinedCollisions: QuarantinedCollisionRecord[] = []
 ): string {
+  const collisionRejections = quarantinedCollisions.map((c, idx) => ({
+    id: `COLLISION-${String(idx + 1).padStart(3, '0')}`,
+    source: c.source,
+    title: c.title,
+    url: c.url || null,
+    matched_fragment: c.matchedFragment || null,
+    rejection_reason: 'ENTITY_COLLISION_FILTERED' as const,
+    detail: c.detail,
+  }));
+
   return JSON.stringify(
     {
       target_entity: matchedEntity.name,
       generated_at: timestampIso,
       posterior_rejection_cutoff: 0.40,
-      rejected_count: tribunal.rejectedCount,
-      rejected_hypotheses: tribunal.rejectedHypotheses,
+      rejected_count: tribunal.rejectedCount + collisionRejections.length,
+      tribunal_rejected_count: tribunal.rejectedCount,
+      entity_collisions_filtered_count: collisionRejections.length,
+      rejected_hypotheses: [...tribunal.rejectedHypotheses, ...collisionRejections],
+      entity_collisions_filtered: collisionRejections,
     },
     null,
     2
@@ -838,16 +923,187 @@ export function buildDarkPoolCryptoMarkdown(
   const dp = liveIntel?.darkPoolCrypto;
   const btcAnchor = liveIntel?.blockchainAnchor;
   if (!liveIntel || !dp) {
-    return `# SQUAD O — DARK-POOL DERIVATIVES & CRYPTO TREASURY ROUTING (${matchedEntity.name})
-**Audit Mode:** Composite Sector Sweep (${matchedEntity.category}) · **Sources:** SEC Form 13F-HR / NPORT-P & mempool.space
+    return `# SQUAD O — DARK-POOL DERIVATIVES, MULTI-CHAIN CRYPTO & AML FORENSICS (${matchedEntity.name})
+**Audit Mode:** Composite Sector Sweep (${matchedEntity.category}) · **Sources:** SEC 13F/NPORT, OFAC SDN, GoPlus, RugCheck, Sourcify v2, OpenChain 4byte, DexScreener, DeFiLlama, Mempool.space, ENS, Etherscan V2 & Alchemy/PublicNode RPC
 
-- Institutional 13F/NPORT stealth holding checks, Bitcoin mainnet block tip anchoring (mempool.space), and total-return swap signals run live on single-entity searches.
+- Institutional 13F/NPORT stealth holding checks, multi-chain EVM/Solana/Bitcoin wallet & smart-contract auditing, OFAC SDN digital currency screening, and Bitcoin mainnet block tip anchoring run live on single-entity or raw-address investigations.
 `;
   }
 
-  return `# SQUAD O — DARK-POOL DERIVATIVES, 13F STEALTH BLOCKS & CRYPTO TREASURY AUDIT (LIVE)
-**Audit Scope:** 10 Agents (O1–O10) · SEC EDGAR 13F-HR / NPORT-P, Live Bitcoin Mempool Chain Tip & Treasury Wrappers
-**Target Business:** ${liveIntel.entityName} (${liveIntel.legalName})
+  const oc = dp.onChainForensics;
+  const onChainSections: string[] = [];
+
+  if (oc) {
+    onChainSections.push(
+      `## 4. MULTI-CHAIN ON-CHAIN TARGET CLASSIFICATION & RPC POSTURE`,
+      `- **Auto-Detected Target Type:** \`${oc.targetClassification}\` (Raw Input: \`${oc.rawTarget}\`)`,
+      `- **Resolved Identities:** EVM=\`${oc.resolvedEvmAddress || 'N/A'}\` · ENS=\`${oc.resolvedEnsName || 'N/A'}\` · Solana=\`${oc.resolvedSolanaAddress || 'N/A'}\` · Bitcoin=\`${oc.resolvedBitcoinAddress || 'N/A'}\``,
+      `- **RPC & Contract Audit Modes (Zero Secrets Logged):** EVM RPC=\`${oc.rpcModes.evmRpc}\` · Solana RPC=\`${oc.rpcModes.solanaRpc}\` · Contract Audit=\`${oc.rpcModes.contractAudit}\``,
+      `- **Overall On-Chain Verdict:** ${oc.summaryVerdict}`,
+      `- **Aggregate Risk Flags (${oc.riskFlags.length}):** ${
+        oc.riskFlags.length > 0 ? oc.riskFlags.map((f) => `\`${f}\``).join(', ') : '`NONE (BENIGN_CONTROL)`'
+      }`,
+      ``,
+      `## 5. US TREASURY OFAC SDN DIGITAL CURRENCY SANCTIONS SCREENING`,
+      `- **Screening Result:** ${oc.ofacSanctionsScreening.summary}`,
+      `- **Indexed Lists:** ${oc.ofacSanctionsScreening.listsLoadedCount} currency lists (ETH/XBT/SOL/USDT/USDC) · **Total Sanctioned Addresses Indexed:** ${oc.ofacSanctionsScreening.totalSanctionedAddressesIndexed.toLocaleString('en-US')}`,
+      `- **Direct Target Match:** ${oc.ofacSanctionsScreening.targetDirectMatch ? '**YES — CRITICAL SANCTIONS VIOLATION**' : 'NO (CLEAN)'}`,
+      ...(oc.ofacSanctionsScreening.taintedCounterparties.length > 0
+        ? oc.ofacSanctionsScreening.taintedCounterparties.map(
+            (t, i) => `${i + 1}. **${t.relation} TAINT [${t.listCurrency}]** — \`${t.address}\``
+          )
+        : [`- **Counterparty OFAC Taint:** 0 matched counterparties (\`BENIGN_CONTROL\`).`]),
+      ``
+    );
+
+    if (oc.evmIntelligence) {
+      const evm = oc.evmIntelligence;
+      onChainSections.push(
+        `## 6. EVM SMART CONTRACT, BYTECODE & COUNTERPARTY FORENSICS (ETHERSCAN V2 · SOURCIFY V2 · OPENCHAIN 4BYTE · RPC)`,
+        `- **EVM Address:** \`${evm.address}\` ([Etherscan Explorer](${evm.explorerUrl}))`,
+        `- **ENS Reverse Resolution:** ${evm.ensName ? `\`${evm.ensName}\`` : 'No reverse ENS record'}`,
+        `- **Account Type & Balance:** ${evm.isContract ? `Smart Contract (${evm.bytecodeBytes.toLocaleString('en-US')} bytes)` : 'Externally Owned Account (EOA)'} · **ETH Balance:** ${evm.ethBalanceEth !== null ? `${evm.ethBalanceEth} ETH` : 'N/A'}`,
+        `- **Verification & Proxy Status:** Verified=${evm.contractVerified ? 'YES' : 'NO'} · Contract Name=\`${evm.contractName || 'Unverified/EOA'}\` · Compiler=\`${evm.compilerVersion || 'N/A'}\` · Proxy Implementation=\`${evm.proxyImplementation || 'None'}\` · Sourcify Chains Matched=\`${evm.sourcifyChainsMatched.join(', ') || 'None'}\``,
+        `- **Privileged Admin Backdoors in Verified Source/ABI (${evm.privilegedAdminBackdoors.length}):** ${
+          evm.privilegedAdminBackdoors.length > 0
+            ? evm.privilegedAdminBackdoors.map((b) => `\`${b}\``).join(', ')
+            : 'None detected'
+        }`,
+        `- **OpenChain 4byte Decoded Selectors (Unverified Bytecode) (${evm.unverifiedSelectorsDecoded.length}):**`,
+        ...(evm.unverifiedSelectorsDecoded.length > 0
+          ? evm.unverifiedSelectorsDecoded.slice(0, 15).map(
+              (s, i) =>
+                `  ${i + 1}. \`${s.selector}\` -> \`${s.signature}\`${s.isPrivilegedBackdoor ? ' **[PRIVILEGED BACKDOOR]**' : ''}`
+            )
+          : [`  - No unverified bytecode PUSH4 selectors decoded (contract verified, EOA, or zero selectors matched).`]),
+        `- **Transfer History Sample:** ${evm.normalTxCount} normal tx(s) · ${evm.erc20TxCount} ERC-20 transfer(s) · ${evm.erc20TokenBalances.length} non-zero ERC-20 balance(s)`,
+        `- **Top Mapped Counterparties (${evm.topCounterparties.length}):**`,
+        ...(evm.topCounterparties.length > 0
+          ? evm.topCounterparties.map(
+              (cp, i) => `  ${i + 1}. \`${cp.address}\` — ${cp.txCount} tx(s) (${cp.direction}) · ${cp.totalValueEth} ETH`
+            )
+          : [`  - No EVM counterparty transfers indexed in current run.`]),
+        ``
+      );
+    }
+
+    if (oc.solanaIntelligence) {
+      const sol = oc.solanaIntelligence;
+      onChainSections.push(
+        `## 7. SOLANA ACCOUNT, TOKEN AUTHORITIES & WHALE CONCENTRATION (SOLANA RPC · RUGCHECK)`,
+        `- **Solana Address / Mint:** \`${sol.address}\` ([Solscan](${sol.explorerUrl}))`,
+        `- **SOL Balance & Program Owner:** ${sol.solBalance !== null ? `${sol.solBalance} SOL` : 'N/A'} · Owner=\`${sol.ownerProgram || 'N/A'}\` · Type=\`${sol.accountType || 'N/A'}\``,
+        `- **Token Authorities:** Mint Authority=\`${sol.mintAuthority || 'REVOKED'}\` (${sol.isMintable ? '**MINTABLE**' : 'REVOKED'}) · Freeze Authority=\`${sol.freezeAuthority || 'REVOKED'}\` (${sol.isFreezable ? '**FREEZABLE**' : 'REVOKED'})`,
+        `- **Top-10 Whale Concentration:** ${sol.top10HolderPct !== null ? `**${sol.top10HolderPct}%**` : 'N/A'} · Recent Signatures Sampled: ${sol.recentSignaturesCount}`,
+        ...(sol.whaleAccounts.length > 0
+          ? sol.whaleAccounts.slice(0, 8).map(
+              (w, i) =>
+                `  ${i + 1}. \`${w.address}\` — ${w.uiAmount.toLocaleString('en-US')} tokens${w.pctOfSupply !== null ? ` (${w.pctOfSupply}% of supply)` : ''}`
+            )
+          : [`  - No SPL largest-holder accounts returned.`]),
+        ...(oc.rugCheckAudit
+          ? [
+              `- **RugCheck Risk Engine:** Level=**${oc.rugCheckAudit.riskLevel}** · Score=\`${oc.rugCheckAudit.score ?? 'N/A'}\` · LP Burned/Locked=${oc.rugCheckAudit.lpBurnedPct !== null ? `${oc.rugCheckAudit.lpBurnedPct}%` : 'N/A'} ([Report](${oc.rugCheckAudit.reportUrl}))`,
+              ...(oc.rugCheckAudit.insiderOrSniperWarnings.length > 0
+                ? [`- **RugCheck Insider/Sniper Warnings:** ${oc.rugCheckAudit.insiderOrSniperWarnings.join(' · ')}`]
+                : []),
+            ]
+          : []),
+        ``
+      );
+    }
+
+    if (oc.bitcoinIntelligence) {
+      const btc = oc.bitcoinIntelligence;
+      onChainSections.push(
+        `## 8. BITCOIN MEMPOOL.SPACE UTXO & CUSTODY TRACER`,
+        `- **Bitcoin Address:** \`${btc.address}\` ([Mempool.space](${btc.explorerUrl}))`,
+        `- **Live UTXO Accounting:** Balance=**${btc.balanceBtc} BTC** · Funded=${btc.fundedSats.toLocaleString('en-US')} sats · Spent=${btc.spentSats.toLocaleString('en-US')} sats · Tx Count=${btc.utxoTxCount}`,
+        `- **Recent TxIDs (${btc.recentTxids.length}):** ${btc.recentTxids.slice(0, 6).map((t) => `\`${t.slice(0, 16)}...\``).join(', ') || 'None'}`,
+        `- **Top UTXO Counterparties (${btc.topCounterparties.length}):** ${btc.topCounterparties.slice(0, 8).map((c) => `\`${c}\``).join(', ') || 'None'}`,
+        ``
+      );
+    }
+
+    onChainSections.push(
+      `## 9. GOPLUS SECURITY AML & RUG-PULL AUDIT (EVM + SOLANA)`,
+      ...(oc.goPlusAudit.evmAddressSecurity
+        ? [
+            `- **GoPlus EVM Address AML:** Malicious=${oc.goPlusAudit.evmAddressSecurity.isMalicious ? '**YES**' : 'NO (CLEAN)'} · Flags: ${oc.goPlusAudit.evmAddressSecurity.flaggedRisks.join(', ') || 'None'}`,
+          ]
+        : []),
+      ...(oc.goPlusAudit.evmTokenSecurity
+        ? [
+            `- **GoPlus EVM Token Audit (${oc.goPlusAudit.evmTokenSecurity.tokenName || 'Token'} / ${oc.goPlusAudit.evmTokenSecurity.tokenSymbol || '?'}):** Honeypot=${oc.goPlusAudit.evmTokenSecurity.isHoneypot ? '**YES**' : 'NO'} · Hidden Owner=${oc.goPlusAudit.evmTokenSecurity.hiddenOwner ? 'YES' : 'NO'} · Mintable=${oc.goPlusAudit.evmTokenSecurity.isMintable ? 'YES' : 'NO'} · Proxy=${oc.goPlusAudit.evmTokenSecurity.isProxy ? 'YES' : 'NO'} · Buy/Sell Tax=${oc.goPlusAudit.evmTokenSecurity.buyTaxPct ?? 'N/A'}%/${oc.goPlusAudit.evmTokenSecurity.sellTaxPct ?? 'N/A'}% · Flags: ${oc.goPlusAudit.evmTokenSecurity.flaggedRisks.join(', ') || 'None'}`,
+          ]
+        : []),
+      ...(oc.goPlusAudit.solanaTokenSecurity
+        ? [
+            `- **GoPlus Solana Token Audit (${oc.goPlusAudit.solanaTokenSecurity.tokenName || 'Mint'} / ${oc.goPlusAudit.solanaTokenSecurity.tokenSymbol || '?'}):** Mintable=${oc.goPlusAudit.solanaTokenSecurity.isMintable ? '**YES**' : 'NO'} · Freezable=${oc.goPlusAudit.solanaTokenSecurity.isFreezable ? '**YES**' : 'NO'} · Mutable Metadata=${oc.goPlusAudit.solanaTokenSecurity.mutableMetadata ? 'YES' : 'NO'} · LP Locked=${oc.goPlusAudit.solanaTokenSecurity.lpLockedPct ?? 'N/A'}% · Top-10=${oc.goPlusAudit.solanaTokenSecurity.top10HolderPct ?? 'N/A'}% · Flags: ${oc.goPlusAudit.solanaTokenSecurity.flaggedRisks.join(', ') || 'None'}`,
+          ]
+        : []),
+      ...(!oc.goPlusAudit.evmAddressSecurity && !oc.goPlusAudit.evmTokenSecurity && !oc.goPlusAudit.solanaTokenSecurity
+        ? [`- GoPlus Address/Token security endpoints apply when an EVM or Solana address/mint is resolved.`]
+        : []),
+      ``,
+      `## 10. DEXSCREENER LIVE LIQUIDITY & DEFILLAMA HACKS / TREASURIES`,
+      `- **DexScreener Live DEX Pairs (${oc.dexScreenerMarket.pairsFound}):**`,
+      ...(oc.dexScreenerMarket.topPairs.length > 0
+        ? oc.dexScreenerMarket.topPairs.map(
+            (p, i) =>
+              `  ${i + 1}. **${p.baseSymbol}/${p.quoteSymbol}** (${p.chainId} · ${p.dexId}) — Price: $${p.priceUsd ?? 'N/A'} · Liquidity: $${Math.round(p.liquidityUsd || 0).toLocaleString('en-US')} · FDV: $${Math.round(p.fdvUsd || 0).toLocaleString('en-US')} · FDV/Liq: ${p.fdvToLiquidityRatio ?? 'N/A'}x · 24h Buys/Sells: ${p.buys24h}/${p.sells24h} · Created: ${p.pairCreatedAtIso || 'N/A'} (${p.url})`
+          )
+        : [`  - Zero active DexScreener liquidity pairs matched.`]),
+      ...(oc.dexScreenerMarket.anomalies.length > 0
+        ? [`- **DexScreener Market Anomalies:** ${oc.dexScreenerMarket.anomalies.join(' · ')}`]
+        : []),
+      `- **DeFiLlama Confirmed Hacks & Exploits (${oc.defiLlamaIntel.matchedHacks.length}):**`,
+      ...(oc.defiLlamaIntel.matchedHacks.length > 0
+        ? oc.defiLlamaIntel.matchedHacks.map(
+            (h, i) =>
+              `  ${i + 1}. **${h.name}** (${h.dateIso || 'N/A'}) — **$${Math.round(h.amountStolenUsd).toLocaleString('en-US')} stolen** · ${h.classification} / ${h.technique} · Chains: ${h.chain.join(', ') || 'N/A'} (${h.url})`
+          )
+        : [`  - Zero confirmed DeFiLlama protocol exploits matched target.`]),
+      `- **DeFiLlama Corporate / DAO Treasuries (${oc.defiLlamaIntel.matchedTreasuries.length}):**`,
+      ...(oc.defiLlamaIntel.matchedTreasuries.length > 0
+        ? oc.defiLlamaIntel.matchedTreasuries.map(
+            (tr, i) =>
+              `  ${i + 1}. **${tr.name}** (${tr.symbol}) — Total Treasury: **$${Math.round(tr.totalTreasuryUsd).toLocaleString('en-US')}** (Stablecoins: $${Math.round(tr.stablecoinsUsd).toLocaleString('en-US')} · Majors: $${Math.round(tr.majorsUsd).toLocaleString('en-US')} · Own Tokens: $${Math.round(tr.ownTokensUsd).toLocaleString('en-US')}) (${tr.url})`
+          )
+        : [`  - Zero DeFiLlama corporate/DAO treasuries matched target.`]),
+      ...(oc.defiLlamaIntel.liveCoinPrices.length > 0
+        ? [
+            `- **DeFiLlama Live Coin Valuations:** ${oc.defiLlamaIntel.liveCoinPrices
+              .map((c) => `${c.symbol} ($${c.priceUsd}, conf=${c.confidence ?? 'N/A'})`)
+              .join(' · ')}`,
+          ]
+        : []),
+      ``,
+      `## 11. MULTI-HOP ON-CHAIN TREASURY, BRIDGE, CEX OFF-RAMP & SANCTIONED FLOW TRACER (v30.0)`,
+      ...(oc.multi_hop_treasury_flows && oc.multi_hop_treasury_flows.length > 0
+        ? [
+            `| Chain | Hop | Source -> Destination | Category | Label | Amount | Timestamp | Tx |`,
+            `|-------|-----|-----------------------|----------|-------|--------|-----------|----|`,
+            ...oc.multi_hop_treasury_flows.map(
+              (fl) =>
+                `| ${fl.chain} | H${fl.hopDepth} | \`${fl.sourceAddress.slice(0, 10)}…\`${fl.intermediaryAddress ? ` -> \`${fl.intermediaryAddress.slice(0, 10)}…\`` : ''} -> \`${fl.destinationAddress.slice(0, 10)}…\` | \`${fl.destinationCategory}\` | ${fl.destinationLabel.replace(/\|/g, '-')} | ${fl.amountNative} ${fl.assetSymbol} | ${fl.timestampIso.slice(0, 10)} | [Tx](${fl.explorerUrl}) |`
+            ),
+          ]
+        : [`- Zero multi-hop treasury outflows to labeled CEX hot wallets, institutional custodians, bridges, or mixers observed in sampled transactions.`]),
+      ``,
+      `## 12. EVENT-SYNCHRONIZED CASH-OUT ALERTS (Δt <= 14 DAYS · v30.0)`,
+      ...(oc.synchronized_cashout_alerts && oc.synchronized_cashout_alerts.length > 0
+        ? oc.synchronized_cashout_alerts.map(
+            (al, i) =>
+              `${i + 1}. **[${al.severity}] ${al.timingRelation} (Δt = ${al.deltaDays}d)** — ${al.outflowAmountNative} ${al.assetSymbol} -> **${al.destinationLabel}** (\`${al.destinationCategory}\`) on ${al.outflowTimestampIso.slice(0, 10)} synchronized with \`${al.correlatedEventStream}\`: *${al.correlatedEventTitle}* (${al.correlatedEventDateIso.slice(0, 10)}). ${al.narrative}`
+          )
+        : [`- Zero event-synchronized cash-out anomalies (Δt <= 14 days against SEC 8-K, court dockets, breach notices, or enforcement actions) triggered.`])
+    );
+  }
+
+  return `# SQUAD O — DARK-POOL DERIVATIVES, MULTI-CHAIN CRYPTO, SMART CONTRACT & AML FORENSICS (LIVE)
+**Audit Scope:** 10 Agents (O1–O10) · SEC EDGAR 13F-HR / NPORT-P, OFAC SDN Digital Currency, GoPlus Security, RugCheck, Sourcify v2, OpenChain 4byte, DexScreener, DeFiLlama, Mempool.space BTC UTXO, ENS, Etherscan V2 & Alchemy/PublicNode RPC
+**Target Business / Address:** ${liveIntel.entityName} (${liveIntel.legalName})
 **Verdict:** ${dp.derivativesVerdict}
 
 ---
@@ -872,6 +1128,8 @@ ${dp.form13fAndNportFilings.length > 0
 ${dp.swapAndTreasurySignals.length > 0
   ? dp.swapAndTreasurySignals.map((s, i) => `${i + 1}. **${s.title}** — ${s.snippet} (${s.url})`).join('\n')
   : '- Zero verified dark-pool ATS, synthetic swap, or digital-asset treasury reserve headlines surfaced.'}
+
+${onChainSections.join('\n')}
 `;
 }
 
@@ -896,12 +1154,12 @@ export function buildLegalSlappMarkdown(
 
 ---
 
-## 1. COURTLISTENER REST v4 FEDERAL JUDICIAL DOCKETS (${jud.courtDockets.length})
+## 1. COURTLISTENER REST v4 FEDERAL RECAP DOCKETS & JUDICIAL OPINIONS (${jud.courtDockets.length})
 ${jud.courtDockets.length > 0
   ? jud.courtDockets
       .map(
         (d, i) =>
-          `${i + 1}. **${d.caseName}** (\`${d.docketNumber}\` · ${d.court} · Filed ${d.dateFiled})\n   - Judge: ${d.judgeAssigned} · Nature of Suit: ${d.suitNature}\n   - Docket URL: ${d.url}`
+          `${i + 1}. **${d.caseName}** [\`${d.recordType || 'RECAP_DOCKET'}\`] (\`${d.docketNumber}\` · ${d.court} · Filed ${d.dateFiled})\n   - Judge: ${d.judgeAssigned} · Nature of Suit: ${d.suitNature}\n   - Docket URL: ${d.url}`
       )
       .join('\n')
   : '- Zero direct federal judicial dockets matched exact entity search in CourtListener REST v4.'}
@@ -1297,22 +1555,69 @@ export interface WorkbenchPayload {
   topCentralNodes: ForensicPropertyGraphResult['topCentralNodes'];
   timelineRows: Array<{ period: string; phase: string; milestone: string; impact: string; source: string }>;
   contradictions: AdversarialTribunalResult['arbitrationEntries'];
+  followTheMoneySankey?: FollowTheMoneySankeyData;
+}
+
+function escapeHtmlTemplate(value: unknown): string {
+  return String(value ?? '')
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+export function sanitizeWorkbenchHttpUrl(url: unknown): string {
+  const raw = String(url ?? '').trim();
+  if (!raw) return '';
+  try {
+    const parsed = new URL(raw);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      return parsed.toString();
+    }
+    return '';
+  } catch {
+    return '';
+  }
+}
+
+export function renderFollowTheMoneySankeySafeHtml(sankey: FollowTheMoneySankeyData): string {
+  const safeEntity = escapeHtmlTemplate(sankey.entityName);
+  const summaryHtml = (sankey.summaryLines || [])
+    .map((line) => `<li>${escapeHtmlTemplate(line)}</li>`)
+    .join('');
+  const nodesHtml = (sankey.nodes || [])
+    .map((n) => {
+      const safeUrl = sanitizeWorkbenchHttpUrl(n.url);
+      const labelHtml = escapeHtmlTemplate(n.label);
+      const valHtml = escapeHtmlTemplate(n.valueLabel);
+      const catHtml = escapeHtmlTemplate(n.category);
+      const linkHtml = safeUrl
+        ? ` <a href="${escapeHtmlTemplate(safeUrl)}" target="_blank" rel="noopener noreferrer">[source]</a>`
+        : '';
+      return `<div class="ftm-node-card"><span class="ftm-cat">${catHtml}</span> <strong>${labelHtml}</strong> — <span>${valHtml}</span>${linkHtml}</div>`;
+    })
+    .join('\n');
+  return `<section class="ftm-safe-panel"><h3>Follow the Money: ${safeEntity}</h3><ul>${summaryHtml}</ul><div class="ftm-nodes-list">${nodesHtml}</div></section>`;
 }
 
 export function buildWorkbenchHtml(entityName: string, investigationId: string, fri: number, mai: number, merkleRoot: string): string {
+  const safeEntity = escapeHtmlTemplate(entityName);
+  const safeInvestigationId = escapeHtmlTemplate(investigationId);
+  const safeMerklePrefix = escapeHtmlTemplate(String(merkleRoot || '').slice(0, 16));
   return `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Sovereign 160-Agent Forensic Workbench: ${entityName}</title>
+  <title>Sovereign 260-Agent Forensic Workbench: ${safeEntity}</title>
   <link rel="stylesheet" href="viewer.css">
 </head>
 <body>
   <header class="header">
     <div>
-      <h1>SOVEREIGN 160-AGENT FORENSIC WORKBENCH: ${entityName}</h1>
-      <div class="meta">ID: ${investigationId} | FRI: ${fri.toFixed(2)} | MAI: ${mai.toFixed(2)} | Merkle: ${merkleRoot.slice(0, 16)}... | Ed25519 + IPFS + BTC Sealed | Offline file:// Mode</div>
+      <h1>SOVEREIGN 260-AGENT FORENSIC WORKBENCH: ${safeEntity}</h1>
+      <div class="meta">ID: ${safeInvestigationId} | FRI: ${fri.toFixed(2)} | MAI: ${mai.toFixed(2)} | Merkle: ${safeMerklePrefix}... | Ed25519 + IPFS + BTC Sealed | Offline file:// Mode</div>
     </div>
     <div class="badges" id="statsBadges"></div>
   </header>
@@ -1320,7 +1625,7 @@ export function buildWorkbenchHtml(entityName: string, investigationId: string, 
   <div class="workbench">
     <section class="left-pane">
       <div class="toolbar">
-        <span class="toolbar-title">Multi-Layer Forensic Graph (16 Squads · A–P)</span>
+        <span class="toolbar-title">Multi-Layer Forensic Graph (v30.0 · 26 Squads A–Z · 260 Agents)</span>
         <div class="layer-toggles" id="layerToggles">
           <button data-layer="all" class="active">All Layers</button>
           <button data-layer="ownership">Ownership / SPV</button>
@@ -1360,6 +1665,7 @@ export function buildWorkbenchHtml(entityName: string, investigationId: string, 
     <section class="right-pane">
       <div class="tab-bar">
         <button class="tab-btn active" data-tab="files">Dossier Files &amp; Evidence Drawer</button>
+        <button class="tab-btn" data-tab="money">Follow the Money (Sankey)</button>
         <button class="tab-btn" data-tab="timeline">Timeline</button>
         <button class="tab-btn" data-tab="tribunal">Bayesian Tribunal &amp; Contradictions</button>
       </div>
@@ -1367,7 +1673,7 @@ export function buildWorkbenchHtml(entityName: string, investigationId: string, 
       <div id="tab-files" class="tab-panel active">
         <div class="files-split">
           <div class="sidebar">
-            <input type="text" id="fileFilter" placeholder="Filter files (e.g. 20_, sanctions, raw/)..." />
+            <input type="text" id="fileFilter" placeholder="Filter files (e.g. 53_, banking, raw/)..." />
             <div id="fileList"></div>
           </div>
           <div class="file-viewer">
@@ -1384,6 +1690,10 @@ export function buildWorkbenchHtml(entityName: string, investigationId: string, 
             </div>
           </div>
         </div>
+      </div>
+
+      <div id="tab-money" class="tab-panel">
+        <div class="panel-scroll" id="followTheMoneyContainer"></div>
       </div>
 
       <div id="tab-timeline" class="tab-panel">
@@ -1463,6 +1773,15 @@ pre { font-size: 11.5px; line-height: 1.55; white-space: pre-wrap; color: #e2e8f
 .diff-cols { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 8px; }
 .diff-box { background: #090d16; border: 1px solid #334155; border-radius: 4px; padding: 8px; font-size: 11px; line-height: 1.45; }
 .verdict { display: inline-block; padding: 2px 6px; border-radius: 3px; font-size: 10px; font-weight: bold; background: #1e293b; color: #fbbf24; margin-left: 6px; }
+.ftm-sankey-wrap { background: #090d16; border: 1px solid #1e293b; border-radius: 6px; padding: 12px; overflow-x: auto; }
+.ftm-sankey-svg { width: 100%; min-width: 680px; height: auto; display: block; }
+.ftm-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 11px; color: #94a3b8; margin-bottom: 8px; }
+.ftm-pill { display: inline-flex; align-items: center; gap: 5px; }
+.ftm-dot { width: 9px; height: 9px; border-radius: 2px; display: inline-block; }
+.ftm-node-card { padding: 7px 10px; background: #0b1120; border: 1px solid #1e293b; border-radius: 4px; font-size: 11.5px; color: #cbd5e1; margin-top: 6px; }
+.ftm-node-card a { color: #38bdf8; text-decoration: none; font-size: 10.5px; margin-left: 6px; }
+.ftm-node-card a:hover { text-decoration: underline; }
+.ftm-cat { display: inline-block; padding: 1px 5px; border-radius: 3px; font-size: 9.5px; font-weight: bold; background: #1e293b; color: #fbbf24; margin-right: 6px; }
 @media (max-width: 900px) { .workbench { grid-template-columns: 1fr; grid-template-rows: 45vh 1fr; } .left-pane { border-right: none; border-bottom: 1px solid #1e293b; } }`;
 }
 
@@ -1621,12 +1940,12 @@ document.addEventListener('DOMContentLoaded', () => {
       const lrs = Array.isArray(entry.likelihood_ratios_applied) ? entry.likelihood_ratios_applied.join(' × ') : 'N/A';
       card.innerHTML =
         '<div><strong>' + escapeHtml(entry.id) + ': ' + escapeHtml(entry.claim_area) + '</strong>' +
-        '<span class="verdict">' + escapeHtml(entry.judge_verdict) + ' (Tier ' + entry.evidence_tier + ' | P(H|E)=' + posterior + ')</span></div>' +
+        '<span class="verdict">' + escapeHtml(entry.judge_verdict) + ' (Tier ' + escapeHtml(entry.evidence_tier) + ' | P(H|E)=' + escapeHtml(posterior) + ')</span></div>' +
         '<div class="diff-cols">' +
           '<div class="diff-box"><strong style="color:#38bdf8">Prosecutor Charge</strong><div style="margin-top:4px">' + escapeHtml(entry.prosecutor_charge) + '</div></div>' +
           '<div class="diff-box"><strong style="color:#34d399">Defense Red-Team Rebuttal</strong><div style="margin-top:4px">' + escapeHtml(entry.defense_rebuttal) + '</div></div>' +
         '</div>' +
-        '<div style="margin-top:6px;font-size:11px;color:#94a3b8">Prior: ' + (entry.prior_probability ?? 0.35) + ' | LRs: [' + lrs + '] | Dest: ' + escapeHtml(entry.destination_file) + '</div>';
+        '<div style="margin-top:6px;font-size:11px;color:#94a3b8">Prior: ' + escapeHtml(entry.prior_probability ?? 0.35) + ' | LRs: [' + escapeHtml(lrs) + '] | Dest: ' + escapeHtml(entry.destination_file) + '</div>';
       tribunalEl.appendChild(card);
     });
   }
@@ -1890,6 +2209,209 @@ document.addEventListener('DOMContentLoaded', () => {
   window.addEventListener('resize', () => initGraphLayout(activeLayer));
   initGraphLayout('all');
   drawGraph();
+
+  // v30.0 Module 5: Zero-Dependency Interactive Follow-the-Money SVG Sankey & Banking Graph
+  const ftmContainer = document.getElementById('followTheMoneyContainer');
+  if (ftmContainer) {
+    renderFollowTheMoneyTab(ftmContainer, data.followTheMoneySankey);
+  }
+
+  function sanitizeHttpUrl(raw) {
+    if (!raw || typeof raw !== 'string') return '';
+    try {
+      const u = new URL(raw.trim());
+      return (u.protocol === 'http:' || u.protocol === 'https:') ? u.toString() : '';
+    } catch {
+      return '';
+    }
+  }
+
+  function renderFollowTheMoneyTab(container, sankey) {
+    container.textContent = '';
+    if (!sankey || !Array.isArray(sankey.nodes) || sankey.nodes.length === 0) {
+      const emptyCard = document.createElement('div');
+      emptyCard.className = 'card';
+      emptyCard.textContent = 'No public capital-flow, banking, or off-ramp nodes surfaced for this entity.';
+      container.appendChild(emptyCard);
+      return;
+    }
+
+    const headerCard = document.createElement('div');
+    headerCard.className = 'card';
+    const hTitle = document.createElement('div');
+    hTitle.className = 'panel-heading';
+    hTitle.textContent = 'v30.0 Capital-Flow Sankey & Global Banking Graph — ' + String(sankey.entityName || '');
+    headerCard.appendChild(hTitle);
+
+    const legend = document.createElement('div');
+    legend.className = 'ftm-legend';
+    const colSpecs = [
+      { col: 0, label: '1. Capital Inflows (Form D / Grants / Fees)', color: '#10b981' },
+      { col: 1, label: '2. Operating & Legal Entities', color: '#f59e0b' },
+      { col: 2, label: '3. Banks / Custodians / Off-Ramps', color: '#38bdf8' },
+      { col: 3, label: '4. Outflows / Shells / New Endeavors', color: '#f43f5e' }
+    ];
+    colSpecs.forEach((spec) => {
+      const pill = document.createElement('span');
+      pill.className = 'ftm-pill';
+      const dot = document.createElement('span');
+      dot.className = 'ftm-dot';
+      dot.style.background = spec.color;
+      pill.appendChild(dot);
+      pill.appendChild(document.createTextNode(spec.label));
+      legend.appendChild(pill);
+    });
+    headerCard.appendChild(legend);
+
+    if (Array.isArray(sankey.summaryLines) && sankey.summaryLines.length > 0) {
+      const ul = document.createElement('ul');
+      ul.style.marginLeft = '18px';
+      ul.style.fontSize = '11.5px';
+      ul.style.lineHeight = '1.5';
+      ul.style.color = '#cbd5e1';
+      sankey.summaryLines.forEach((line) => {
+        const li = document.createElement('li');
+        li.textContent = String(line || '');
+        ul.appendChild(li);
+      });
+      headerCard.appendChild(ul);
+    }
+    container.appendChild(headerCard);
+
+    // Pure SVG Sankey Flow Diagram (100% createElementNS + textContent — immune to XSS)
+    const svgWrap = document.createElement('div');
+    svgWrap.className = 'ftm-sankey-wrap';
+    const svgNS = 'http://www.w3.org/2000/svg';
+    const colBuckets = [[], [], [], []];
+    sankey.nodes.forEach((n) => {
+      const c = Math.max(0, Math.min(3, Number(n.column || 0)));
+      colBuckets[c].push(n);
+    });
+    const maxRows = Math.max(1, ...colBuckets.map((b) => b.length));
+    const width = 820;
+    const rowH = 54;
+    const height = Math.max(240, maxRows * rowH + 60);
+    const colX = [18, 222, 426, 630];
+    const boxW = 172;
+    const boxH = 38;
+    const colColors = ['#10b981', '#f59e0b', '#38bdf8', '#f43f5e'];
+
+    const svg = document.createElementNS(svgNS, 'svg');
+    svg.setAttribute('viewBox', '0 0 ' + width + ' ' + height);
+    svg.setAttribute('class', 'ftm-sankey-svg');
+
+    const posMap = new Map();
+    colBuckets.forEach((bucket, cIdx) => {
+      const startY = Math.max(24, (height - bucket.length * rowH) / 2);
+      bucket.forEach((node, rIdx) => {
+        posMap.set(node.id, {
+          x: colX[cIdx],
+          y: startY + rIdx * rowH,
+          color: colColors[cIdx]
+        });
+      });
+    });
+
+    (sankey.links || []).forEach((lnk) => {
+      const s = posMap.get(lnk.sourceId);
+      const t = posMap.get(lnk.targetId);
+      if (!s || !t) return;
+      const x1 = s.x + boxW;
+      const y1 = s.y + boxH / 2;
+      const x2 = t.x;
+      const y2 = t.y + boxH / 2;
+      const cx = (x1 + x2) / 2;
+      const pathEl = document.createElementNS(svgNS, 'path');
+      pathEl.setAttribute('d', 'M ' + x1 + ' ' + y1 + ' C ' + cx + ' ' + y1 + ', ' + cx + ' ' + y2 + ', ' + x2 + ' ' + y2);
+      pathEl.setAttribute('fill', 'none');
+      pathEl.setAttribute('stroke', s.color);
+      pathEl.setAttribute('stroke-opacity', '0.45');
+      pathEl.setAttribute('stroke-width', String(Math.max(2, Math.min(10, Number(lnk.weight || 2)))));
+      const titleEl = document.createElementNS(svgNS, 'title');
+      titleEl.textContent = String(lnk.label || '');
+      pathEl.appendChild(titleEl);
+      svg.appendChild(pathEl);
+    });
+
+    sankey.nodes.forEach((node) => {
+      const pos = posMap.get(node.id);
+      if (!pos) return;
+      const g = document.createElementNS(svgNS, 'g');
+      const rect = document.createElementNS(svgNS, 'rect');
+      rect.setAttribute('x', String(pos.x));
+      rect.setAttribute('y', String(pos.y));
+      rect.setAttribute('width', String(boxW));
+      rect.setAttribute('height', String(boxH));
+      rect.setAttribute('rx', '5');
+      rect.setAttribute('fill', '#0f172a');
+      rect.setAttribute('stroke', pos.color);
+      rect.setAttribute('stroke-width', '1.5');
+      g.appendChild(rect);
+
+      const t1 = document.createElementNS(svgNS, 'text');
+      t1.setAttribute('x', String(pos.x + 8));
+      t1.setAttribute('y', String(pos.y + 15));
+      t1.setAttribute('fill', '#f8fafc');
+      t1.setAttribute('font-size', '10.5');
+      t1.setAttribute('font-family', 'monospace');
+      t1.setAttribute('font-weight', 'bold');
+      const lbl = String(node.label || '');
+      t1.textContent = lbl.length > 24 ? lbl.slice(0, 23) + '…' : lbl;
+      g.appendChild(t1);
+
+      const t2 = document.createElementNS(svgNS, 'text');
+      t2.setAttribute('x', String(pos.x + 8));
+      t2.setAttribute('y', String(pos.y + 30));
+      t2.setAttribute('fill', '#94a3b8');
+      t2.setAttribute('font-size', '9.5');
+      t2.setAttribute('font-family', 'monospace');
+      const vl = String(node.valueLabel || '');
+      t2.textContent = vl.length > 26 ? vl.slice(0, 25) + '…' : vl;
+      g.appendChild(t2);
+
+      const tip = document.createElementNS(svgNS, 'title');
+      tip.textContent = lbl + ' — ' + vl;
+      g.appendChild(tip);
+      svg.appendChild(g);
+    });
+
+    svgWrap.appendChild(svg);
+    container.appendChild(svgWrap);
+
+    // Structured Verified Node Ledger (safe DOM APIs + strict http/https URL check)
+    const ledgerCard = document.createElement('div');
+    ledgerCard.className = 'card';
+    const lHead = document.createElement('div');
+    lHead.className = 'panel-heading';
+    lHead.textContent = 'Verified Banking, Off-Ramp & Capital-Flow Nodes (' + sankey.nodes.length + ')';
+    ledgerCard.appendChild(lHead);
+
+    sankey.nodes.forEach((node) => {
+      const row = document.createElement('div');
+      row.className = 'ftm-node-card';
+      const badge = document.createElement('span');
+      badge.className = 'ftm-cat';
+      badge.textContent = String(node.category || 'NODE');
+      row.appendChild(badge);
+
+      const strong = document.createElement('strong');
+      strong.textContent = String(node.label || '');
+      row.appendChild(strong);
+      row.appendChild(document.createTextNode(' — ' + String(node.valueLabel || '')));
+
+      const safeHref = sanitizeHttpUrl(node.url);
+      if (safeHref) {
+        const a = document.createElement('a');
+        a.href = safeHref;
+        a.target = '_blank';
+        a.rel = 'noopener noreferrer';
+        a.textContent = '[verified source]';
+        row.appendChild(a);
+      }
+      ledgerCard.appendChild(row);
+    });
+    container.appendChild(ledgerCard);
+  }
 
   function escapeHtml(s) {
     return String(s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));

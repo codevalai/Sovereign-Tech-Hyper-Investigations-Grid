@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { toSafeExternalUrl } from '../utils/safeUrl';
 import {
   AlertTriangle,
   Clock,
@@ -461,7 +462,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
 
         {quote && (
           <a
-            href={quote.sourceUrl}
+            href={toSafeExternalUrl(quote.sourceUrl)}
             target="_blank"
             rel="noopener noreferrer"
             className="flex items-center gap-3 px-3.5 py-2 rounded-lg bg-[#0B0E17] border border-slate-800 hover:border-amber-500/50 transition-colors font-mono text-xs tabular-nums shrink-0"
@@ -692,7 +693,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
             <div className="flex items-center gap-2 shrink-0">
               {selectedNode.url && (
                 <a
-                  href={selectedNode.url}
+                  href={toSafeExternalUrl(selectedNode.url)}
                   target="_blank"
                   rel="noopener noreferrer"
                   className="px-3 py-1.5 rounded bg-slate-900 border border-slate-700 hover:border-amber-500/50 text-slate-200 hover:text-amber-300 flex items-center gap-1.5 whitespace-nowrap"
@@ -780,7 +781,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                     <div key={h.ip} className="pb-2.5 border-b border-slate-800/70 last:border-0 last:pb-0">
                       <div className="flex items-center justify-between">
                         <a
-                          href={h.sourceUrl}
+                          href={toSafeExternalUrl(h.sourceUrl)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-amber-400 hover:underline font-semibold tabular-nums"
@@ -858,7 +859,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                       <div>
                         Mozilla MDN Observatory:{' '}
                         <a
-                          href={mozillaObs.detailsUrl}
+                          href={toSafeExternalUrl(mozillaObs.detailsUrl)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-cyan-400 hover:underline font-semibold"
@@ -937,7 +938,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                     <div key={pkg.name} className="flex items-start justify-between gap-2 pb-2 border-b border-slate-800/70">
                       <div className="min-w-0">
                         <a
-                          href={pkg.npmUrl}
+                          href={toSafeExternalUrl(pkg.npmUrl)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-amber-400 hover:underline font-semibold"
@@ -954,7 +955,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                   {supply.pypiPackage && (
                     <div className="pb-2 border-b border-slate-800/70">
                       <a
-                        href={supply.pypiPackage.pypiUrl}
+                        href={toSafeExternalUrl(supply.pypiPackage.pypiUrl)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-sky-400 hover:underline font-semibold"
@@ -968,7 +969,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                     <div key={c.name} className="flex items-start justify-between gap-2 pb-2 border-b border-slate-800/70">
                       <div className="min-w-0">
                         <a
-                          href={c.cratesUrl}
+                          href={toSafeExternalUrl(c.cratesUrl)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-orange-400 hover:underline font-semibold"
@@ -986,7 +987,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                     <div key={`${d.namespace}/${d.name}`} className="flex items-start justify-between gap-2 pb-2 border-b border-slate-800/70 last:border-0">
                       <div className="min-w-0">
                         <a
-                          href={d.hubUrl}
+                          href={toSafeExternalUrl(d.hubUrl)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-cyan-400 hover:underline font-semibold"
@@ -1015,7 +1016,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                   <div className="text-[11px] text-amber-400 font-semibold">FIRST.org EPSS Active-Exploitation Scores</div>
                   {epssScores.map((e) => (
                     <div key={e.cve} className="flex items-center justify-between text-[11px] tabular-nums">
-                      <a href={e.sourceUrl} target="_blank" rel="noopener noreferrer" className="text-rose-400 hover:underline font-semibold">
+                      <a href={toSafeExternalUrl(e.sourceUrl)} target="_blank" rel="noopener noreferrer" className="text-rose-400 hover:underline font-semibold">
                         {e.cve}
                       </a>
                       <span className="text-slate-300">
@@ -1030,7 +1031,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                   {(supply?.osvVulnerabilities || []).map((v) => (
                     <div key={v.id} className="pb-2 border-b border-slate-800/70">
                       <a
-                        href={v.url}
+                        href={toSafeExternalUrl(v.url)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-rose-400 hover:underline font-semibold"
@@ -1044,7 +1045,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                   {(intel.cyberTelemetry?.disclosedCves || []).slice(0, 5).map((cve) => (
                     <div key={cve.cveId} className="pb-2 border-b border-slate-800/70">
                       <a
-                        href={cve.source}
+                        href={toSafeExternalUrl(cve.source)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-amber-400 hover:underline font-semibold"
@@ -1177,7 +1178,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                   <div className="text-slate-400 font-semibold">GeckoTerminal Live DEX Liquidity</div>
                   {attention.geckoTerminalPools.slice(0, 3).map((pool) => (
                     <div key={pool.id} className="flex items-center justify-between gap-2">
-                      <a href={pool.url} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline truncate">
+                      <a href={toSafeExternalUrl(pool.url)} target="_blank" rel="noopener noreferrer" className="text-cyan-400 hover:underline truncate">
                         {pool.name} ({pool.network})
                       </a>
                       <span className="text-emerald-400 shrink-0">
@@ -1208,7 +1209,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                   {attention.hackerNewsThreads.map((h) => (
                     <div key={h.objectId} className="pb-2 border-b border-slate-800/70 last:border-0">
                       <a
-                        href={h.url}
+                        href={toSafeExternalUrl(h.url)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-slate-200 hover:text-amber-300 font-medium block truncate"
@@ -1239,7 +1240,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                   <div className="pt-3 border-t border-slate-800 space-y-1.5 text-[11px] tabular-nums">
                     <div className="flex items-center justify-between gap-2">
                       <a
-                        href={wr.articleUrl}
+                        href={toSafeExternalUrl(wr.articleUrl)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="font-semibold text-slate-200 hover:text-amber-300 truncate"
@@ -1644,7 +1645,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                           >
                             <div className="min-w-0">
                               <a
-                                href={node.gleifUrl}
+                                href={toSafeExternalUrl(node.gleifUrl)}
                                 target="_blank"
                                 rel="noopener noreferrer"
                                 className="text-cyan-300 hover:underline font-semibold truncate block"
@@ -1790,7 +1791,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                   {intel.privateDiscovery.clinicalSilentMutations.map((mut) => (
                     <div key={mut.alertId} className="text-rose-200">
                       <a
-                        href={mut.studyUrl}
+                        href={toSafeExternalUrl(mut.studyUrl)}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="underline font-semibold"
@@ -1813,7 +1814,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                     >
                       <div className="flex items-center justify-between gap-2">
                         <a
-                          href={sig.url}
+                          href={toSafeExternalUrl(sig.url)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="text-cyan-300 hover:underline font-semibold truncate"
@@ -1931,7 +1932,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                             <div key={art.id} className="pb-2 border-b border-slate-800/60 last:border-0">
                               <div className="flex items-center justify-between gap-2">
                                 <a
-                                  href={art.url}
+                                  href={toSafeExternalUrl(art.url)}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="text-cyan-300 hover:underline font-semibold truncate"
@@ -1982,7 +1983,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                             <div key={diff.path} className="pb-2 border-b border-slate-800/60 last:border-0">
                               <div className="flex items-center justify-between gap-2">
                                 <a
-                                  href={diff.newestUrl}
+                                  href={toSafeExternalUrl(diff.newestUrl)}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="text-amber-300 hover:underline font-semibold"
@@ -2057,7 +2058,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                             <div key={doc.sha256} className="pb-2 border-b border-slate-800/60 last:border-0">
                               <div className="flex items-center justify-between gap-2">
                                 <a
-                                  href={doc.sourceUrl}
+                                  href={toSafeExternalUrl(doc.sourceUrl)}
                                   target="_blank"
                                   rel="noopener noreferrer"
                                   className="text-cyan-300 hover:underline font-semibold truncate"
@@ -2322,7 +2323,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                                       </span>
                                       {ev.url && (
                                         <a
-                                          href={ev.url}
+                                          href={toSafeExternalUrl(ev.url)}
                                           target="_blank"
                                           rel="noopener noreferrer"
                                           className="text-amber-400 hover:underline shrink-0"
@@ -2367,7 +2368,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                               <div key={f.filingUuid} className="pb-2 border-b border-slate-800/60 last:border-0">
                                 <div className="flex items-center justify-between gap-2">
                                   <a
-                                    href={f.url}
+                                    href={toSafeExternalUrl(f.url)}
                                     target="_blank"
                                     rel="noopener noreferrer"
                                     className="text-cyan-300 hover:underline font-semibold truncate"
@@ -2416,7 +2417,7 @@ export const LiveForensicTelemetryPanel: React.FC<LiveForensicTelemetryPanelProp
                                 <div key={x.cik} className="pb-2 border-b border-slate-800/60 last:border-0">
                                   <div className="flex items-center justify-between gap-2">
                                     <a
-                                      href={x.companyFactsUrl}
+                                      href={toSafeExternalUrl(x.companyFactsUrl)}
                                       target="_blank"
                                       rel="noopener noreferrer"
                                       className="text-emerald-300 hover:underline font-semibold truncate"

@@ -1,6 +1,7 @@
 import tls from 'node:tls';
 import { safeForensicFetch } from './adversarialShield.ts';
 import { resilientFetch } from './httpResilience.ts';
+import { getSenateLdaHeaders, isSafePublicUrl, isValidPublicDomain } from './authenticatedConnectors.ts';
 import { fetchWithZkTlsProvenance } from '../src/crypto/zkTlsProver.ts';
 import { AutonomousPivotQueue, type PivotEvent } from '../src/engine/recursivePivoter.ts';
 import { computeSecondDigitBenfordChiSq } from '../src/engine/unknownFraudDetector.ts';
@@ -136,33 +137,58 @@ export async function probeHttpSecurityAndCspIntel(
 ): Promise<{ audit: HttpSecurityAndCspAudit | null; latencyMs: number }> {
   const t0 = Date.now();
   const domain = normalizeHostname(websiteUrl);
-  if (!domain) return { audit: null, latencyMs: 0 };
+  if (!domain || !isValidPublicDomain(domain)) return { audit: null, latencyMs: 0 };
 
-  const targetUrl = /^https?:\/\//i.test(websiteUrl) ? websiteUrl : `https://${domain}`;
+  const targetUrl = /^https?:\/\//i.test(websiteUrl) ? websiteUrl.trim() : `https://${domain}`;
+  if (!isSafePublicUrl(targetUrl)) return { audit: null, latencyMs: 0 };
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5000);
 
+  const safeFetchFollowingPublicRedirects = async (
+    initialUrl: string,
+    method: 'HEAD' | 'GET',
+    headers: Record<string, string>
+  ): Promise<Response | null> => {
+    let currentUrl = initialUrl;
+    for (let hop = 0; hop < 4; hop++) {
+      if (!isSafePublicUrl(currentUrl)) return null;
+      const r = await fetch(currentUrl, {
+        method,
+        redirect: 'manual',
+        signal: controller.signal,
+        headers,
+      });
+      if (r.status >= 300 && r.status < 400) {
+        const loc = r.headers.get('location');
+        if (!loc) return r;
+        try {
+          const nextUrl = new URL(loc, currentUrl).toString();
+          if (!isSafePublicUrl(nextUrl)) return null;
+          currentUrl = nextUrl;
+          continue;
+        } catch {
+          return null;
+        }
+      }
+      return r;
+    }
+    return null;
+  };
+
   try {
-    let res = await fetch(targetUrl, {
-      method: 'HEAD',
-      redirect: 'follow',
-      signal: controller.signal,
-      headers: {
+    let res = await safeFetchFollowingPublicRedirects(targetUrl, 'HEAD', {
+      'User-Agent':
+        'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
+    });
+    if (!res) return { audit: null, latencyMs: Date.now() - t0 };
+    if (res.status === 405 || res.status === 403 || res.status === 501) {
+      res = await safeFetchFollowingPublicRedirects(targetUrl, 'GET', {
         'User-Agent':
           'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-      },
-    });
-    if (res.status === 405 || res.status === 403 || res.status === 501) {
-      res = await fetch(targetUrl, {
-        method: 'GET',
-        redirect: 'follow',
-        signal: controller.signal,
-        headers: {
-          'User-Agent':
-            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36',
-          Range: 'bytes=0-2048',
-        },
+        Range: 'bytes=0-2048',
       });
+      if (!res) return { audit: null, latencyMs: Date.now() - t0 };
     }
 
     const hsts = res.headers.get('strict-transport-security') || '';
@@ -1482,7 +1508,7 @@ export async function probeLiveTlsCertificate(
 ): Promise<{ audit: TlsCertificateAudit | null; latencyMs: number }> {
   const t0 = Date.now();
   const host = normalizeHostname(domain);
-  if (!host || !host.includes('.')) return { audit: null, latencyMs: 0 };
+  if (!host || !isValidPublicDomain(host)) return { audit: null, latencyMs: 0 };
 
   const attemptConnect = (targetHost: string): Promise<TlsCertificateAudit | null> =>
     new Promise((resolve) => {
@@ -2123,6 +2149,7 @@ export async function probeSenateLdaDetailedLobbying(
     headers: {
       'User-Agent': PROBE_UA,
       Accept: 'application/json',
+      ...getSenateLdaHeaders(),
     },
   });
 

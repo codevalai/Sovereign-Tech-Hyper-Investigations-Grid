@@ -3,7 +3,29 @@ import { execSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { create160AgentSwarm, create200AgentSwarm } from '../src/services/swarmOrchestrator.ts';
+import { create160AgentSwarm, create200AgentSwarm, create260AgentSwarm, isCompilerAgent } from '../src/services/swarmOrchestrator.ts';
+import {
+  MAX_JS_BUNDLES,
+  MAX_JS_BUNDLE_BYTES,
+  V29_FETCH_TIMEOUT_MS,
+  analyzeJsBundleSource,
+  buildStackToPowerCapstoneAndCoverUpDetector,
+  classifyCloudCdnCnames,
+  clusterEntityAddressesForShells,
+  diffPolicyWaybackClauses,
+  evaluatePassiveExposurePaths,
+  extractFirstPartyScriptUrls,
+  isAllowedFirstPartyScriptUrl,
+  parseAdsTxtEntries,
+  parseDockerHubRepos,
+  parseExodusPrivacyResponse,
+  parseHuggingFaceModels,
+  parseMobileAppWellKnown,
+  parsePeeringDbTelemetry,
+  parseSellersJsonEntries,
+  parseTosdrSearchResponse,
+  parseWashingtonAgSocrataBreaches,
+} from '../server/fullAlphabetV29Engine.ts';
 import { generateInvestigationDossier } from '../src/services/dossierGenerator.ts';
 import {
   computeIpfsCidV1FromSha256Hex,
@@ -44,6 +66,7 @@ import {
   isSpvOrFundIssuerName,
   isValidSenateLdaRecord,
   resolveCanonicalGleifLei,
+  resolveCanonicalHqAndDisplayName,
   resolveLiveMarketPublicStatus,
   sanitizeTargetQuery,
   validateAndNormalizeSourceTag,
@@ -53,13 +76,68 @@ import {
   MAX_CRTSH_SANS,
   MAX_PHASE4_PIVOTS,
   MAX_SEC_FILING_PULLS,
+  aggregateExecutivePartisanSplit,
   correlateShadowInfraDomains,
   diffExhibit21Subsidiaries,
   extractExecutiveSurnames,
+  extractInstitutional13fAndBoardInterlocks,
   parseDef14aItem404,
   parseExhibit21Subsidiaries,
   parseForm4IndirectXml,
+  parseOpenFecScheduleE,
+  parseSenateLdaRevolvingDoorAndEntities,
 } from '../server/deepProxyPoliticalEngine.ts';
+import {
+  correlateLayoffsWithInsiderSales,
+  extractZipCodes,
+  parseFaaAircraftTrustRecords,
+  parseFccHardwareAndSpectrumHits,
+  parseGlobalBlacklistAndOffshoreHits,
+  parseMuckRockFoiaResponse,
+} from '../server/deepStateV28Engine.ts';
+import {
+  AUTH_CONNECTOR_TIMEOUT_MS,
+  getActiveConnectorsStatus,
+  getCompaniesHouseHeaders,
+  getCourtListenerHeaders,
+  getGitHubHeaders,
+  getNvdHeaders,
+  getOpenFecApiKey,
+  getOtxHeaders,
+  getRegulationsGovHeaders,
+  getSenateLdaHeaders,
+  getVirusTotalHeaders,
+  isValidPublicDomain,
+  parseCompaniesHouseUboData,
+  parseCourtListenerSearchResults,
+  parseOtxDomainResponse,
+  parseRegulationsGovComments,
+  parseVirusTotalDomainResponse,
+} from '../server/authenticatedConnectors.ts';
+import {
+  CRYPTO_FETCH_TIMEOUT_MS,
+  PUBLIC_EVM_RPC_FALLBACK,
+  PUBLIC_SOL_RPC_FALLBACK,
+  buildOfacAddressIndex,
+  classifyOnChainTarget,
+  extractPush4SelectorsFromBytecode,
+  getSafeEvmRpcConfig,
+  getSafeSolanaRpcConfig,
+  matchDeFiLlamaHacksAndTreasuries,
+  parseAlchemyAssetTransfers,
+  parseDexScreenerResponse,
+  parseEtherscanTxAndTokenHistory,
+  parseGoPlusEvmAddressSecurity,
+  parseGoPlusEvmTokenSecurity,
+  parseGoPlusSolanaTokenSecurity,
+  parseMempoolBitcoinAddressAndTxs,
+  parseOpenChainSelectorLookup,
+  parseRugCheckSummary,
+  parseSolanaAccountAndWhales,
+  parseSourcifyV2Responses,
+  scanSolidityAndAbiForBackdoors,
+  screenAddressesAgainstOfac,
+} from '../server/multiChainCryptoEngine.ts';
 import { liveDaemon } from '../server/liveIngestionDaemon.ts';
 import {
   PLANETARY_FETCH_TIMEOUT_MS,
@@ -141,12 +219,13 @@ import { runZkTlsProxyProvenanceBatch } from '../src/provenance/zktlsAdapter.ts'
 
 const requireBuild = process.argv.includes('--require-build');
 
-console.log('=== [1/4] Verifying 200-Agent / 20-Squad Dossier Cryptographic Seals ===');
-assert.equal(create160AgentSwarm, create200AgentSwarm, 'Expected backwards-compatible alias create160AgentSwarm === create200AgentSwarm');
-const squads = create200AgentSwarm('Quantum Computing');
-assert.equal(squads.length, 20, 'Expected 20 squads (Squads A-T)');
+console.log('=== [1/4] Verifying 260-Agent / 26-Squad Full-Alphabet Dossier Cryptographic Seals ===');
+assert.equal(create160AgentSwarm, create260AgentSwarm, 'Expected backwards-compatible alias create160AgentSwarm === create260AgentSwarm');
+assert.equal(create200AgentSwarm, create260AgentSwarm, 'Expected backwards-compatible alias create200AgentSwarm === create260AgentSwarm');
+const squads = create260AgentSwarm('Quantum Computing');
+assert.equal(squads.length, 26, 'Expected 26 squads (Squads A-Z)');
 const totalAgents = squads.reduce((sum, s) => sum + s.agents.length, 0);
-assert.equal(totalAgents, 200, 'Expected 200 specialized forensic agents');
+assert.equal(totalAgents, 260, 'Expected 260 specialized forensic agents');
 
 for (const sq of squads) {
   sq.status = 'completed';
@@ -246,8 +325,8 @@ assert.ok(ledgerFile, 'Expected LEDGER_ENTRY.json');
 const ledgerJson = JSON.parse(ledgerFile.content) as { merkle_inclusion_proofs?: unknown[] };
 assert.equal(
   ledgerJson.merkle_inclusion_proofs?.length,
-  28,
-  `Expected 28 Merkle inclusion proofs (4 core + 23 raw/squad payloads + 1 ACH matrix), got ${ledgerJson.merkle_inclusion_proofs?.length}`
+  39,
+  `Expected 39 Merkle inclusion proofs (4 core + 34 raw/squad payloads incl. v31.0 Global Legal Counsel + 1 ACH matrix), got ${ledgerJson.merkle_inclusion_proofs?.length}`
 );
 
 const tmpDossierDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovereign-ci-dossier-'));
@@ -3053,8 +3132,8 @@ assert.ok(
   'ACH H0 steelman must explicitly test coincidental surname/name collision'
 );
 
-// FIX 5B Zero-Hit Stub Suppression across 200-agent swarm
-assert.equal(v27ExecLog.agents?.length, 200, 'pipeline_execution_log.json must account for all 200 agents (Squads A-T)');
+// FIX 5B Zero-Hit Stub Suppression across 260-agent full-alphabet swarm
+assert.equal(v27ExecLog.agents?.length, 260, 'pipeline_execution_log.json must account for all 260 agents (Squads A-Z)');
 assert.ok(v27ExecLog.skipped_not_applicable_agents_count > 0, 'FIX 5B stub suppression must remain active on zero-hit agents');
 
 // Run unmodified offline verify_dossier.mjs on the complete 200-agent v27.0 dossier!
@@ -3258,6 +3337,1640 @@ try {
 }
 
 console.log('[PASS] Phase 11.9: Section 05 Real-Time Planetary Registry (GLEIF/SEC Form D/SEC M&A/FedReg), SQLite WAL Dedup, filed_at DESC Sorting & Pagination verified');
+
+// -----------------------------------------------------------------------------
+// Phase 11.10: v27.1 + v28.0 Deep Political Capture, Partisan Split, HQ Precedence,
+// Municipal FOIA, Labor Warfare, FCC Spectrum, Global Blacklists & FAA Shadow Trusts
+// -----------------------------------------------------------------------------
+
+// 1. Entity Headquarters & Display Name Precedence Fix (SEC EDGAR -> GLEIF LEI -> Wikidata/OSM)
+const motorolaHq = resolveCanonicalHqAndDisplayName({
+  query: 'Motorola Solutions',
+  coreName: 'Motorola Solutions',
+  sec: {
+    cik: '0000068505',
+    legalName: 'MOTOROLA SOLUTIONS, INC.',
+    businessAddress: '500 W MONROE ST, CHICAGO, IL 60661',
+    stateOfIncorporation: 'DE',
+    isPublicEquityIssuer: true,
+  },
+  gleif: {
+    primaryLei: '549300MOTOROLA000001',
+    legalName: 'Motorola Solutions Germany GmbH',
+    address: 'Am Borsigturm 130',
+    city: 'Berlin',
+    country: 'DE',
+  },
+  gleifMatchesHomeCountry: false,
+  wikidata: {
+    label: 'Motorola Solutions Israel',
+    officialName: 'Motorola Solutions Israel Ltd.',
+    headquarters: 'Tel Aviv',
+    country: 'Israel',
+  },
+  osmAddress: 'Kremenetski St 3, Tel Aviv-Yafo, Israel',
+  osmCountry: 'Israel',
+});
+assert.equal(motorolaHq.displayName, 'MOTOROLA SOLUTIONS, INC.', 'SEC EDGAR legalName must take strict precedence over foreign Wikidata/OSM records');
+assert.equal(motorolaHq.headquarters, '500 W MONROE ST, CHICAGO, IL 60661', 'SEC EDGAR business address must never be overwritten by foreign branch HQ');
+assert.equal(motorolaHq.country, 'United States', 'SEC EDGAR US parent must resolve country as United States');
+assert.equal(motorolaHq.hqResolutionSource, 'SEC_EDGAR');
+
+const gleifFallbackHq = resolveCanonicalHqAndDisplayName({
+  query: 'Nordic Orbital AB',
+  coreName: 'Nordic Orbital AB',
+  sec: null,
+  gleif: {
+    primaryLei: '549300NORDIC00000099',
+    legalName: 'Nordic Orbital AB',
+    address: 'Kungsgatan 44',
+    city: 'Stockholm',
+    country: 'SE',
+  },
+  gleifMatchesHomeCountry: true,
+  wikidata: {
+    label: 'Nordic Orbital Branch',
+    headquarters: 'London',
+    country: 'United Kingdom',
+  },
+  osmAddress: '10 Fleet St, London, UK',
+});
+assert.equal(gleifFallbackHq.hqResolutionSource, 'GLEIF_LEI', 'When SEC is absent, GLEIF LEI must override Wikidata/OSM');
+assert.ok(gleifFallbackHq.headquarters.includes('Stockholm') && gleifFallbackHq.headquarters.includes('Sweden'));
+
+// 2. Executive Partisan Split Aggregation (DEM / REP / IND_OTHER + Top 5 Committees)
+const partisanSplit = aggregateExecutivePartisanSplit([
+  { contributorName: 'BROWN, GREGORY', party: 'REP', committeeName: 'NRCC', totalAmountUsd: 35_000, count: 4 },
+  { contributorName: 'BROWN, GREGORY', party: 'REP', committeeName: 'WINRED', totalAmountUsd: 15_000, count: 2 },
+  { contributorName: 'SMITH, ELENA', party: 'DEM', committeeName: 'ACTBLUE', totalAmountUsd: 30_000, count: 5 },
+  { contributorName: 'LEE, MARCUS', party: 'IND', committeeName: 'PUBLIC SAFETY PAC', totalAmountUsd: 20_000, count: 2 },
+  { contributorName: 'SMITH, ELENA', party: 'DEM', committeeName: 'DCCC', totalAmountUsd: 10_000, count: 1 },
+  { contributorName: 'LEE, MARCUS', party: 'UNK', committeeName: 'TECH POLICY FUND', totalAmountUsd: 5_000, count: 1 },
+  { contributorName: 'LEE, MARCUS', party: 'UNK', committeeName: 'MICRO COMMITTEE', totalAmountUsd: 1_000, count: 1 },
+]);
+assert.equal(partisanSplit.repUsd, 50_000, 'REP total must equal $50,000');
+assert.equal(partisanSplit.demUsd, 40_000, 'DEM total must equal $40,000');
+assert.equal(partisanSplit.indOtherUsd, 26_000, 'IND/OTHER total must equal $26,000');
+assert.equal(partisanSplit.totalUsd, 116_000);
+assert.equal(partisanSplit.topRecipientCommittees.length, 5, 'Top recipient committees must be capped at 5');
+assert.equal(partisanSplit.topRecipientCommittees[0].committeeName, 'NRCC');
+assert.equal(partisanSplit.topRecipientCommittees[0].party, 'REP');
+assert.equal(partisanSplit.topRecipientCommittees[1].committeeName, 'ACTBLUE');
+assert.equal(partisanSplit.topRecipientCommittees[1].party, 'DEM');
+
+// 3. Senate LDA Revolving Door, Specific Bills, Agency-Contract Overlaps & OpenFEC Schedule E
+const ldaParsed = parseSenateLdaRevolvingDoorAndEntities(
+  [
+    {
+      filing_uuid: 'lda-v28-2026-q1-991',
+      filing_type_display: 'LD-2',
+      filing_year: 2026,
+      filing_period_display: 'First Quarter',
+      income: 320_000,
+      registrant: { name: 'Potomac Defense Strategies LLC' },
+      client: { name: 'MOTOROLA SOLUTIONS, INC.' },
+      lobbying_activities: [
+        {
+          general_issue_code_display: 'DEF',
+          description: 'H.R. 4820 FY2026 NDAA tactical communications & DoD P25 radio procurement',
+          government_entities: [
+            { name: 'Defense, Dept of (DOD)' },
+            { name: 'Justice, Dept of (DOJ)' },
+          ],
+          lobbyists: [
+            {
+              lobbyist: { first_name: 'Marcus', last_name: 'Vance' },
+              covered_position: 'Former Deputy Under Secretary of Defense for Acquisition',
+            },
+            {
+              lobbyist: { first_name: 'Claire', last_name: 'Holden' },
+              covered_position: 'none',
+            },
+          ],
+        },
+      ],
+    },
+  ],
+  [
+    { agency: 'Department of Defense', amountUsd: 84_500_000 },
+    { agency: 'Department of Justice', amountUsd: 19_200_000 },
+  ]
+);
+assert.equal(ldaParsed.filings.length, 1);
+assert.equal(ldaParsed.revolvingDoorSummary.totalFormerGovLobbyists, 1, 'Must filter out "none" and capture real covered_position');
+assert.equal(ldaParsed.revolvingDoorSummary.revolvingDoorRoster[0].lobbyistName, 'Marcus Vance');
+assert.ok(ldaParsed.revolvingDoorSummary.targetedAgencies.some((a) => /DOD/i.test(a)));
+assert.ok(ldaParsed.revolvingDoorSummary.specificBillsOrIssues.some((b) => /H\.R\.\s*4820/i.test(b)));
+assert.equal(ldaParsed.revolvingDoorSummary.quarterlySpendUsd, 320_000);
+assert.equal(ldaParsed.revolvingDoorSummary.agencyContractOverlaps.length, 2, 'Must detect both DoD and DOJ lobbying-vs-contract overlaps');
+assert.equal(ldaParsed.revolvingDoorSummary.agencyContractOverlaps[0].federalObligatedUsd, 84_500_000);
+
+const schedEParsed = parseOpenFecScheduleE([
+  {
+    committee_id: 'C00991188',
+    committee: { name: 'PUBLIC SAFETY SUPER PAC' },
+    candidate_name: 'SENATOR PATRICK LANE',
+    candidate_party: 'REP',
+    support_oppose_indicator: 'S',
+    expenditure_amount: 450_000,
+    expenditure_date: '2026-09-18',
+    expenditure_description: 'Digital media buy supporting Senate Armed Services candidate',
+  },
+  {
+    committee_id: 'C00991188',
+    committee: { name: 'PUBLIC SAFETY SUPER PAC' },
+    candidate_name: 'REP JORDAN CROSS',
+    candidate_party: 'DEM',
+    support_oppose_indicator: 'O',
+    expenditure_amount: 175_000,
+    expenditure_date: '2026-09-20',
+    expenditure_description: 'Opposition mailers on municipal ALPR privacy bill',
+  },
+]);
+assert.equal(schedEParsed.length, 2);
+assert.equal(schedEParsed[0].supportOppose, 'SUPPORT');
+assert.equal(schedEParsed[1].supportOppose, 'OPPOSE');
+
+// 4. Squad Q 13F Institutional Ownership & BOARD_INTERLOCK
+const instAndInterlocks = extractInstitutional13fAndBoardInterlocks({
+  targetLegalName: 'MOTOROLA SOLUTIONS, INC.',
+  extractedExecutives: [
+    { fullName: 'Gregory Brown', surname: 'Brown', role: 'CEO', source: 'SEC_DEF14A' },
+    { fullName: 'Jason Winkler', surname: 'Winkler', role: 'CFO', source: 'SEC_DEF14A' },
+  ],
+  formDProxyCandidates: [
+    {
+      issuerName: 'Midwest Tactical AI Ventures LP',
+      filedAt: '2026-02-14',
+      matchedPerson: 'Gregory Brown',
+      matchType: 'EXACT_EXECUTIVE_NAME',
+      cityOrState: 'Chicago, IL',
+      riskClassification: 'VERIFIED_RELATED_PARTY',
+      url: 'https://www.sec.gov/edgar/search/',
+    },
+  ],
+  externalSpvInvestors: [
+    { name: 'Jason Winkler', role: 'Director', spvIssuerName: 'Lakefront RF Capital Partners LP' },
+  ],
+  institutionalFilings: [
+    { entityName: 'Vanguard Group Inc', form: '13F-HR', filedAt: '2026-08-14', url: 'https://www.sec.gov/edgar/search/' },
+    { entityName: 'BlackRock Inc.', form: 'SC 13G/A', filedAt: '2026-08-10', url: 'https://www.sec.gov/edgar/search/' },
+  ],
+  def14aPlainTextSamples: ['State Street Corporation beneficially owns 4.8% of outstanding common stock.'],
+});
+assert.ok(instAndInterlocks.institutional13fHolders.length >= 3, 'Must extract Vanguard, BlackRock, and DEF 14A State Street');
+assert.equal(instAndInterlocks.boardInterlocks.length, 2, 'Must flag both Gregory Brown and Jason Winkler as BOARD_INTERLOCK');
+assert.equal(instAndInterlocks.boardInterlocks[0].classification, 'BOARD_INTERLOCK');
+
+// 5. All 5 v28.0 Deep-State Parsers
+const v28Muckrock = parseMuckRockFoiaResponse(
+  {
+    count: 14,
+    results: [
+      {
+        id: 148201,
+        title: 'Motorola Solutions Vigilant ALPR License Plate Reader Camera Contract & Audit Logs',
+        agency_name: 'Chicago Police Department',
+        jurisdiction_name: 'Illinois',
+        status: 'done',
+        datetime_done: '2026-05-12T10:00:00Z',
+        absolute_url: '/foi/chicago-123/motorola-alpr-contract-148201/',
+        communications: [{ files: [{ id: 1 }, { id: 2 }, { id: 3 }] }],
+      },
+      {
+        id: 148209,
+        title: 'Municipal Procurement Vendor Agreement & Purchase Order for Body-Worn Video',
+        agency_name: 'Austin Police Department',
+        jurisdiction_name: 'Texas',
+        status: 'done',
+        datetime_done: '2026-04-02T09:00:00Z',
+        absolute_url: '/foi/austin-55/vendor-contract-148209/',
+        file_count: 2,
+      },
+    ],
+  },
+  'Motorola Solutions'
+);
+assert.equal(v28Muckrock.totalCompletedRequests, 14);
+assert.equal(v28Muckrock.releases.length, 2);
+assert.equal(v28Muckrock.releases[0].category, 'ALPR_SURVEILLANCE');
+assert.equal(v28Muckrock.releases[0].fileCount, 3);
+assert.equal(v28Muckrock.releases[1].category, 'MUNICIPAL_CONTRACT');
+assert.equal(v28Muckrock.agenciesHit.length, 2);
+
+const v28LayoffCorrelations = correlateLayoffsWithInsiderSales(
+  [{ noticeDate: '2026-06-15', noticeTitle: 'Illinois WARN Act Facility Workforce Reduction (210 employees)', estimatedEmployees: 210 }],
+  [
+    { form: '4', filingDate: '2026-06-01', accessionNumber: '0000068505-26-000112' },
+    { form: '4', filingDate: '2025-11-01', accessionNumber: '0000068505-25-000999' },
+  ]
+);
+assert.equal(v28LayoffCorrelations.length, 1, 'Must correlate only Form 4 filings within [-45d, +30d] of WARN notice');
+assert.equal(v28LayoffCorrelations[0].dayDelta, -14);
+
+const v28Fcc = parseFccHardwareAndSpectrumHits({
+  primaryTarget: 'Motorola Solutions',
+  fccDorkHits: [
+    {
+      title: 'FCC ID AZ489FT7180 Vigilant ALPR Surveillance Radar & Camera Module 24.15 GHz',
+      url: 'https://fccid.io/AZ489FT7180',
+      snippet: 'Short-term confidentiality test report for 24.15 GHz surveillance sensor grant 2026-07-11',
+    },
+    {
+      title: 'FCC ID AZ492FT4999 Experimental Prototype Tactical Transceiver 769 MHz',
+      url: 'https://fccid.io/AZ492FT4999',
+      snippet: 'Experimental prototype RF test report granted 2026-08-03',
+    },
+  ],
+  ulsJson: {
+    Licenses: {
+      License: [
+        {
+          callsign: 'WQXZ912',
+          licName: 'MOTOROLA SOLUTIONS INC',
+          serviceDesc: 'Experimental Radio Service',
+          statusDesc: 'Active',
+          expiredDate: '2029-05-01',
+          frn: '0003764925',
+          licDetailURL: 'https://wireless2.fcc.gov/UlsApp/UlsSearch/license.jsp?licKey=4123456',
+        },
+      ],
+    },
+  },
+});
+assert.equal(v28Fcc.fccEquipmentAuthorizations.length, 2);
+assert.equal(v28Fcc.fccEquipmentAuthorizations[0].prototypeRiskTag, 'SURVEILLANCE_RF');
+assert.equal(v28Fcc.fccEquipmentAuthorizations[1].prototypeRiskTag, 'EXPERIMENTAL_PROTOTYPE');
+assert.equal(v28Fcc.ulsExperimentalLicenses.length, 1);
+assert.equal(v28Fcc.ulsExperimentalLicenses[0].callSign, 'WQXZ912');
+
+// Global Blacklists & ICIJ Offshore Leaks — Clean Screening (Benign Control) vs. Verified Hits
+const v28CleanBlacklist = parseGlobalBlacklistAndOffshoreHits({
+  screenedEntityNames: ['MOTOROLA SOLUTIONS, INC.'],
+  screenedExecutiveNames: ['Gregory Brown'],
+  worldBankRawRows: [{ SUPP_NAME: 'Unrelated Corrupt Builders Ltd', COUNTRY_NAME: 'Nowhere', DEBAR_REASON: 'Fraud' }],
+  samGovDorkHits: [],
+  icijReconcileRows: [{ query: 'MOTOROLA SOLUTIONS, INC.', matchBasis: 'EXACT_ENTITY', rows: [] }],
+});
+assert.equal(v28CleanBlacklist.totalVerifiedHits, 0);
+assert.equal(v28CleanBlacklist.cleanScreeningBenignControl, true, 'Clean blacklist screening must set cleanScreeningBenignControl=true');
+assert.equal(
+  isBenignControlNode({
+    id: 'gbo_clean',
+    label: 'Clean Global Blacklist & Offshore Screening (Zero Matches)',
+    nodeType: 'Contract/Docket',
+    layer: 'sanctions_trade',
+    betweennessCentrality: 0,
+    degree: 1,
+    communityId: 0,
+    kCore: 1,
+    metadata: { controlClassification: 'BENIGN_CONTROL' },
+  }),
+  true,
+  'FIX 3 benign control guard must recognize Clean Global Blacklist node'
+);
+
+const v28FlaggedBlacklist = parseGlobalBlacklistAndOffshoreHits({
+  screenedEntityNames: ['Apex Shadow Sub Ltd'],
+  screenedExecutiveNames: ['Marcus Vance'],
+  worldBankRawRows: [
+    {
+      SUPP_NAME: 'Apex Shadow Sub Ltd',
+      COUNTRY_NAME: 'Panama',
+      DEBAR_REASON: 'Collusive Practice (Procurement Guidelines 1.14)',
+      DEBAR_FROM_DATE: '2024-03-01',
+      DEBAR_TO_DATE: '2028-03-01',
+    },
+  ],
+  samGovDorkHits: [
+    {
+      title: 'Apex Shadow Sub Ltd - Federal Debarment Exclusion Notice',
+      url: 'https://sam.gov/exclusions/apex-shadow-sub',
+      snippet: 'Active debarment exclusion record effective 2025-01-15 for Apex Shadow Sub Ltd.',
+    },
+  ],
+  icijReconcileRows: [
+    {
+      query: 'Apex Shadow Sub Ltd',
+      matchBasis: 'EXACT_ENTITY',
+      rows: [
+        {
+          id: '10098877',
+          name: 'Apex Shadow Sub Ltd',
+          score: 98,
+          jurisdiction: 'British Virgin Islands',
+          type: [{ name: 'Pandora Papers' }],
+        },
+      ],
+    },
+  ],
+});
+assert.equal(v28FlaggedBlacklist.cleanScreeningBenignControl, false);
+assert.equal(v28FlaggedBlacklist.worldBankDebarments.length, 1);
+assert.equal(v28FlaggedBlacklist.samGovExclusions.length, 1);
+assert.equal(v28FlaggedBlacklist.icijOffshoreLeaksHits.length, 1);
+
+// FAA Aviation Shadow-Trust Unmasking
+assert.deepEqual(extractZipCodes('500 W MONROE ST, CHICAGO, IL 60661-3618'), ['60661']);
+const v28Aviation = parseFaaAircraftTrustRecords({
+  primaryTarget: 'Motorola Solutions',
+  hqZipCodes: ['60661'],
+  dorkHits: [
+    {
+      title: 'FAA Registry N650MS Gulfstream G650ER - Bank of Utah Owner Trustee',
+      url: 'https://registry.faa.gov/aircraftinquiry/Search/NNumberResult?nNumberTxt=N650MS',
+      snippet: 'Aircraft N650MS registered to Bank of Utah Trustee linked to Chicago, IL 60661 corporate flight hangar.',
+    },
+  ],
+  sec8kFilings: [
+    { date: '2026-07-20', title: 'Form 8-K Item 1.01 Definitive Merger & Acquisition Agreement' },
+  ],
+});
+assert.equal(v28Aviation.aircraftRecords.length, 1);
+assert.equal(v28Aviation.aircraftRecords[0].nNumber, 'N650MS');
+assert.equal(v28Aviation.aircraftRecords[0].isShadowTrust, true);
+assert.equal(v28Aviation.aircraftRecords[0].trusteeInstitution, 'Bank of Utah');
+assert.equal(v28Aviation.aircraftRecords[0].zipMatchesHq, true);
+assert.equal(v28Aviation.maWindowCorrelations.length, 1);
+
+// 6. Full End-to-End v28.0 200-Agent Dossier Generation & Unmodified verify_dossier.mjs Verification
+const v28LiveIntel = {
+  ...v27LiveIntel,
+  query: 'Motorola Solutions',
+  displayName: motorolaHq.displayName,
+  legalName: motorolaHq.legalName,
+  headquarters: motorolaHq.headquarters,
+  country: motorolaHq.country,
+  hqResolutionSource: motorolaHq.hqResolutionSource,
+  proxyKinship: {
+    ...v27LiveIntel.proxyKinship!,
+    institutional13fHolders: instAndInterlocks.institutional13fHolders,
+    boardInterlocks: instAndInterlocks.boardInterlocks,
+  },
+  politicalInfluence: {
+    ...v27LiveIntel.politicalInfluence!,
+    senateLdaFilings: ldaParsed.filings,
+    revolvingDoorSummary: ldaParsed.revolvingDoorSummary,
+    openFecSummary: {
+      ...v27LiveIntel.politicalInfluence!.openFecSummary,
+      committees: [
+        {
+          committeeId: 'C00075341',
+          name: 'MOTOROLA SOLUTIONS, INC. GOOD GOVERNMENT COMMITTEE <script>alert(1)</script>',
+          party: 'UNK',
+          committeeType: 'Q',
+          designation: 'B',
+          totalReceiptsUsd: 410_000,
+          totalDisbursementsUsd: 385_000,
+          cycle: 2026,
+          url: 'https://www.fec.gov/data/committee/C00075341/',
+        },
+      ],
+      totalPacDisbursementsUsd: 385_000,
+      partisanSplit,
+      scheduleEIndependentExpenditures: schedEParsed,
+    },
+  },
+  municipalFoia: v28Muckrock,
+  laborWarfare: {
+    olmsPersuaderFilings: [
+      {
+        formType: 'LM-20' as const,
+        employerOrFiler: 'MOTOROLA SOLUTIONS, INC.',
+        consultantFirm: 'Crossroads Labor Strategy Consultants',
+        filingYear: '2026',
+        snippet: 'DOL OLMS Form LM-20 persuader agreement filed for Midwest depot workforce campaign.',
+        url: 'https://olmsapps.dol.gov/olpdr/',
+      },
+    ],
+    warnActLayoffs: [
+      {
+        noticeTitle: 'Illinois WARN Act Facility Workforce Reduction (210 employees)',
+        stateOrJurisdiction: 'Illinois',
+        noticeDate: '2026-06-15',
+        estimatedEmployees: 210,
+        sourceUrl: 'https://dceo.illinois.gov/workforcedevelopment/warn.html',
+      },
+    ],
+    h1bLcaSignals: [],
+    layoffInsiderCorrelations: v28LayoffCorrelations,
+    summaryVerdict: '1 OLMS LM-20 filing, 1 WARN notice, 1 Form 4 insider correlation.',
+  },
+  fccSpectrum: v28Fcc,
+  globalBlacklistsOffshore: v28FlaggedBlacklist,
+  aviationShadowTrusts: v28Aviation,
+  rawPayloads: {
+    ...(v27LiveIntel.rawPayloads || {}),
+    muckrock_foia_payload: { count: 14, resultsSample: v28Muckrock.releases },
+  },
+};
+
+const v28Squads = create200AgentSwarm('Motorola Solutions', v28LiveIntel);
+const v28Dossier = generateInvestigationDossier(
+  {
+    entity: 'Motorola Solutions',
+    focus: ['political', 'foia', 'labor', 'fcc', 'offshore', 'aviation'],
+    constraints: 'v28.0 CI regression verification',
+    timeRange: '2020-2026',
+    geography: 'US',
+    liveIntel: v28LiveIntel,
+  },
+  v28Squads,
+  3.4
+);
+
+const v28ExecMd = v28Dossier.files.find((f) => f.filename === '00_EXEC_SUMMARY.md')?.content || '';
+const v28ExecHtml = v28Dossier.files.find((f) => f.filename === 'EXECUTIVE_BRIEF_PRINTABLE.html')?.content || '';
+const v28RevCsv = v28Dossier.files.find((f) => f.filename === '17_REVOLVING_DOOR_CAPTURE_MATRIX.csv')?.content || '';
+const v28F39 = v28Dossier.files.find((f) => f.filename === '39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md')?.content || '';
+const v28F40 = v28Dossier.files.find((f) => f.filename === '40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md')?.content || '';
+const v28F42 = v28Dossier.files.find((f) => f.filename === '42_MUNICIPAL_FOIA_AND_LOCAL_CONTRACTS.md')?.content || '';
+const v28F42Raw = v28Dossier.files.find((f) => f.filename === 'evidence/raw_payloads/muckrock_foia_payload.json')?.content || '';
+const v28F43 = v28Dossier.files.find((f) => f.filename === '43_LABOR_WARFARE_LAYOFFS_AND_PERSUADER_AUDIT.md')?.content || '';
+const v28F44 = v28Dossier.files.find((f) => f.filename === '44_FCC_PROTOTYPES_AND_SPECTRUM_INTEL.md')?.content || '';
+const v28F45 = v28Dossier.files.find((f) => f.filename === '45_GLOBAL_BLACKLISTS_AND_OFFSHORE_LEAKS.md')?.content || '';
+const v28F46 = v28Dossier.files.find((f) => f.filename === '46_AVIATION_SHADOW_TRUSTS_AND_PHYSICAL_ASSETS.md')?.content || '';
+const v28Ftm = v28Dossier.files.find((f) => f.filename === 'evidence/followthemoney_graph.ftm.json')?.content || '';
+const v28AchJson = JSON.parse(
+  v28Dossier.files.find((f) => f.filename === 'evidence/ach_red_team_matrix.json')?.content || '{}'
+) as { findings?: Array<{ category: string; sourceAgentOrSignal: string }> };
+
+// Executive Summary & Printable HTML checks (including XSS escaping)
+assert.ok(v28ExecMd.includes('Political Influence & Partisan Split'), '00_EXEC_SUMMARY.md must include Political Influence & Partisan Split block');
+assert.ok(v28ExecMd.includes('C00075341') && v28ExecMd.includes('NRCC') && v28ExecMd.includes('DEM'), '00_EXEC_SUMMARY.md must display PAC ID, partisan split, and Top 5 recipient committees');
+assert.ok(v28ExecMd.includes('500 W MONROE ST, CHICAGO, IL 60661'), '00_EXEC_SUMMARY.md must reflect SEC EDGAR HQ precedence');
+assert.ok(v28ExecHtml.includes('Political Influence &amp; Partisan Split'), 'EXECUTIVE_BRIEF_PRINTABLE.html must render Political Influence & Partisan Split section');
+assert.ok(!v28ExecHtml.includes('<script>alert(1)</script>'), 'EXECUTIVE_BRIEF_PRINTABLE.html must HTML-escape untrusted PAC/committee names');
+
+// Revolving-door CSV, Squad Q/R deepenings, and all 5 v28.0 markdown dossiers + raw payload
+assert.ok(v28RevCsv.includes('Marcus Vance') && v28RevCsv.includes('AGENCY_LOBBYING_VS_CONTRACT_OVERLAP'), '17_REVOLVING_DOOR_CAPTURE_MATRIX.csv must contain Squad R revolving-door roster and agency-contract overlaps');
+assert.ok(v28F39.includes('Vanguard Group Inc') && v28F39.includes('BOARD_INTERLOCK'), '39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md must include 13F holders and BOARD_INTERLOCK');
+assert.ok(v28F40.includes('PUBLIC SAFETY SUPER PAC') && v28F40.includes('Marcus Vance') && v28F40.includes('NRCC'), '40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md must include Partisan Split, Revolving Door & Schedule E');
+assert.ok(v28F42.includes('Chicago Police Department') && v28F42.includes('ALPR_SURVEILLANCE'), '42_MUNICIPAL_FOIA_AND_LOCAL_CONTRACTS.md must contain MuckRock FOIA releases');
+assert.ok(v28F42Raw.includes('Chicago Police Department'), 'evidence/raw_payloads/muckrock_foia_payload.json must be emitted');
+assert.ok(v28F43.includes('LM-20') && v28F43.includes('-14d'), '43_LABOR_WARFARE_LAYOFFS_AND_PERSUADER_AUDIT.md must contain OLMS LM-20 and WARN-vs-Form-4 correlation');
+assert.ok(v28F44.includes('AZ489FT7180') && v28F44.includes('WQXZ912'), '44_FCC_PROTOTYPES_AND_SPECTRUM_INTEL.md must contain FCC ID and ULS call sign');
+assert.ok(v28F45.includes('Apex Shadow Sub Ltd') && v28F45.includes('British Virgin Islands'), '45_GLOBAL_BLACKLISTS_AND_OFFSHORE_LEAKS.md must contain World Bank, SAM.gov & ICIJ hits');
+assert.ok(v28F46.includes('N650MS') && v28F46.includes('Bank of Utah'), '46_AVIATION_SHADOW_TRUSTS_AND_PHYSICAL_ASSETS.md must contain FAA N-number and Bank of Utah shadow trust');
+
+// FollowTheMoney & Phase-5 ACH coverage for v27.1 + v28.0
+assert.ok(v28Ftm.includes('BOARD_INTERLOCK'), 'FTM graph must emit BOARD_INTERLOCK classification');
+assert.ok(v28Ftm.includes('PUBLIC SAFETY SUPER PAC'), 'FTM graph must emit OpenFEC Schedule E Super PAC');
+assert.ok(v28Ftm.includes('AZ489FT7180') && v28Ftm.includes('N650MS') && v28Ftm.includes('Bank of Utah'), 'FTM graph must emit FCC ID and FAA aviation shadow trust');
+for (const expectedCat of [
+  'MUNICIPAL_FOIA',
+  'LABOR_WARFARE',
+  'FCC_SPECTRUM',
+  'GLOBAL_BLACKLIST_OFFSHORE',
+  'AVIATION_SHADOW_TRUST',
+]) {
+  assert.ok(
+    v28AchJson.findings?.some((f) => f.category === expectedCat),
+    `Phase-5 ACH must evaluate v28.0 category ${expectedCat}`
+  );
+}
+
+// Verify FIX 3 Benign Control Dampening on clean Global Blacklist screening in PageRank
+const v28CleanIntel = {
+  ...v28LiveIntel,
+  globalBlacklistsOffshore: v28CleanBlacklist,
+};
+const v28CleanDossier = generateInvestigationDossier(
+  {
+    entity: 'Motorola Solutions',
+    focus: ['offshore'],
+    constraints: 'v28.0 benign control check',
+    timeRange: '2020-2026',
+    geography: 'US',
+    liveIntel: v28CleanIntel,
+  },
+  create200AgentSwarm('Motorola Solutions', v28CleanIntel),
+  1.1
+);
+const v28CleanBay =
+  v28CleanDossier.files.find((f) => f.filename === '37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md')?.content || '';
+const v28CleanPrSection = v28CleanBay.split('## 5. PROPERTY GRAPH PAGERANK')[1].split('## 6. SHANNON ENTROPY')[0];
+const v28CleanTop10Only = v28CleanPrSection.split('- **Benign Control Dampeners')[0];
+assert.ok(
+  !v28CleanTop10Only.includes('Clean Global Blacklist'),
+  'Clean Global Blacklist benign control node must be excluded from Top 10 Risk Contagion Chokepoints'
+);
+assert.ok(
+  v28CleanPrSection.includes('Clean Global Blacklist'),
+  'Clean Global Blacklist node must appear in Benign Control Dampeners summary'
+);
+
+// Run unmodified offline verify_dossier.mjs on the complete 200-agent v28.0 dossier
+const v28TempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovereign-v28-verify-'));
+try {
+  for (const file of v28Dossier.files) {
+    const outPath = path.join(v28TempDir, file.filename);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, file.content, 'utf8');
+  }
+  const verifyOut = execSync('node verify_dossier.mjs', { cwd: v28TempDir, encoding: 'utf8' });
+  assert.ok(
+    verifyOut.includes('ALL CRYPTOGRAPHIC & PROVENANCE CHECKS PASSED') || verifyOut.includes('PASS'),
+    'Unmodified verify_dossier.mjs must pass on 200-agent v28.0 dossier'
+  );
+} finally {
+  fs.rmSync(v28TempDir, { recursive: true, force: true });
+}
+
+console.log('[PASS] Phase 11.10: v27.1 + v28.0 Political Partisan Split, Revolving Door, 13F/Board Interlocks, HQ Precedence, FOIA/Labor/FCC/Blacklists/Aviation & Unmodified verify_dossier.mjs verified');
+
+// =============================================================================
+// PHASE 11.11 — OPTIONAL AUTHENTICATED PUBLIC API CONNECTORS (8 KEYS + ZERO-KEY FALLBACK)
+// =============================================================================
+assert.strictEqual(AUTH_CONNECTOR_TIMEOUT_MS, 12_000, 'Authenticated connectors must enforce 12000ms AbortSignal timeout');
+
+// Strict FQDN validation prevents SSRF/path injection on VT & OTX domain routes
+assert.strictEqual(isValidPublicDomain('motorolasolutions.com'), true, 'Valid public FQDN must pass');
+assert.strictEqual(isValidPublicDomain('localhost'), false, 'localhost must be rejected');
+assert.strictEqual(isValidPublicDomain('169.254.169.254'), false, 'Cloud metadata IP must be rejected');
+assert.strictEqual(isValidPublicDomain('127.0.0.1'), false, 'Loopback IP must be rejected');
+assert.strictEqual(isValidPublicDomain('evil.com/../../etc'), false, 'Path traversal domain must be rejected');
+
+// Verify header builders, zero-key graceful fallbacks, and strictly boolean activeConnectors (never leaking values)
+const authEnvKeys = [
+  'OPENFEC_API_KEY',
+  'COURTLISTENER_API_TOKEN',
+  'COMPANIES_HOUSE_API_KEY',
+  'LDA_API_KEY',
+  'GITHUB_TOKEN',
+  'NVD_API_KEY',
+  'VT_API_KEY',
+  'OTX_API_KEY',
+  'ETHERSCAN_API_KEY',
+  'ALCHEMY_ETH_RPC_URL',
+  'ALCHEMY_SOL_RPC_URL',
+] as const;
+const savedAuthEnv: Record<string, string | undefined> = {};
+for (const k of authEnvKeys) savedAuthEnv[k] = process.env[k];
+
+try {
+  // 1) Zero-key mode: every connector falls back gracefully and activeConnectors are all false
+  for (const k of authEnvKeys) delete process.env[k];
+  const zeroStatus = getActiveConnectorsStatus();
+  assert.deepStrictEqual(zeroStatus, {
+    openfec: false,
+    courtlistener: false,
+    companiesHouse: false,
+    lda: false,
+    github: false,
+    nvd: false,
+    virustotal: false,
+    otx: false,
+    etherscan: false,
+    alchemyEth: false,
+    alchemySol: false,
+  }, 'Zero-key mode must report all 11 activeConnectors as boolean false');
+  assert.deepStrictEqual(getCourtListenerHeaders(), {}, 'CourtListener zero-key fallback must omit Authorization');
+  assert.strictEqual(getCompaniesHouseHeaders(), null, 'Companies House zero-key fallback must return null');
+  assert.deepStrictEqual(getSenateLdaHeaders(), {}, 'LDA zero-key fallback must omit Authorization');
+  assert.deepStrictEqual(getOpenFecApiKey(), { apiKey: 'DEMO_KEY', apiMode: 'PUBLIC_DEMO_KEY' }, 'OpenFEC zero-key fallback must use DEMO_KEY');
+  assert.deepStrictEqual(getRegulationsGovHeaders(), { 'X-Api-Key': 'DEMO_KEY' }, 'Regulations.gov zero-key fallback must use DEMO_KEY');
+  assert.deepStrictEqual(getGitHubHeaders(), { Accept: 'application/vnd.github+json' }, 'GitHub zero-key fallback must send Accept without Authorization');
+  assert.deepStrictEqual(getNvdHeaders(), {}, 'NVD zero-key fallback must omit apiKey');
+  assert.strictEqual(getVirusTotalHeaders(), null, 'VirusTotal zero-key fallback must return null');
+  assert.strictEqual(getOtxHeaders(), null, 'OTX zero-key fallback must return null');
+  assert.deepStrictEqual(getSafeEvmRpcConfig(), { endpoint: PUBLIC_EVM_RPC_FALLBACK, mode: 'PUBLIC_RPC_FALLBACK' });
+  assert.deepStrictEqual(getSafeSolanaRpcConfig(), { endpoint: PUBLIC_SOL_RPC_FALLBACK, mode: 'PUBLIC_RPC_FALLBACK' });
+
+  // 2) Authenticated mode: verify exact header schemes & zero secret leakage in activeConnectors
+  process.env.OPENFEC_API_KEY = 'dummy-openfec-key-999';
+  process.env.COURTLISTENER_API_TOKEN = 'dummy-cl-token-999';
+  process.env.COMPANIES_HOUSE_API_KEY = 'dummy-ch-key-999';
+  process.env.LDA_API_KEY = 'dummy-lda-key-999';
+  process.env.GITHUB_TOKEN = 'dummy-gh-token-999';
+  process.env.NVD_API_KEY = 'dummy-nvd-key-999';
+  process.env.VT_API_KEY = 'dummy-vt-key-999';
+  process.env.OTX_API_KEY = 'dummy-otx-key-999';
+  process.env.ETHERSCAN_API_KEY = 'dummy-etherscan-key-999';
+  process.env.ALCHEMY_ETH_RPC_URL = 'https://eth-mainnet.g.alchemy.com/v2/dummy-alchemy-eth-999';
+  process.env.ALCHEMY_SOL_RPC_URL = 'https://solana-mainnet.g.alchemy.com/v2/dummy-alchemy-sol-999';
+
+  const activeStatus = getActiveConnectorsStatus();
+  const activeStatusJson = JSON.stringify(activeStatus);
+  assert.deepStrictEqual(activeStatus, {
+    openfec: true,
+    courtlistener: true,
+    companiesHouse: true,
+    lda: true,
+    github: true,
+    nvd: true,
+    virustotal: true,
+    otx: true,
+    etherscan: true,
+    alchemyEth: true,
+    alchemySol: true,
+  }, 'Authenticated mode must report all 11 activeConnectors as boolean true');
+  assert.ok(!activeStatusJson.includes('dummy-'), 'activeConnectors must NEVER serialize any key/token or Alchemy RPC URL value');
+
+  assert.strictEqual(getCourtListenerHeaders().Authorization, 'Token dummy-cl-token-999');
+  assert.strictEqual(
+    getCompaniesHouseHeaders()?.Authorization,
+    `Basic ${Buffer.from('dummy-ch-key-999:', 'utf8').toString('base64')}`,
+    'Companies House must use HTTP Basic Auth with base64(key + ":")'
+  );
+  assert.strictEqual(getSenateLdaHeaders().Authorization, 'Token dummy-lda-key-999');
+  assert.deepStrictEqual(getOpenFecApiKey(), { apiKey: 'dummy-openfec-key-999', apiMode: 'ENV_KEY' });
+  assert.strictEqual(getRegulationsGovHeaders()['X-Api-Key'], 'dummy-openfec-key-999');
+  assert.strictEqual(getGitHubHeaders().Authorization, 'Bearer dummy-gh-token-999');
+  assert.strictEqual(getGitHubHeaders().Accept, 'application/vnd.github+json');
+  assert.strictEqual(getNvdHeaders().apiKey, 'dummy-nvd-key-999');
+  assert.strictEqual(getVirusTotalHeaders()?.['x-apikey'], 'dummy-vt-key-999');
+  assert.strictEqual(getOtxHeaders()?.['X-OTX-API-KEY'], 'dummy-otx-key-999');
+} finally {
+  for (const k of authEnvKeys) {
+    if (savedAuthEnv[k] === undefined) delete process.env[k];
+    else process.env[k] = savedAuthEnv[k];
+  }
+}
+
+// Verify pure parsers for CourtListener RECAP/Opinions, Companies House UBO, Regulations.gov, VirusTotal, and OTX
+const parsedCl = parseCourtListenerSearchResults({
+  target: 'Motorola Solutions',
+  recapResults: [
+    {
+      caseName: 'Hytera Communications Corp. v. Motorola Solutions, Inc.',
+      docketNumber: '1:17-cv-01794',
+      court: 'Northern District of Illinois',
+      dateFiled: '2024-03-14',
+      assignedTo: 'Hon. Charles R. Norgle',
+      suitNature: 'Trade Secret / Copyright',
+      absolute_url: '/docket/6123456/motorola-solutions/',
+    },
+  ],
+  opinionResults: [
+    {
+      caseName: 'Motorola Solutions, Inc. v. Hytera Communications Corp.',
+      docketNumber: '22-2370',
+      court: 'Court of Appeals for the Seventh Circuit',
+      dateFiled: '2024-07-02',
+      judge: 'Judge David Hamilton',
+      absolute_url: '/opinion/9912345/motorola-solutions/',
+    },
+  ],
+});
+assert.strictEqual(parsedCl.length, 2, 'CourtListener parser must extract both RECAP docket and judicial opinion');
+assert.strictEqual(parsedCl[0].recordType, 'RECAP_DOCKET');
+assert.strictEqual(parsedCl[1].recordType, 'OPINION');
+assert.strictEqual(parsedCl[0].judgeAssigned, 'Hon. Charles R. Norgle');
+
+const parsedCh = parseCompaniesHouseUboData({
+  target: 'Motorola Solutions',
+  authenticated: true,
+  companyItems: [
+    {
+      company: {
+        company_number: '00912182',
+        title: 'MOTOROLA SOLUTIONS UK LIMITED',
+        company_status: 'active',
+        company_type: 'ltd',
+        date_of_creation: '1967-08-03',
+        address_snippet: 'Nova South, 160 Victoria Street, London, SW1E 5LB',
+      },
+      officers: [
+        {
+          name: 'SMITH, Eleanor Claire',
+          officer_role: 'director',
+          appointed_on: '2022-04-01',
+          nationality: 'British',
+        },
+      ],
+      pscs: [
+        {
+          name: 'Motorola Solutions Holdings Limited',
+          kind: 'corporate-entity-person-with-significant-control',
+          natures_of_control: ['ownership-of-shares-75-to-100-percent', 'voting-rights-75-to-100-percent'],
+          notified_on: '2016-04-06',
+        },
+      ],
+    },
+  ],
+});
+assert.strictEqual(parsedCh.companies.length, 1);
+assert.strictEqual(parsedCh.totalOfficers, 1);
+assert.strictEqual(parsedCh.totalPscUbos, 1);
+
+const parsedRegComments = parseRegulationsGovComments(
+  {
+    data: [
+      {
+        id: 'FCC-2025-0118-0042',
+        attributes: {
+          agencyId: 'FCC',
+          docketId: 'FCC-2025-0118',
+          title: 'Motorola Solutions Public Safety 4.9 GHz Band Spectrum Comment',
+          postedDate: '2025-02-19T14:00:00Z',
+          organization: 'Motorola Solutions, Inc.',
+        },
+      },
+      {
+        id: 'FAA-2025-0091-0011',
+        attributes: {
+          agencyId: 'FAA',
+          docketId: 'FAA-2025-0091',
+          title: 'Motorola Solutions Drone First Responder BVLOS Comment Letter',
+          postedDate: '2025-03-04T09:15:00Z',
+          organization: 'Motorola Solutions, Inc.',
+        },
+      },
+    ],
+  },
+  'Motorola Solutions'
+);
+assert.strictEqual(parsedRegComments.length, 2, 'Regulations.gov parser must extract agency comment letters');
+assert.strictEqual(parsedRegComments[0].agencyId, 'FCC');
+assert.strictEqual(parsedRegComments[1].agencyId, 'FAA');
+
+const parsedVt = parseVirusTotalDomainResponse(
+  {
+    data: {
+      attributes: {
+        last_analysis_stats: { malicious: 0, suspicious: 1, harmless: 74, undetected: 18 },
+        reputation: 12,
+        registrar: 'CSC Corporate Domains, Inc.',
+        creation_date: 1280707200,
+        last_dns_records: [{ type: 'A', value: '198.51.100.42', ttl: 300 }],
+        categories: { Forcepoint: 'information technology' },
+      },
+    },
+  },
+  'motorolasolutions.com'
+);
+assert.ok(parsedVt && parsedVt.harmlessCount === 74 && parsedVt.lastDnsRecords.length === 1, 'VirusTotal parser must extract analysis stats and passive DNS');
+
+const parsedOtxClean = parseOtxDomainResponse({ pulse_info: { count: 0, pulses: [] } }, 'motorolasolutions.com');
+assert.ok(parsedOtxClean && parsedOtxClean.cleanBenignControl && parsedOtxClean.classification === 'BENIGN_CONTROL', 'OTX 0-pulse result must be tagged BENIGN_CONTROL');
+
+const parsedOtxThreat = parseOtxDomainResponse(
+  {
+    pulse_info: {
+      count: 2,
+      pulses: [
+        {
+          name: 'Credential Phishing Lookalike Infrastructure',
+          created: '2025-11-12T00:00:00',
+          adversary: 'TA505',
+          malware_families: [{ display_name: 'Clop' }],
+          tags: ['phishing', 'c2'],
+        },
+      ],
+    },
+  },
+  'motorolasolutions.com'
+);
+assert.ok(
+  parsedOtxThreat &&
+    !parsedOtxThreat.cleanBenignControl &&
+    parsedOtxThreat.classification === 'THREAT_PULSE_DETECTED' &&
+    parsedOtxThreat.malwareFamilies.includes('Clop'),
+  'OTX >0 pulse result must extract malware families and threat classification'
+);
+
+// End-to-end dossier & PageRank verification with all 8 connector payloads populated
+const v28AuthIntel = {
+  ...v28LiveIntel,
+  cyberTelemetry: {
+    primaryDomain: 'motorolasolutions.com',
+    resolvedIps: ['198.51.100.42'],
+    mxRecords: ['mail.motorolasolutions.com'],
+    nsRecords: ['ns1.motorolasolutions.com'],
+    spfRecord: 'v=spf1 -all',
+    dmarcRecord: 'v=DMARC1; p=reject',
+    caaRecords: ['0 issue "digicert.com"'],
+    asnInfo: [],
+    ctSubdomains: ['api.motorolasolutions.com'],
+    ctCertIssuers: ['DigiCert'],
+    ctTotalCertsSampled: 12,
+    robotsTxtPresent: true,
+    llmsTxtPresent: false,
+    securityTxtPresent: true,
+    securityTxtContact: 'security@motorolasolutions.com',
+    disclosedCves: [],
+    cyberNewsHits: [],
+    virusTotalIntel: parsedVt,
+    otxThreatIntel: parsedOtxClean,
+  },
+  legalSlappBankruptcy: {
+    courtListenerDocketsCount: 2,
+    courtDockets: parsedCl,
+    forumConcentration: [
+      { court: 'Northern District of Illinois', count: 1 },
+      { court: 'Court of Appeals for the Seventh Circuit', count: 1 },
+    ],
+    slappAndArbitrationSignals: [],
+    judicialVerdict: '2 CourtListener RECAP/Opinion records verified.',
+  },
+  proxyKinship: {
+    ...(v28LiveIntel.proxyKinship!),
+    ukCompaniesHouseUbo: parsedCh,
+  },
+  politicalInfluence: {
+    ...(v28LiveIntel.politicalInfluence!),
+    regulationsGovComments: parsedRegComments,
+  },
+};
+
+const v28AuthDossier = generateInvestigationDossier(
+  {
+    entity: 'Motorola Solutions',
+    focus: ['legal', 'cyber', 'proxy', 'political'],
+    constraints: 'v28.0 8-connector verification',
+    timeRange: '2020-2026',
+    geography: 'US/UK',
+    liveIntel: v28AuthIntel,
+  },
+  create200AgentSwarm('Motorola Solutions', v28AuthIntel),
+  1.3
+);
+const v28AuthF00 = v28AuthDossier.files.find((f) => f.filename === '00_EXEC_SUMMARY.md')?.content || '';
+const v28AuthF03 = v28AuthDossier.files.find((f) => f.filename === '03_REGULATORY_LEGAL_ANTITRUST.md')?.content || '';
+const v28AuthF18 = v28AuthDossier.files.find((f) => f.filename === '18_CYBER_OPERATIONS_AND_INFRA_EXPOSURE.md')?.content || '';
+const v28AuthF27 = v28AuthDossier.files.find((f) => f.filename === '27_LEGAL_SLAPP_JUDGE_SHOPPING_AND_ARBITRATION.md')?.content || '';
+const v28AuthF28 = v28AuthDossier.files.find((f) => f.filename === '28_DEEP_ATTACK_SURFACE_CSP_RDAP_AND_OSV_AUDIT.md')?.content || '';
+const v28AuthF37 = v28AuthDossier.files.find((f) => f.filename === '37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md')?.content || '';
+const v28AuthF39 = v28AuthDossier.files.find((f) => f.filename === '39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md')?.content || '';
+const v28AuthF40 = v28AuthDossier.files.find((f) => f.filename === '40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md')?.content || '';
+const v28AuthFtm = v28AuthDossier.files.find((f) => f.filename === 'evidence/followthemoney_graph.ftm.json')?.content || '';
+
+assert.ok(v28AuthF00.includes('1:17-cv-01794') && v28AuthF00.includes('Hon. Charles R. Norgle'), '00_EXEC_SUMMARY.md Section 3 must surface CourtListener RECAP docket and judge');
+assert.ok(v28AuthF03.includes('1:17-cv-01794') && v28AuthF03.includes('Judge David Hamilton') && v28AuthF03.includes('FCC-2025-0118'), '03_REGULATORY_LEGAL_ANTITRUST.md must surface CourtListener RECAP/Opinions and Regulations.gov comments');
+assert.ok(v28AuthF27.includes('[`RECAP_DOCKET`]') && v28AuthF27.includes('[`OPINION`]') && v28AuthF27.includes('Hon. Charles R. Norgle'), '27_LEGAL_SLAPP_JUDGE_SHOPPING_AND_ARBITRATION.md must include RECAP/OPINION tags and judge names');
+assert.ok(v28AuthF39.includes('MOTOROLA SOLUTIONS UK LIMITED') && v28AuthF39.includes('Motorola Solutions Holdings Limited') && v28AuthF39.includes('SMITH, Eleanor Claire'), '39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md must emit UK Companies House subsidiary, director, and PSC/UBO');
+assert.ok(v28AuthFtm.includes('MOTOROLA SOLUTIONS UK LIMITED') && v28AuthFtm.includes('UK_PSC_UBO') && v28AuthFtm.includes('SMITH, Eleanor Claire'), 'FollowTheMoney export must include UK Companies House subsidiaries, officers, and PSC/UBO chains');
+assert.ok(v28AuthF40.includes('FCC-2025-0118') && v28AuthF40.includes('FAA-2025-0091'), '40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md must emit Regulations.gov agency comment letters');
+assert.ok(v28AuthF18.includes('VIRUSTOTAL') && v28AuthF18.includes('198.51.100.42') && v28AuthF18.includes('BENIGN_CONTROL'), '18_CYBER_OPERATIONS_AND_INFRA_EXPOSURE.md must emit VirusTotal passive DNS and OTX BENIGN_CONTROL');
+assert.ok(v28AuthF28.includes('VirusTotal') && v28AuthF28.includes('AlienVault OTX') && v28AuthF28.includes('BENIGN_CONTROL'), '28_DEEP_ATTACK_SURFACE_CSP_RDAP_AND_OSV_AUDIT.md must emit VirusTotal & OTX telemetry');
+
+// Verify OTX 0-pulse clean screening is excluded from Top 10 Risk Contagion Chokepoints
+const v28AuthPrSection = v28AuthF37.split('## 5. PROPERTY GRAPH PAGERANK')[1].split('## 6. SHANNON ENTROPY')[0];
+const v28AuthTop10Only = v28AuthPrSection.split('- **Benign Control Dampeners')[0];
+assert.ok(!v28AuthTop10Only.includes('Clean AlienVault OTX'), 'OTX 0-pulse BENIGN_CONTROL node must be excluded from Top 10 Risk Contagion Chokepoints');
+assert.ok(v28AuthPrSection.includes('Clean AlienVault OTX'), 'OTX 0-pulse BENIGN_CONTROL node must be listed in Benign Control Dampeners');
+
+// Verify unmodified verify_dossier.mjs passes on the 8-connector v28.0 dossier
+const v28AuthTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovereign-v28-auth-verify-'));
+try {
+  for (const file of v28AuthDossier.files) {
+    const outPath = path.join(v28AuthTempDir, file.filename);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, file.content, 'utf8');
+  }
+  const verifyAuthOut = execSync('node verify_dossier.mjs', { cwd: v28AuthTempDir, encoding: 'utf8' });
+  assert.ok(
+    verifyAuthOut.includes('ALL CRYPTOGRAPHIC & PROVENANCE CHECKS PASSED') || verifyAuthOut.includes('PASS'),
+    'Unmodified verify_dossier.mjs must pass on 8-connector v28.0 dossier'
+  );
+} finally {
+  fs.rmSync(v28AuthTempDir, { recursive: true, force: true });
+}
+
+console.log('[PASS] Phase 11.11: All 8 Optional Authenticated Public API Connectors, Zero-Key Fallbacks, Strict FQDN Guard, OTX BENIGN_CONTROL PageRank, UK Companies House FTM/UBO & Unmodified verify_dossier.mjs verified');
+
+// =============================================================================
+// Phase 11.12: v29.0 FULL-ALPHABET SOVEREIGN ARCHITECTURE (260 AGENTS / SQUADS A–Z)
+// =============================================================================
+console.log('=== [Phase 11.12] Verifying v29.0 260-Agent / 26-Squad Full-Alphabet Architecture (Squads U-Z, Files 47-52, SSRF Guards & Active Cover-Up Detector) ===');
+
+assert.strictEqual(V29_FETCH_TIMEOUT_MS, 12_000, 'v29.0 external fetches must enforce 12000ms AbortSignal timeout');
+assert.strictEqual(MAX_JS_BUNDLES, 5, 'Squad U must cap first-party JS bundle pulls at 5');
+assert.strictEqual(MAX_JS_BUNDLE_BYTES, 512 * 1024, 'Squad U must cap each JS bundle pull at 512KB');
+
+// 1. Verify full A-Z topology and compiler agents U10-Z10
+const v29TopologySquads = create260AgentSwarm('Motorola Solutions');
+assert.strictEqual(v29TopologySquads.length, 26, 'Expected 26 squads A-Z');
+assert.strictEqual(
+  v29TopologySquads.reduce((acc, s) => acc + s.agents.length, 0),
+  260,
+  'Expected 260 agents across Squads A-Z'
+);
+for (const letter of ['U', 'V', 'W', 'X', 'Y', 'Z']) {
+  assert.strictEqual(isCompilerAgent({ id: `${letter}10`, role: 'Compiler' }), true, `Expected ${letter}10 to be recognized as compiler agent`);
+  assert.strictEqual(isCompilerAgent({ id: `${letter}1`, role: 'Specialist' }), false, `Expected ${letter}1 to be a specialist agent`);
+}
+
+// 2. Squad U: SSRF guard + JS bundle analyzer + well-known schemas + Exodus Privacy
+assert.strictEqual(isAllowedFirstPartyScriptUrl('https://motorolasolutions.com/assets/app.js', 'motorolasolutions.com'), 'https://motorolasolutions.com/assets/app.js');
+assert.strictEqual(isAllowedFirstPartyScriptUrl('https://cdn.motorolasolutions.com/static/chunk.js', 'motorolasolutions.com'), 'https://cdn.motorolasolutions.com/static/chunk.js');
+assert.strictEqual(isAllowedFirstPartyScriptUrl('/static/main.js', 'motorolasolutions.com'), 'https://motorolasolutions.com/static/main.js');
+assert.strictEqual(isAllowedFirstPartyScriptUrl('https://127.0.0.1/evil.js', 'motorolasolutions.com'), null, 'SSRF guard must block loopback IP');
+assert.strictEqual(isAllowedFirstPartyScriptUrl('http://169.254.169.254/latest/meta-data/', 'motorolasolutions.com'), null, 'SSRF guard must block cloud metadata IP');
+assert.strictEqual(isAllowedFirstPartyScriptUrl('https://evil-third-party.example/pwn.js', 'motorolasolutions.com'), null, 'SSRF guard must block third-party origins');
+assert.strictEqual(isAllowedFirstPartyScriptUrl('file:///etc/passwd', 'motorolasolutions.com'), null, 'SSRF guard must block file:// scheme');
+
+const sampleHtml = `
+  <html><head>
+    <script src="/static/a.js"></script>
+    <script src="https://cdn.motorolasolutions.com/b.js"></script>
+    <script src="https://thirdparty-tracker.example/c.js"></script>
+    <script src="/static/d.js"></script>
+    <script src="/static/e.js"></script>
+    <script src="/static/f.js"></script>
+    <script src="/static/g.js"></script>
+  </head></html>
+`;
+const extractedScripts = extractFirstPartyScriptUrls(sampleHtml, 'motorolasolutions.com');
+assert.strictEqual(extractedScripts.length, 5, 'extractFirstPartyScriptUrls must enforce max 5 first-party scripts');
+assert.ok(extractedScripts.every((u) => !u.includes('thirdparty-tracker.example')), 'Third-party script must be excluded');
+
+const jsAnalysis = analyzeJsBundleSource(
+  `const API = "/api/v2/dispatch/alerts"; const GQL = "/graphql";
+   const flags = { featureFlag: "ENABLE_BIOMETRIC_ALPR", staging: "https://staging-api.motorolasolutions.com/v1/health" };
+   const fp = canvas.toDataURL(); const gl = ctx.getExtension("WEBGL_debug_renderer_info");
+   const ac = new OfflineAudioContext(1, 44100, 44100); navigator.serviceWorker.register("/sw.js");`,
+  'motorolasolutions.com'
+);
+assert.ok(jsAnalysis.apiRoutesFound.includes('/api/v2/dispatch/alerts') && jsAnalysis.apiRoutesFound.includes('/graphql'), 'JS bundle analyzer must extract internal API & GraphQL routes');
+assert.ok(jsAnalysis.stagingHostsFound.includes('staging-api.motorolasolutions.com'), 'JS bundle analyzer must extract staging hostnames');
+assert.ok(jsAnalysis.fingerprintingSignatures.length >= 4, 'JS bundle analyzer must detect Canvas, WebGL, AudioContext & Service Worker');
+
+const mobileWellKnown = parseMobileAppWellKnown({
+  assetlinksJson: [{ relation: ['delegate_permission/common.handle_all_urls'], target: { namespace: 'android_app', package_name: 'com.motorolasolutions.commandcentral' } }],
+  aasaJson: { applinks: { details: [{ appID: 'AB12CD34EF.com.motorolasolutions.ios', appIDs: ['AB12CD34EF.com.motorolasolutions.dispatch'] }] } },
+});
+assert.deepStrictEqual(mobileWellKnown.androidPackages, ['com.motorolasolutions.commandcentral']);
+assert.ok(mobileWellKnown.iosBundleIds.includes('com.motorolasolutions.ios'));
+
+const parsedExodus = parseExodusPrivacyResponse(
+  'com.motorolasolutions.commandcentral',
+  {
+    'com.motorolasolutions.commandcentral': {
+      app_name: 'CommandCentral Responder',
+      reports: [
+        {
+          trackers: [{ name: 'Google Firebase Analytics' }, { name: 'Google CrashLytics' }, { name: 'AppsFlyer' }, { name: 'Branch' }],
+          permissions: ['ACCESS_FINE_LOCATION', 'CAMERA'],
+        },
+      ],
+    },
+  },
+  'PUBLIC_FALLBACK'
+);
+assert.strictEqual(parsedExodus?.trackersCount, 4);
+assert.ok(parsedExodus?.trackers.includes('AppsFlyer'));
+
+// 3. Squad V: Cloud CNAMEs, PeeringDB, Hugging Face, Docker Hub
+const cloudCdnChains = classifyCloudCdnCnames({
+  hosts: ['d1234.cloudfront.net', 'edge.cloudflare.net'],
+  nsRecords: ['ns-1.awsdns-01.com'],
+});
+assert.ok(cloudCdnChains.some((c) => c.provider === 'AWS') && cloudCdnChains.some((c) => c.provider === 'CLOUDFLARE'));
+const peeringParsed = parsePeeringDbTelemetry({
+  netPayloads: [
+    {
+      data: [
+        {
+          asn: 14744,
+          name: 'Motorola Solutions Global Backbone',
+          policy_general: 'Selective',
+          info_type: 'Enterprise',
+          netixlan_set: [{ name: 'Equinix Chicago' }, { name: 'DE-CIX New York' }, { name: 'Any2West' }],
+          netfac_set: [{ name: 'Equinix CH1' }, { name: 'Digital Realty ORD10' }],
+        },
+      ],
+    },
+  ],
+});
+assert.strictEqual(peeringParsed.peeringDbNetworks[0].asn, 'AS14744');
+assert.strictEqual(peeringParsed.peeringDbNetworks[0].ixpCount, 3);
+assert.strictEqual(peeringParsed.peeringDbNetworks[0].facilityCount, 2);
+const hfModels = parseHuggingFaceModels([{ id: 'motorolasolutions/alpr-vision-v2', pipeline_tag: 'image-classification', downloads: 18500, likes: 42 }]);
+assert.strictEqual(hfModels[0].modelId, 'motorolasolutions/alpr-vision-v2');
+const dockerRepos = parseDockerHubRepos({ results: [{ name: 'edge-gateway', pull_count: 92000, star_count: 19, last_updated: '2026-10-12' }] }, 'motorolasolutions');
+assert.strictEqual(dockerRepos[0].pullCount, 92000);
+
+// 4. Squad W: WA State AG breach velocity delay math + passive exposure BENIGN_CONTROL vs exposed
+const waBreaches = parseWashingtonAgSocrataBreaches(
+  [
+    {
+      organization_name: 'Motorola Solutions Vendor Portal',
+      date_start: '2025-01-10T00:00:00.000',
+      date_reported: '2025-04-20T00:00:00.000',
+      washingtonians_affected: '14250',
+      cyberattack_type: 'SSN, Driver License',
+    },
+  ],
+  'Motorola Solutions'
+);
+assert.strictEqual(waBreaches.length, 1);
+assert.strictEqual(waBreaches[0].notificationDelayDays, 100, 'Expected exact 100-day breach notification delay');
+assert.strictEqual(waBreaches[0].residentsAffected, 14250);
+
+const cleanExposure = evaluatePassiveExposurePaths({
+  domain: 'motorolasolutions.com',
+  gitHead: { status: 404, text: 'Not Found' },
+  dotEnv: { status: 403, text: 'Forbidden' },
+  robotsTxt: { status: 200, text: 'User-agent: *\nDisallow: /admin-portal\nDisallow: /staging-api\n' },
+  securityTxt: { status: 200, text: 'Contact: mailto:security@motorolasolutions.com\n' },
+});
+assert.strictEqual(cleanExposure.cleanExposureBenignControl, true, '404/403 on /.git/HEAD & /.env must classify as BENIGN_CONTROL');
+assert.strictEqual(cleanExposure.passiveExposureChecks.filter((c) => c.classification === 'EXPOSED_CRITICAL').length, 0);
+
+const leakyExposure = evaluatePassiveExposurePaths({
+  domain: 'motorolasolutions.com',
+  gitHead: { status: 200, text: 'ref: refs/heads/main\n' },
+  dotEnv: { status: 404, text: 'Not Found' },
+});
+assert.strictEqual(leakyExposure.cleanExposureBenignControl, false, 'Exposed ref: refs/heads/main must NOT be BENIGN_CONTROL');
+assert.strictEqual(leakyExposure.passiveExposureChecks.filter((c) => c.classification === 'EXPOSED_CRITICAL').length, 1);
+
+// 5. Squad X: Registered-agent mail-drops & offshore fiduciary clustering vs physical HQ
+const shellClusterRes = clusterEntityAddressesForShells({
+  physicalHqAddress: '500 W Monroe Street, Chicago, IL 60661',
+  records: [
+    { entityName: 'Motorola Solutions Inc.', address: '1209 Orange Street, Wilmington, DE 19801', source: 'SEC_EX21' },
+    { entityName: 'MSI HoldCo SPV LLC', address: '1209 Orange St, Wilmington, DE 19801', source: 'SEC_FORM_D' },
+    { entityName: 'MSI Cayman Holdings Ltd', address: 'PO Box 309, Ugland House, Grand Cayman KY1-1104', source: 'GLEIF_L2' },
+    { entityName: 'Motorola Solutions HQ', address: '500 W Monroe Street, Chicago, IL 60661', source: 'SEC_EDGAR' },
+  ],
+});
+assert.strictEqual(shellClusterRes.mailDropClusterCount, 1, 'Expected 1209 Orange St Wilmington DE to cluster as registered-agent mail-drop');
+assert.strictEqual(shellClusterRes.offshoreSuiteCount, 1, 'Expected Ugland House Grand Cayman to classify as offshore fiduciary suite');
+
+// 6. Squad Y: ads.txt, sellers.json, Wayback coercive clause diff, ToS;DR v4
+const parsedAdsTxt = parseAdsTxtEntries(
+  `# Ad-Tech Supply Chain\ngoogle.com, pub-1234567890, DIRECT, f08c47fec0942fa0\nrubiconproject.com, 9988, RESELLER, 0bfd66d529a55807\n`,
+  'ads.txt'
+);
+assert.strictEqual(parsedAdsTxt.filter((e) => e.relationship === 'DIRECT').length, 1);
+assert.strictEqual(parsedAdsTxt.filter((e) => e.relationship === 'RESELLER').length, 1);
+const parsedSellers = parseSellersJsonEntries({
+  sellers: [{ seller_id: 's-1', name: 'MSI Ad Exchange', domain: 'ads.motorolasolutions.com', seller_type: 'PUBLISHER' }],
+});
+assert.strictEqual(parsedSellers.sellersCount, 1);
+
+const clauseDiffs = diffPolicyWaybackClauses({
+  policyPath: '/terms',
+  earliestText: 'Users agree to standard terms of service governed by Illinois law.',
+  latestText: 'Users agree to binding arbitration and class action waiver; we may collect biometric data to train our AI models.',
+  earliestTimestamp: '20220101000000',
+  latestTimestamp: '20261101000000',
+  waybackUrl: 'https://web.archive.org/web/20261101000000/https://motorolasolutions.com/terms',
+});
+assert.strictEqual(clauseDiffs.filter((d) => d.status === 'INSERTED_IN_LATEST').length, 4, 'All 4 newly inserted coercive ToS/Privacy clauses must be flagged INSERTED_IN_LATEST');
+
+const parsedTosdr = parseTosdrSearchResponse({
+  parameters: { services: [{ id: 194, name: 'Motorola Solutions', rating: { letter: 'D' }, slug: 'motorola-solutions' }] },
+});
+assert.strictEqual(parsedTosdr?.ratingGrade, 'D');
+
+// 7. Squad Z: Stack-to-Power Capstone & T1-vs-T2 Active Cover-Up Detector
+const v29ClientTechFixture = {
+  primaryDomain: 'motorolasolutions.com',
+  homepageFetched: true,
+  jsBundlesInspected: [{ url: 'https://motorolasolutions.com/static/a.js', bytesRead: 42800, ...jsAnalysis }],
+  discoveredApiRoutes: jsAnalysis.apiRoutesFound,
+  discoveredFeatureFlags: jsAnalysis.featureFlagsFound,
+  stagingOrInternalHosts: jsAnalysis.stagingHostsFound,
+  fingerprintingSignatures: jsAnalysis.fingerprintingSignatures,
+  publicSchemaEndpoints: [{ path: '/.well-known/assetlinks.json', url: 'https://motorolasolutions.com/.well-known/assetlinks.json', httpStatus: 200, exposed: true, summary: '1 Android package' }],
+  mobileAppIds: mobileWellKnown,
+  exodusPrivacyReports: parsedExodus ? [parsedExodus] : [],
+  summaryVerdict: '1 JS bundle dissected · 2 internal API routes · 4 fingerprinting signatures · 4 Exodus mobile trackers.',
+};
+const v29CloudIxpFixture = {
+  ...peeringParsed,
+  huggingFaceModels: hfModels,
+  dockerHubRepos: dockerRepos,
+  cloudCdnChains,
+  summaryVerdict: 'AWS + Cloudflare CNAMEs · PeeringDB AS14744 (3 IXPs / 2 Colo Facilities) · 1 HF model · 1 Docker repo.',
+};
+const v29BreachCleanExposureFixture = {
+  stateAgBreaches: waBreaches,
+  averageNotificationDelayDays: 100,
+  maxNotificationDelayDays: 100,
+  totalAffectedResidents: 14250,
+  passiveExposureChecks: cleanExposure.passiveExposureChecks,
+  robotsDisallowedAdminPaths: cleanExposure.robotsDisallowedAdminPaths,
+  securityTxtFound: cleanExposure.securityTxtFound,
+  correlatedKevCount: 0,
+  correlatedVtMalicious: 0,
+  correlatedOtxPulses: 0,
+  cleanExposureBenignControl: true,
+  summaryVerdict: '1 WA AG breach (100d delay, 14,250 residents) · Passive /.git & /.env clean (BENIGN_CONTROL).',
+};
+const v29ShellFixture = {
+  ...shellClusterRes,
+  physicalHqAddress: '500 W Monroe Street, Chicago, IL 60661',
+  infrastructurePermitsAndPuc: [
+    {
+      jurisdiction: 'Illinois Commerce Commission',
+      sourceCategory: 'STATE_PUC_POWER_WATER' as const,
+      title: 'Illinois Commerce Commission Data Center Substation Permit #26-0411',
+      snippet: '35MW substation interconnect approved for regional dispatch compute campus.',
+      url: 'https://www.icc.illinois.gov/docket/26-0411',
+    },
+  ],
+  summaryVerdict: '1 DE mail-drop cluster (1209 Orange St) · 1 Cayman offshore suite · 1 physical HQ · 1 PUC permit.',
+};
+const v29AdTechFixture = {
+  primaryDomain: 'motorolasolutions.com',
+  adsTxtDirectCount: 1,
+  adsTxtResellerCount: 1,
+  adsTxtExchanges: parsedAdsTxt,
+  sellersJsonSellersCount: parsedSellers.sellersCount,
+  sellersJsonSample: parsedSellers.sample,
+  policyWaybackClauseDiffs: clauseDiffs,
+  tosdrSummary: parsedTosdr,
+  euDsaGdprNotices: [],
+  summaryVerdict: '2 ads.txt lines (1 reseller) · 1 sellers.json node · ToS;DR Grade D · 4 newly inserted coercive clauses.',
+};
+const v29CapstoneFixture = buildStackToPowerCapstoneAndCoverUpDetector({
+  entityName: 'Motorola Solutions',
+  clientTech: v29ClientTechFixture,
+  cloudIxp: v29CloudIxpFixture,
+  breachVelocity: v29BreachCleanExposureFixture,
+  shellClustering: v29ShellFixture,
+  adTechTos: v29AdTechFixture,
+  previousVaultSnapshot: {
+    investigationId: 'INV-MSI-T1',
+    targetEntity: 'Motorola Solutions',
+    capturedAtIso: '2026-10-01T00:00:00.000Z',
+    postRedTeamPosterior: 0.42,
+    fri: 0.48,
+    mai: 0.55,
+    executives: ['Greg Brown'],
+    tlsSanDomains: ['motorolasolutions.com'],
+    dorkedArtifactUrls: [],
+    tosPathsAndHashes: {},
+    subsidiaries: [],
+    gleifParents: [],
+    usaSpendingAwardIds: [],
+    peakBurstZScore: 1.2,
+    wikipediaLargeDeletionsCount: 0,
+    lobbyingFilingsCount: 12,
+    githubRepoCount: 21,
+    wikipediaVerdict: 'STABLE_EDITORIAL_HISTORY',
+    tlsFingerprintSha256: 'OLD_TLS_SHA256_11223344556677889900',
+  },
+  currentGithubRepoCount: 14,
+  currentWikiWhitewashVerdict: 'HIGH_WHITEWASH_RISK_DETECTED',
+  currentTlsFingerprint: 'NEW_TLS_SHA256_AABBCCDDEEFF00112233',
+  silentDeletionAlertsCount: 1,
+  lobbyingCount: 18,
+  pacCount: 1,
+  courtDocketCount: 2,
+  cyberCveCount: 3,
+});
+assert.strictEqual(v29CapstoneFixture.stackToPowerChain.length, 5, 'Stack-to-Power capstone must synthesize all 5 architecture-to-power layers');
+assert.ok(
+  v29CapstoneFixture.activeCoverUpAlerts.some((a) => a.alertType === 'DELETED_GITHUB_REPOS') &&
+    v29CapstoneFixture.activeCoverUpAlerts.some((a) => a.alertType === 'SUDDEN_WIKIPEDIA_WHITEWASH') &&
+    v29CapstoneFixture.activeCoverUpAlerts.some((a) => a.alertType === 'TLS_CERT_ROTATION') &&
+    v29CapstoneFixture.activeCoverUpAlerts.some((a) => a.alertType === 'SCRUBBED_POLICY_OR_SILENT_DELETION'),
+  'Squad Z Active Cover-Up Detector must flag deleted GitHub repos, sudden Wikipedia whitewash, TLS cert rotation & scrubbed policy pages across T1 vs T2'
+);
+
+// 8. Full End-to-End v29.0 260-Agent Dossier Generation, Files 47-52, PageRank BENIGN_CONTROL, Bayesian/ACH, FtM & Unmodified verify_dossier.mjs
+const v29FullIntel: LiveBusinessIntelligence = {
+  ...v28AuthIntel,
+  clientTechArchitecture: v29ClientTechFixture,
+  cloudIxpCompute: v29CloudIxpFixture,
+  breachVelocitySurface: v29BreachCleanExposureFixture,
+  shellAddressClustering: v29ShellFixture,
+  adTechTosSurveillance: v29AdTechFixture,
+  stackToPowerCapstone: v29CapstoneFixture,
+};
+
+const v29Dossier = generateInvestigationDossier(
+  {
+    entity: 'Motorola Solutions',
+    focus: ['tech-stack', 'cloud', 'breach', 'shells', 'adtech', 'capstone'],
+    constraints: 'v29.0 260-agent full-alphabet verification',
+    timeRange: '2020-2026',
+    geography: 'Global',
+    liveIntel: v29FullIntel,
+  },
+  create260AgentSwarm('Motorola Solutions', v29FullIntel),
+  1.4
+);
+
+const v29FileNames = new Set(v29Dossier.files.map((f) => f.filename));
+for (const requiredFile of [
+  '47_CLIENT_TECH_STACK_JS_BUNDLES_AND_MOBILE_TRACKERS.md',
+  '48_CLOUD_IXP_COLOCATION_AND_AI_COMPUTE_BACKBONE.md',
+  '49_BREACH_VELOCITY_STATE_AG_AND_EXPOSED_SURFACE.md',
+  '50_SHELL_ADDRESS_CLUSTERING_AND_PHYSICAL_INFRASTRUCTURE.md',
+  '51_ADTECH_SUPPLY_CHAIN_DARK_PATTERNS_AND_TOS_DIFF.md',
+  '52_SOVEREIGN_STACK_TO_POWER_CAPSTONE.md',
+  'evidence/raw_payloads/client_tech_architecture_payload.json',
+  'evidence/raw_payloads/cloud_ixp_compute_payload.json',
+  'evidence/raw_payloads/breach_velocity_payload.json',
+  'evidence/raw_payloads/shell_address_clustering_payload.json',
+  'evidence/raw_payloads/adtech_tos_surveillance_payload.json',
+  'evidence/raw_payloads/stack_to_power_capstone_payload.json',
+]) {
+  assert.ok(v29FileNames.has(requiredFile), `v29.0 dossier must emit ${requiredFile}`);
+}
+
+const v29F00 = v29Dossier.files.find((f) => f.filename === '00_EXEC_SUMMARY.md')?.content || '';
+const v29Html = v29Dossier.files.find((f) => f.filename === 'EXECUTIVE_BRIEF_PRINTABLE.html')?.content || '';
+const v29F37 = v29Dossier.files.find((f) => f.filename === '37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md')?.content || '';
+const v29F38 = v29Dossier.files.find((f) => f.filename === '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md')?.content || '';
+const v29F47 = v29Dossier.files.find((f) => f.filename === '47_CLIENT_TECH_STACK_JS_BUNDLES_AND_MOBILE_TRACKERS.md')?.content || '';
+const v29F48 = v29Dossier.files.find((f) => f.filename === '48_CLOUD_IXP_COLOCATION_AND_AI_COMPUTE_BACKBONE.md')?.content || '';
+const v29F49 = v29Dossier.files.find((f) => f.filename === '49_BREACH_VELOCITY_STATE_AG_AND_EXPOSED_SURFACE.md')?.content || '';
+const v29F50 = v29Dossier.files.find((f) => f.filename === '50_SHELL_ADDRESS_CLUSTERING_AND_PHYSICAL_INFRASTRUCTURE.md')?.content || '';
+const v29F51 = v29Dossier.files.find((f) => f.filename === '51_ADTECH_SUPPLY_CHAIN_DARK_PATTERNS_AND_TOS_DIFF.md')?.content || '';
+const v29F52 = v29Dossier.files.find((f) => f.filename === '52_SOVEREIGN_STACK_TO_POWER_CAPSTONE.md')?.content || '';
+const v29Ftm = v29Dossier.files.find((f) => f.filename === 'evidence/followthemoney_graph.ftm.json')?.content || '';
+const v29Ledger = JSON.parse(v29Dossier.files.find((f) => f.filename === 'LEDGER_ENTRY.json')?.content || '{}');
+
+assert.ok(v29F00.includes('Tech Architecture & Attack-Surface Snapshot') && v29F00.includes('AS14744') && v29F00.includes('DELETED_GITHUB_REPOS'), '00_EXEC_SUMMARY.md must include compact Tech Architecture & Attack-Surface Snapshot');
+assert.ok(v29Html.includes('2B. Tech Architecture &amp; Attack-Surface Snapshot') && v29Html.includes('v29.0'), 'EXECUTIVE_BRIEF_PRINTABLE.html must include Tech Architecture & Attack-Surface Snapshot and v29.0 banner');
+assert.ok(v29F47.includes('/api/v2/dispatch/alerts') && v29F47.includes('AppsFlyer'), 'File 47 must include extracted JS routes & Exodus trackers');
+assert.ok(v29F48.includes('AS14744') && v29F48.includes('alpr-vision-v2') && v29F48.includes('edge-gateway'), 'File 48 must include PeeringDB, HF Hub & Docker Hub telemetry');
+assert.ok(v29F49.includes('100d') && v29F49.includes('BENIGN_CONTROL'), 'File 49 must include State AG breach delay & BENIGN_CONTROL passive exposure');
+assert.ok(v29F50.includes('1209 Orange Street') && v29F50.includes('Ugland House'), 'File 50 must include registered-agent mail-drop & offshore fiduciary clusters');
+assert.ok(v29F51.includes('rubiconproject.com') && v29F51.includes('Grade D') && v29F51.includes('INSERTED_IN_LATEST'), 'File 51 must include ads.txt, ToS;DR Grade D & coercive clause diffs');
+assert.ok(v29F52.includes('DELETED_GITHUB_REPOS') && v29F52.includes('SUDDEN_WIKIPEDIA_WHITEWASH'), 'File 52 must include Stack-to-Power Capstone & Active Cover-Up alerts');
+assert.ok(v29Ftm.includes('AS14744') && v29Ftm.includes('1209 Orange Street') && v29Ftm.includes('DELETED_GITHUB_REPOS'), 'FollowTheMoney export must include Squad V/X/Z entities & cover-up alerts');
+assert.ok(/v(?:29|30|31)\.0/.test(String(v29Ledger.generator_system || '')) && String(v29Ledger.generator_system || '').includes('260-Agent'), 'LEDGER_ENTRY.json must record v31.0 260-Agent generator');
+
+// Verify Squad W clean passive exposure BENIGN_CONTROL dampening in PageRank
+const v29PrSection = v29F37.split('## 5. PROPERTY GRAPH PAGERANK')[1].split('## 6. SHANNON ENTROPY')[0];
+const v29Top10Only = v29PrSection.split('- **Benign Control Dampeners')[0];
+assert.ok(!v29Top10Only.includes('Clean Passive Exposure'), 'Squad W BENIGN_CONTROL node must be excluded from Top 10 Risk Contagion Chokepoints');
+assert.ok(v29PrSection.includes('Clean Passive Exposure'), 'Squad W BENIGN_CONTROL node must appear under Benign Control Dampeners');
+assert.ok(v29F37.includes('State AG Breach Velocity') || v29F37.includes('Active Cover-Up'), 'Bayesian posterior must incorporate v29.0 likelihood updates');
+assert.ok(
+  v29F38.includes('SquadW:BreachVelocityAndSurface') &&
+    v29F38.includes('SquadX:ShellAddressClustering') &&
+    v29F38.includes('SquadZ:ActiveCoverUpDetector'),
+  'Phase-5 ACH must evaluate Squads U-Z adversarial findings'
+);
+
+// Run unmodified offline verify_dossier.mjs on the complete 260-agent v29.0 dossier!
+const v29TempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovereign-v29-verify-'));
+try {
+  for (const file of v29Dossier.files) {
+    const outPath = path.join(v29TempDir, file.filename);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, file.content, 'utf8');
+  }
+  const verifyV29Out = execSync('node verify_dossier.mjs', { cwd: v29TempDir, encoding: 'utf8' });
+  assert.ok(
+    verifyV29Out.includes('ALL CRYPTOGRAPHIC & PROVENANCE CHECKS PASSED') || verifyV29Out.includes('PASS'),
+    'Unmodified verify_dossier.mjs must pass on complete 260-agent v29.0 dossier'
+  );
+} finally {
+  fs.rmSync(v29TempDir, { recursive: true, force: true });
+}
+
+console.log('[PASS] Phase 11.12: v29.0 260-Agent / 26-Squad Full-Alphabet Architecture (Squads U-Z, SSRF Guard, Files 47-52, Tech Snapshot, PageRank BENIGN_CONTROL, Bayesian/ACH, FtM & Unmodified verify_dossier.mjs) verified');
+
+// =============================================================================
+// PHASE 11.13: SQUAD O MULTI-CHAIN CRYPTO, SMART CONTRACT & AML FORENSICS ENGINE
+// =============================================================================
+console.log('=== [Phase 11.13] Verifying Squad O Multi-Chain Crypto, Smart Contract & AML Forensics Engine ===');
+
+assert.strictEqual(CRYPTO_FETCH_TIMEOUT_MS, 12_000, 'Squad O crypto engine must enforce 12000ms AbortSignal timeout');
+
+// 1. Target auto-classification across EVM, Solana, Bitcoin (bech32 & legacy), ENS, and Corporate entities
+assert.strictEqual(classifyOnChainTarget('0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045').classification, 'EVM_ADDRESS');
+assert.strictEqual(classifyOnChainTarget('vitalik.eth').classification, 'ENS_NAME');
+assert.strictEqual(classifyOnChainTarget('bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh').classification, 'BITCOIN_ADDRESS');
+assert.strictEqual(classifyOnChainTarget('1A1zP1eP5QGefi2DMPTfTL5SLmv7DivfNa').classification, 'BITCOIN_ADDRESS');
+assert.strictEqual(classifyOnChainTarget('EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v').classification, 'SOLANA_ADDRESS');
+assert.strictEqual(classifyOnChainTarget('Motorola Solutions').classification, 'CORPORATE_ENTITY');
+
+// 2. SSRF protection on custom Alchemy RPC env vars (blocks loopback/metadata/http://)
+const prevEthRpc = process.env.ALCHEMY_ETH_RPC_URL;
+try {
+  process.env.ALCHEMY_ETH_RPC_URL = 'http://169.254.169.254/latest/meta-data/';
+  assert.strictEqual(getSafeEvmRpcConfig().mode, 'PUBLIC_RPC_FALLBACK', 'SSRF guard must reject cloud metadata RPC URL');
+  process.env.ALCHEMY_ETH_RPC_URL = 'https://127.0.0.1:8545';
+  assert.strictEqual(getSafeEvmRpcConfig().mode, 'PUBLIC_RPC_FALLBACK', 'SSRF guard must reject loopback RPC URL');
+} finally {
+  if (prevEthRpc === undefined) delete process.env.ALCHEMY_ETH_RPC_URL;
+  else process.env.ALCHEMY_ETH_RPC_URL = prevEthRpc;
+}
+
+// 3. Solidity/ABI privileged backdoor scanner + EVM bytecode PUSH4 extractor + OpenChain 4byte decoder
+const backdoorsFound = scanSolidityAndAbiForBackdoors(
+  `contract ShadowToken {
+     modifier onlyOwner() { _; }
+     function mint(address to, uint256 amt) external onlyOwner {}
+     function blacklist(address u) external onlyOwner {}
+     function setFee(uint256 bps) external onlyOwner {}
+     function upgradeTo(address impl) external { impl.delegatecall(""); }
+   }`,
+  '[{"name":"pause","type":"function"},{"name":"burnFrom","type":"function"}]'
+);
+for (const expected of ['mint', 'burnFrom', 'blacklist', 'pause', 'setFee', 'upgradeTo', 'onlyOwner', 'delegatecall']) {
+  assert.ok(backdoorsFound.includes(expected), `Expected Solidity/ABI backdoor scanner to flag ${expected}`);
+}
+
+// Bytecode containing PUSH4 0x40c10f19 (mint) and PUSH4 0x8456cb59 (pause) plus PUSH2 immediate data containing 0x63
+const sampleBytecode = '0x60806040526163006340c10f19638456cb5900';
+const extractedPush4 = extractPush4SelectorsFromBytecode(sampleBytecode);
+assert.ok(extractedPush4.includes('0x40c10f19') && extractedPush4.includes('0x8456cb59'), 'PUSH4 extractor must decode real function selectors while skipping PUSH2 data');
+const decodedSelectors = parseOpenChainSelectorLookup({
+  result: {
+    function: {
+      '0x40c10f19': [{ name: 'mint(address,uint256)', filtered: false }],
+      '0x8456cb59': [{ name: 'pause()', filtered: false }],
+      '0x06fdde03': [{ name: 'name()', filtered: false }],
+    },
+  },
+});
+assert.strictEqual(decodedSelectors.filter((d) => d.isPrivilegedBackdoor).length, 2, 'OpenChain 4byte decoder must flag mint() and pause() as privileged backdoors');
+
+// 4. OFAC SDN screening (tainted counterparty vs clean BENIGN_CONTROL)
+const ofacIdx = buildOfacAddressIndex([
+  { currency: 'ETH', addresses: ['0x8589427373D6D84E98730D7795D8f6f8731FDA16'] },
+  { currency: 'XBT', addresses: ['12QtD5BFwRsdNsAZY76UVE1xyCGNTojH9h'] },
+  { currency: 'SOL', addresses: ['So11111111111111111111111111111111111111112'] },
+]);
+const taintedOfac = screenAddressesAgainstOfac(
+  ['0x1111111111111111111111111111111111111111'],
+  ['0x8589427373d6d84e98730d7795d8f6f8731fda16'],
+  ofacIdx
+);
+assert.strictEqual(taintedOfac.targetDirectMatch, false);
+assert.strictEqual(taintedOfac.taintedCounterparties.length, 1);
+assert.strictEqual(taintedOfac.cleanBenignControl, false);
+
+const cleanOfac = screenAddressesAgainstOfac(
+  ['0x2222222222222222222222222222222222222222'],
+  ['0x3333333333333333333333333333333333333333'],
+  ofacIdx
+);
+assert.strictEqual(cleanOfac.cleanBenignControl, true, 'Zero OFAC hits must classify as cleanBenignControl=true');
+
+// 5. GoPlus EVM/Solana, RugCheck, Sourcify v2, DexScreener, DeFiLlama, Mempool BTC, Etherscan/Alchemy & Solana whales
+const gpEvmAddr = parseGoPlusEvmAddressSecurity({ result: { mixer: '1', cybercrime: '1', sanctioned: '0' } });
+assert.strictEqual(gpEvmAddr?.isMalicious, true);
+assert.ok(gpEvmAddr?.flaggedRisks.includes('CRYPTO_MIXER'));
+
+const gpEvmTok = parseGoPlusEvmTokenSecurity(
+  {
+    result: {
+      '0x1111111111111111111111111111111111111111': {
+        token_name: 'ShadowCoin',
+        token_symbol: 'SHDW',
+        is_honeypot: '1',
+        hidden_owner: '1',
+        buy_tax: '0.15',
+        sell_tax: '0.25',
+      },
+    },
+  },
+  '0x1111111111111111111111111111111111111111'
+);
+assert.strictEqual(gpEvmTok?.isHoneypot, true);
+assert.strictEqual(gpEvmTok?.sellTaxPct, 25);
+
+const gpSolTok = parseGoPlusSolanaTokenSecurity(
+  {
+    result: {
+      EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: {
+        metadata: { name: 'RugMint', symbol: 'RUG' },
+        mintable: { status: '1' },
+        freezable: { status: '1' },
+        holders: [{ percent: '0.52' }, { percent: '0.12' }],
+      },
+    },
+  },
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+);
+assert.strictEqual(gpSolTok?.isMintable, true);
+assert.strictEqual(gpSolTok?.top10HolderPct, 64);
+
+const rcParsed = parseRugCheckSummary(
+  {
+    score: 820,
+    lpLockedPct: 5,
+    risks: [{ name: 'Top 10 holders high ownership', level: 'danger', description: 'Insider cluster holds 64%' }],
+  },
+  'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
+);
+assert.strictEqual(rcParsed?.riskLevel, 'DANGER');
+assert.ok((rcParsed?.insiderOrSniperWarnings.length ?? 0) >= 1);
+
+const sourcifyParsed = parseSourcifyV2Responses(
+  { results: [{ chainId: 1 }, { chainId: 42161 }] },
+  { match: 'exact_match', proxyResolution: { implementations: [{ address: '0x4444444444444444444444444444444444444444' }] } }
+);
+assert.deepStrictEqual(sourcifyParsed.chainsMatched, [1, 42161]);
+assert.strictEqual(sourcifyParsed.proxyImplementation, '0x4444444444444444444444444444444444444444');
+
+const dexParsed = parseDexScreenerResponse(
+  {
+    pairs: [
+      {
+        chainId: 'ethereum',
+        dexId: 'uniswap',
+        pairAddress: '0x9999',
+        baseToken: { name: 'ShadowCoin', symbol: 'SHDW' },
+        quoteToken: { symbol: 'WETH' },
+        priceUsd: '0.42',
+        liquidity: { usd: 5000 },
+        fdv: 5000000,
+        volume: { h24: 250000 },
+        txns: { h24: { buys: 90, sells: 0 } },
+        pairCreatedAt: 1700000000000,
+        url: 'https://dexscreener.com/ethereum/0x9999',
+      },
+    ],
+  },
+  '0x1111111111111111111111111111111111111111'
+);
+assert.strictEqual(dexParsed.pairsFound, 1);
+assert.ok(dexParsed.anomalies.some((a) => a.includes('ZERO_SELL_HONEYPOT_PATTERN')));
+assert.ok(dexParsed.anomalies.some((a) => a.includes('THIN_LIQUIDITY_FDV_RATIO')));
+
+const llamaMatched = matchDeFiLlamaHacksAndTreasuries(
+  [{ name: 'ShadowCoin Bridge', date: 1710000000, amount: 42000000, classification: 'Bridge', technique: 'Private Key Compromise', chain: ['Ethereum'], source: 'https://defillama.com/hacks' }],
+  [{ name: 'ShadowCoin (treasury)', symbol: 'SHDW', tvl: 15000000, tokenBreakdowns: { stablecoins: 4000000, majors: 3000000, ownTokens: 8000000 }, slug: 'shadowcoin' }],
+  'ShadowCoin'
+);
+assert.strictEqual(llamaMatched.matchedHacks.length, 1);
+assert.strictEqual(llamaMatched.matchedTreasuries.length, 1);
+
+const btcParsed = parseMempoolBitcoinAddressAndTxs(
+  { chain_stats: { funded_txo_sum: 250000000, spent_txo_sum: 100000000, tx_count: 14 }, mempool_stats: { funded_txo_sum: 0, spent_txo_sum: 0, tx_count: 0 } },
+  [{ txid: 'abc123def456', vin: [{ prevout: { scriptpubkey_address: 'bc1qsender0000000000000000000' } }], vout: [{ scriptpubkey_address: 'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh' }] }],
+  'bc1qxy2kgdygjrsqtzq2n0yrf2493p83kkfjhx0wlh'
+);
+assert.strictEqual(btcParsed?.balanceBtc, 1.5);
+assert.ok(btcParsed?.topCounterparties.includes('bc1qsender0000000000000000000'));
+
+const esFlow = parseEtherscanTxAndTokenHistory(
+  { result: [{ from: '0x1111111111111111111111111111111111111111', to: '0x8589427373d6d84e98730d7795d8f6f8731fda16', value: '2000000000000000000' }] },
+  { result: [] },
+  '0x1111111111111111111111111111111111111111'
+);
+assert.strictEqual(esFlow.topCounterparties[0].totalValueEth, 2);
+
+const alchFlow = parseAlchemyAssetTransfers(
+  { transfers: [{ from: '0x8589427373d6d84e98730d7795d8f6f8731fda16', to: '0x1111111111111111111111111111111111111111', category: 'external', value: 1.25 }] },
+  '0x1111111111111111111111111111111111111111'
+);
+assert.strictEqual(alchFlow[0].direction, 'IN');
+
+const solParsed = parseSolanaAccountAndWhales({
+  address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+  balanceResult: { value: 5_000_000_000 },
+  accountInfoResult: {
+    value: {
+      owner: 'TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA',
+      data: { parsed: { type: 'mint', info: { mintAuthority: 'Auth111', freezeAuthority: 'Freeze222', supply: '1000000', decimals: 2 } } },
+    },
+  },
+  largestAccountsResult: { value: [{ address: 'WhaleAcc111', uiAmount: 5500 }] },
+  signaturesResult: [{ signature: 'sig1' }, { signature: 'sig2' }],
+});
+assert.strictEqual(solParsed.solBalance, 5);
+assert.strictEqual(solParsed.top10HolderPct, 55, 'Expected Solana whale concentration to compute 55%');
+
+// 6. End-to-End Dossier, Executive Summary, FtM, Bayesian, ACH, BENIGN_CONTROL & Unmodified verify_dossier.mjs
+const squadORiskIntel: LiveBusinessIntelligence = {
+  ...v29FullIntel,
+  darkPoolCrypto: {
+    ...(v29FullIntel.darkPoolCrypto || {
+      form13fAndNportFilings: [],
+      mempoolTipHeight: 912345,
+      mempoolTipHash: '0000000000000000000123456789abcdef',
+      fastestBitcoinFeeSatVb: 12,
+      swapAndTreasurySignals: [],
+      derivativesVerdict: 'Multi-Chain Crypto & AML Forensics live.',
+    }),
+    onChainForensics: {
+      targetClassification: 'EVM_ADDRESS',
+      rawTarget: '0x1111111111111111111111111111111111111111',
+      resolvedEvmAddress: '0x1111111111111111111111111111111111111111',
+      resolvedEnsName: 'shadowtreasury.eth',
+      resolvedSolanaAddress: null,
+      resolvedBitcoinAddress: null,
+      rpcModes: { evmRpc: 'PUBLIC_RPC_FALLBACK', solanaRpc: 'PUBLIC_RPC_FALLBACK', contractAudit: 'SOURCIFY_ZERO_KEY' },
+      ofacSanctionsScreening: taintedOfac,
+      evmIntelligence: {
+        address: '0x1111111111111111111111111111111111111111',
+        ensName: 'shadowtreasury.eth',
+        ethBalanceEth: 42.5,
+        isContract: true,
+        bytecodeBytes: 4096,
+        contractVerified: false,
+        contractName: null,
+        compilerVersion: null,
+        proxyImplementation: '0x4444444444444444444444444444444444444444',
+        sourcifyChainsMatched: [1, 42161],
+        privilegedAdminBackdoors: backdoorsFound,
+        unverifiedSelectorsDecoded: decodedSelectors,
+        erc20TokenBalances: [],
+        topCounterparties: esFlow.topCounterparties,
+        normalTxCount: 1,
+        erc20TxCount: 0,
+        explorerUrl: 'https://etherscan.io/address/0x1111111111111111111111111111111111111111',
+      },
+      solanaIntelligence: solParsed,
+      bitcoinIntelligence: btcParsed,
+      goPlusAudit: { evmAddressSecurity: gpEvmAddr, evmTokenSecurity: gpEvmTok, solanaTokenSecurity: gpSolTok },
+      rugCheckAudit: rcParsed,
+      dexScreenerMarket: dexParsed,
+      defiLlamaIntel: { ...llamaMatched, liveCoinPrices: [{ coinKey: 'ethereum:0x1111', symbol: 'SHDW', priceUsd: 0.42, confidence: 0.99 }] },
+      cleanOnChainBenignControl: false,
+      riskFlags: ['OFAC_SDN_COUNTERPARTY_TAINT', 'GOPLUS_EVM_HONEYPOT', 'RUGCHECK_DANGER_RISK', 'UNVERIFIED_BYTECODE_BACKDOOR_SELECTORS(2)', 'WHALE_CONCENTRATION_TOP10_55%', 'DEFILLAMA_CONFIRMED_HACKS(1)'],
+      summaryVerdict: 'EVM Contract shadowtreasury.eth flagged with OFAC counterparty taint, GoPlus honeypot, RugCheck DANGER, unverified mint/pause selectors, 55% whale concentration & $42M DeFiLlama hack.',
+    },
+  },
+};
+
+const squadODossier = generateInvestigationDossier(
+  {
+    entity: '0x1111111111111111111111111111111111111111',
+    focus: ['crypto', 'smart-contract', 'aml', 'ofac'],
+    constraints: 'Squad O Multi-Chain Crypto & AML verification',
+    timeRange: '2020-2026',
+    geography: 'Global',
+    liveIntel: squadORiskIntel,
+  },
+  create260AgentSwarm('0x1111111111111111111111111111111111111111', squadORiskIntel),
+  1.4
+);
+const oF00 = squadODossier.files.find((f) => f.filename === '00_EXEC_SUMMARY.md')?.content || '';
+const oHtml = squadODossier.files.find((f) => f.filename === 'EXECUTIVE_BRIEF_PRINTABLE.html')?.content || '';
+const oF26 = squadODossier.files.find((f) => f.filename === '26_DARK_POOL_DERIVATIVES_AND_CRYPTO_TREASURY.md')?.content || '';
+const oF37 = squadODossier.files.find((f) => f.filename === '37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md')?.content || '';
+const oF38 = squadODossier.files.find((f) => f.filename === '38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md')?.content || '';
+const oFtm = squadODossier.files.find((f) => f.filename === 'evidence/followthemoney_graph.ftm.json')?.content || '';
+
+assert.ok(oF00.includes('On-Chain & Smart Contract Risk Summary') && oF00.includes('shadowtreasury.eth'), '00_EXEC_SUMMARY.md must promote compact On-Chain & Smart Contract Risk Summary');
+assert.ok(oHtml.includes('2C. On-Chain &amp; Smart Contract Risk Summary'), 'EXECUTIVE_BRIEF_PRINTABLE.html must include Section 2C On-Chain Risk Summary');
+assert.ok(oF26.includes('OFAC SDN DIGITAL CURRENCY') && oF26.includes('mint(address,uint256)') && oF26.includes('ShadowCoin Bridge'), 'File 26 must include full Multi-Chain Crypto, OpenChain 4byte, OFAC & DeFiLlama sections');
+assert.ok(oFtm.includes('shadowtreasury.eth') && oFtm.includes('OFAC SDN Digital Currency Match'), 'FollowTheMoney export must link wallets, ENS names, counterparties & OFAC taint');
+assert.ok(oF37.includes('OFAC SDN Digital Currency') && oF37.includes('Whale Concentration'), 'Sequential Bayesian posterior must include Squad O on-chain risk updates');
+assert.ok(oF38.includes('SquadO:OnChainAmlAndSmartContract'), 'Phase-5 ACH must evaluate Squad O multi-chain AML/smart-contract findings');
+
+// Verify clean on-chain check tags BENIGN_CONTROL and stays out of Top 10 PageRank Chokepoints
+const cleanCryptoIntel: LiveBusinessIntelligence = {
+  ...v29FullIntel,
+  darkPoolCrypto: {
+    form13fAndNportFilings: [],
+    mempoolTipHeight: 912345,
+    mempoolTipHash: '0000000000000000000123456789abcdef',
+    fastestBitcoinFeeSatVb: 10,
+    swapAndTreasurySignals: [],
+    derivativesVerdict: 'Clean on-chain audit.',
+    onChainForensics: {
+      targetClassification: 'CORPORATE_ENTITY',
+      rawTarget: 'Motorola Solutions',
+      resolvedEvmAddress: null,
+      resolvedEnsName: null,
+      resolvedSolanaAddress: null,
+      resolvedBitcoinAddress: null,
+      rpcModes: { evmRpc: 'PUBLIC_RPC_FALLBACK', solanaRpc: 'PUBLIC_RPC_FALLBACK', contractAudit: 'SOURCIFY_ZERO_KEY' },
+      ofacSanctionsScreening: cleanOfac,
+      evmIntelligence: null,
+      solanaIntelligence: null,
+      bitcoinIntelligence: null,
+      goPlusAudit: { evmAddressSecurity: null, evmTokenSecurity: null, solanaTokenSecurity: null },
+      rugCheckAudit: null,
+      dexScreenerMarket: { pairsFound: 0, topPairs: [], anomalies: [] },
+      defiLlamaIntel: { matchedHacks: [], matchedTreasuries: [], liveCoinPrices: [] },
+      cleanOnChainBenignControl: true,
+      riskFlags: [],
+      summaryVerdict: 'CLEAN BENIGN_CONTROL',
+    },
+  },
+};
+const cleanCryptoGraph = buildForensicPropertyGraph(
+  spacexMockTechEntity,
+  [],
+  cleanCryptoIntel,
+  computeHawkesAnalysis([])
+);
+const cleanCryptoNode = cleanCryptoGraph.nodes.find((n) => n.label.includes('Clean On-Chain OFAC'));
+assert.ok(cleanCryptoNode && isBenignControlNode(cleanCryptoNode), 'Clean Squad O on-chain audit must classify as BENIGN_CONTROL');
+const cleanCryptoPr = computeGraphPageRankAndContagion(cleanCryptoGraph.nodes, cleanCryptoGraph.edges);
+const cleanCryptoPrNode = cleanCryptoPr.find((n) => n.label.includes('Clean On-Chain OFAC'));
+assert.ok(
+  cleanCryptoPrNode && cleanCryptoPrNode.controlClassification === 'BENIGN_CONTROL' && cleanCryptoPrNode.contagionRisk <= 0.1,
+  'Clean Squad O BENIGN_CONTROL node must have dampened contagionRisk <= 0.10'
+);
+
+// Verify unmodified offline verify_dossier.mjs passes on the Squad O upgraded 260-agent dossier
+const oTempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'sovereign-squado-verify-'));
+try {
+  for (const file of squadODossier.files) {
+    const outPath = path.join(oTempDir, file.filename);
+    fs.mkdirSync(path.dirname(outPath), { recursive: true });
+    fs.writeFileSync(outPath, file.content, 'utf8');
+  }
+  const verifyOOut = execSync('node verify_dossier.mjs', { cwd: oTempDir, encoding: 'utf8' });
+  assert.ok(
+    verifyOOut.includes('ALL CRYPTOGRAPHIC & PROVENANCE CHECKS PASSED') || verifyOOut.includes('PASS'),
+    'Unmodified verify_dossier.mjs must pass on Squad O multi-chain dossier'
+  );
+} finally {
+  fs.rmSync(oTempDir, { recursive: true, force: true });
+}
+
+console.log('[PASS] Phase 11.13: Squad O Multi-Chain Crypto, Smart Contract & AML Forensics (Etherscan V2, Alchemy/PublicNode RPC, OFAC SDN, GoPlus, RugCheck, Sourcify v2, OpenChain 4byte, DexScreener, DeFiLlama, Mempool BTC, ENS, FtM, Bayesian/ACH, BENIGN_CONTROL & Unmodified verify_dossier.mjs) verified');
 
 if (requireBuild) {
   const distIndex = path.resolve(originalCwd, 'dist', 'index.html');

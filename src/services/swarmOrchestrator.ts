@@ -11,7 +11,7 @@ import {
   computeStylometricFingerprint
 } from './forensicMathEngine';
 
-export function create200AgentSwarm(
+export function create260AgentSwarm(
   targetEntity: string,
   liveIntel?: LiveBusinessIntelligence
 ): SwarmSquad[] {
@@ -72,9 +72,21 @@ export function create200AgentSwarm(
   const sqR = liveIntel?.squadHighlights.squadR || [];
   const sqS = liveIntel?.squadHighlights.squadS || [];
   const sqT = liveIntel?.squadHighlights.squadT || [];
+  const sqU = liveIntel?.squadHighlights.squadU || [];
+  const sqV = liveIntel?.squadHighlights.squadV || [];
+  const sqW = liveIntel?.squadHighlights.squadW || [];
+  const sqX = liveIntel?.squadHighlights.squadX || [];
+  const sqY = liveIntel?.squadHighlights.squadY || [];
+  const sqZ = liveIntel?.squadHighlights.squadZ || [];
   const pk = liveIntel?.proxyKinship;
   const pol = liveIntel?.politicalInfluence;
   const shInfra = liveIntel?.shadowInfraSubawards;
+  const clientTech = liveIntel?.clientTechArchitecture;
+  const cloudIxp = liveIntel?.cloudIxpCompute;
+  const breachVel = liveIntel?.breachVelocitySurface;
+  const shellAddr = liveIntel?.shellAddressClustering;
+  const adTech = liveIntel?.adTechTosSurveillance;
+  const capstone = liveIntel?.stackToPowerCapstone;
 
   const squadsConfig: {
     id: SquadId;
@@ -368,7 +380,7 @@ export function create200AgentSwarm(
         { id: 'P7', role: 'regulatory_capture_venue_correlator', agentName: 'Agent P7: Venue Charter Redomicile & Derivative Standing Correlator', focus: 'Linking state incorporation shifts (DE -> TX/NV) with judicial forum outcomes', sampleFinding: `Correlated incorporation vehicle (${liveIntel?.incorporationVehicle || legalDisplay}) against observed court venues.` },
         { id: 'P8', role: 'mds_judicial_panel_monitor', agentName: 'Agent P8: MDL Consolidation & Inter-Circuit Split Monitor', focus: 'Tracking Judicial Panel on Multidistrict Litigation (JPML) centralization motions', sampleFinding: `Tracked ${liveIntel?.regulatoryAndLegalDockets.length || 0} regulatory enforcement actions alongside CourtListener civil dockets.` },
         { id: 'P9', role: 'litigation_baserate_calibrator', agentName: 'Agent P9: Commercial Suit Base-Rate & Defendant-vs-Plaintiff Calibrator', focus: 'Separating routine defensive patent/IP suits from offensive SLAPP or venue-gaming spikes', sampleFinding: `Calibrated civil docket volume (${jud?.courtListenerDocketsCount || 0} hits) against ${liveIntel?.businessScale || matched.category} peer norms.` },
-        { id: 'P10', role: 'judicial_warfare_dossier_compiler', agentName: 'Agent P10: SLAPP, Forced Arbitration & Judge-Shopping Compiler', focus: 'Compiling 27_LEGAL_SLAPP_JUDGE_SHOPPING_AND_ARBITRATION.md', sampleFinding: `Compiled judicial forum concentration, SLAPP, and arbitration report for ${entityDisplay}.` }
+        { id: 'P10', role: 'judicial_warfare_dossier_compiler', agentName: 'Agent P10: Judicial Warfare, Enforcement & Global Statutory Authority Compiler', focus: 'Compiling 27_LEGAL_SLAPP_JUDGE_SHOPPING_AND_ARBITRATION.md, 54_PRIMARY_LEGAL_FILINGS_AND_GLOBAL_ENFORCEMENT.md, and Squad P live eCFR/CourtListener/UK/EUR-Lex authorities for 57_SOVEREIGN_GLOBAL_LEGAL_COUNSEL_BRIEF.md', sampleFinding: liveIntel?.globalLegalCounsel ? `Compiled judicial warfare, RECAP/enforcement, and live global statutory authorities (${liveIntel.globalLegalCounsel.ecfrRegulations.length} eCFR, ${liveIntel.globalLegalCounsel.controllingPrecedents.length} precedents, ${liveIntel.globalLegalCounsel.ukLegislationHits.length + liveIntel.globalLegalCounsel.ukCaseLawHits.length} UK, ${liveIntel.globalLegalCounsel.eurLexHits.length} EU) for ${entityDisplay}.` : `Compiled judicial forum concentration, SLAPP, arbitration, and statutory authority report for ${entityDisplay}.` }
       ]
     },
     {
@@ -439,8 +451,116 @@ export function create200AgentSwarm(
         { id: 'T6', role: 'pagerank_benign_dampener_verifier', agentName: 'Agent T6: PageRank Contagion & FIX 3 Benign-Control Dampening Verifier', focus: 'Ensuring passing controls dampen contagion and never outrank real risk nodes in Top 10 Chokepoints', sampleFinding: sqT[1] || `Verified FIX 3 benign-control dampening across expanded 20-squad Property Graph.` },
         { id: 'T7', role: 'source_tag_domain_gatekeeper', agentName: 'Agent T7: FIX 5 Domain-Level Source Tag & Stub Suppression Gatekeeper', focus: 'Validating [COURT_DOCKET]/[PATENT_IP] hosts and suppressing zero-hit stubs across all 200 agents', sampleFinding: `Enforced FIX 5 domain tag validation and SKIPPED_NOT_APPLICABLE stub suppression across Squads A–T.` },
         { id: 'T8', role: 'bayesian_logodds_calibrator', agentName: 'Agent T8: Sequential Log-Odds Bayesian & FRI Divergence Calibrator', focus: 'Integrating Squad Q/R/S Likelihood Ratios from 20% base prior and verifying FIX 6 divergence note', sampleFinding: `Calibrated Sequential Log-Odds Bayesian posterior with Squad Q/R/S evidence and Phase-5 ACH negative LRs.` },
-        { id: 'T9', role: 'stream_timeout_stability_auditor', agentName: 'Agent T9: Stream Keepalive, 12s AbortSignal & Crawl-Cap Auditor', focus: 'Auditing 15s SSE keepalive, 12s AbortSignal timeout cap, crt.sh<=50, pivots<=15, and SEC<=25 limits', sampleFinding: `Verified v27.0 stream stability bounds (crt.sh<=50, Phase-4 pivots<=15, SEC pulls<=25, 12s fetch timeout).` },
-        { id: 'T10', role: 'v27_redteam_master_compiler', agentName: 'Agent T10: v27.0 200-Agent Phase-5 Red-Team Master Compiler', focus: 'Finalizing Phase-5 ACH adjudication across 38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md and 37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md', sampleFinding: `Completed 200-agent / 20-squad Phase-5 Red-Team ACH and Bayesian synthesis for ${entityDisplay}.` }
+        { id: 'T9', role: 'stream_timeout_stability_auditor', agentName: 'Agent T9: Stream Keepalive, 12s AbortSignal & Crawl-Cap Auditor', focus: 'Auditing 15s SSE keepalive, 12s AbortSignal timeout cap, crt.sh<=50, pivots<=15, and SEC<=25 limits', sampleFinding: `Verified v29.0 stream stability bounds (crt.sh<=50, Phase-4 pivots<=15, SEC pulls<=25, 12s fetch timeout).` },
+        { id: 'T10', role: 'v27_redteam_master_compiler', agentName: 'Agent T10: v29.0 260-Agent Phase-5 Red-Team Master Compiler', focus: 'Finalizing Phase-5 ACH adjudication across 38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md and 37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md', sampleFinding: `Completed 260-agent / 26-squad Phase-5 Red-Team ACH and Bayesian synthesis for ${entityDisplay}.` }
+      ]
+    },
+    {
+      id: 'squadU',
+      name: 'Squad U – Client-Side Tech Architecture, JS Bundles & Mobile Trackers',
+      code: 'SQUAD-U',
+      focus: `Dissect live homepage HTML, up to 5 first-party JS bundles (<=512KB each), hidden API routes, feature flags, browser fingerprinting APIs, public OIDC/OpenAPI/well-known manifests, and Exodus Privacy mobile app trackers for ${entityDisplay}.`,
+      roles: [
+        { id: 'U1', role: 'homepage_script_harvester', agentName: 'Agent U1: First-Party Homepage & JS Bundle Harvester', focus: 'Fetching live homepage HTML and up to 5 first-party <script src> bundles capped at 512KB each', sampleFinding: sqU[0] || `Inspected ${clientTech?.jsBundlesInspected.length || 0} first-party JS bundle(s) on ${clientTech?.primaryDomain || 'target domain'}.` },
+        { id: 'U2', role: 'internal_api_route_extractor', agentName: 'Agent U2: Hidden Internal API Route & GraphQL Extractor', focus: 'Extracting /api/, /v1/, /v2/, and /graphql client routes from first-party JS bundles', sampleFinding: `Extracted ${clientTech?.discoveredApiRoutes.length || 0} internal client API route(s) (${(clientTech?.discoveredApiRoutes || []).slice(0, 3).join(', ') || 'none'}).` },
+        { id: 'U3', role: 'feature_flag_decoder', agentName: 'Agent U3: Feature Flag & Dark-Launch Switch Decoder', focus: 'Identifying LaunchDarkly/Split/custom feature flags and unannounced product switches', sampleFinding: `Identified ${clientTech?.discoveredFeatureFlags.length || 0} client feature flag(s).` },
+        { id: 'U4', role: 'staging_host_leak_scanner', agentName: 'Agent U4: Staging, Preprod & Internal Hostname Leak Scanner', focus: 'Detecting staging/dev/qa/corp/internal hostnames embedded in client JavaScript bundles', sampleFinding: `Detected ${clientTech?.stagingOrInternalHosts.length || 0} staging/internal host reference(s) in client assets.` },
+        { id: 'U5', role: 'browser_fingerprint_auditor', agentName: 'Agent U5: Canvas, WebGL, AudioContext & Service Worker Auditor', focus: 'Detecting browser fingerprinting and covert persistence APIs (Canvas, WebGL, AudioContext, Service Worker, sendBeacon)', sampleFinding: sqU[1] || `Detected ${clientTech?.fingerprintingSignatures.length || 0} browser fingerprinting/telemetry signature(s).` },
+        { id: 'U6', role: 'openapi_swagger_prober', agentName: 'Agent U6: Public OpenAPI, Swagger & OIDC Schema Prober', focus: 'Passively probing /openapi.json, /swagger.json, and /.well-known/openid-configuration', sampleFinding: `Probed ${clientTech?.publicSchemaEndpoints.length || 0} public schema endpoints (${clientTech?.publicSchemaEndpoints.filter((e) => e.exposed).length || 0} exposed).` },
+        { id: 'U7', role: 'mobile_wellknown_mapper', agentName: 'Agent U7: Android assetlinks.json & iOS AASA Bundle Mapper', focus: 'Parsing /.well-known/assetlinks.json and /.well-known/apple-app-site-association for mobile bundle IDs', sampleFinding: `Mapped ${clientTech?.mobileAppIds.androidPackages.length || 0} Android package(s) and ${clientTech?.mobileAppIds.iosBundleIds.length || 0} iOS bundle ID(s).` },
+        { id: 'U8', role: 'exodus_privacy_tracker_auditor', agentName: 'Agent U8: Exodus Privacy Android Surveillance Tracker Auditor', focus: 'Cross-referencing extracted Android package handles against Exodus Privacy tracker telemetry', sampleFinding: sqU[2] || `Audited ${clientTech?.exodusPrivacyReports.length || 0} Android app report(s) on Exodus Privacy (${(clientTech?.exodusPrivacyReports || []).reduce((s, r) => s + r.trackersCount, 0)} embedded trackers).` },
+        { id: 'U9', role: 'client_auth_flow_verifier', agentName: 'Agent U9: Client Auth Surface & Token Flow Boundary Verifier', focus: 'Evaluating OIDC/OAuth client auth discovery boundaries and mobile deep-link trust surfaces', sampleFinding: `Evaluated client authentication discovery and deep-link trust boundaries for ${entityDisplay}.` },
+        { id: 'U10', role: 'client_tech_architecture_compiler', agentName: 'Agent U10: Client Tech Stack & Mobile Tracker Compiler', focus: 'Compiling 47_CLIENT_TECH_STACK_JS_BUNDLES_AND_MOBILE_TRACKERS.md and client_tech_architecture_payload.json', sampleFinding: `Compiled full client tech architecture and mobile tracker report for ${entityDisplay}.` }
+      ]
+    },
+    {
+      id: 'squadV',
+      name: 'Squad V – Cloud, IXP Colocation, AI Compute & Hardware Backbone',
+      code: 'SQUAD-V',
+      focus: `Query PeeringDB API, Hugging Face Hub API, Docker Hub API, and DNS/ASN cloud CNAME chains to map bare-metal IXPs, Equinix/Digital Realty colocation facilities, Tier-1 transit, AI model weights, and container infrastructure for ${entityDisplay}.`,
+      roles: [
+        { id: 'V1', role: 'peeringdb_asn_mapper', agentName: 'Agent V1: PeeringDB ASN Network & Peering Policy Mapper', focus: 'Querying PeeringDB /api/net by ASN to audit network traffic class and peering policy', sampleFinding: sqV[0] || `Mapped ${cloudIxp?.peeringDbNetworks.length || 0} PeeringDB ASN network record(s).` },
+        { id: 'V2', role: 'ixp_exchange_enumerator', agentName: 'Agent V2: Internet Exchange Point (IXP) Backbone Enumerator', focus: 'Enumerating physical Internet Exchange Points (DE-CIX, Equinix IX, LINX, Any2IX) peered by target ASNs', sampleFinding: `Enumerated ${cloudIxp?.ixpExchanges.length || 0} Internet Exchange Point(s) via PeeringDB.` },
+        { id: 'V3', role: 'colocation_facility_tracker', agentName: 'Agent V3: Bare-Metal Colocation Facility Tracker', focus: 'Mapping physical data-center colocation footprints (Equinix, Digital Realty, CoreSite) via PeeringDB org & netfac', sampleFinding: sqV[1] || `Identified ${cloudIxp?.colocationFacilities.length || 0} bare-metal colocation facility footprint(s).` },
+        { id: 'V4', role: 'tier1_transit_auditor', agentName: 'Agent V4: Tier-1 Upstream Transit Dependency Auditor', focus: 'Auditing Tier-1 transit choke points (NTT, Lumen, Cogent, Arelion, Zayo, Equinix)', sampleFinding: `Cataloged ${cloudIxp?.tier1TransitDependencies.length || 0} Tier-1 transit/colocation dependency anchor(s).` },
+        { id: 'V5', role: 'huggingface_ai_weights_auditor', agentName: 'Agent V5: Hugging Face Hub AI Models & Base Weights Auditor', focus: 'Querying Hugging Face Hub API for published AI models, base weights, downloads, and pipeline tags', sampleFinding: sqV[2] || `Indexed ${cloudIxp?.huggingFaceModels.length || 0} public Hugging Face AI model(s).` },
+        { id: 'V6', role: 'dockerhub_container_auditor', agentName: 'Agent V6: Docker Hub Container Registry & Pull Velocity Auditor', focus: 'Querying Docker Hub v2 API for public container images, runtime stacks, and pull telemetry', sampleFinding: `Indexed ${cloudIxp?.dockerHubRepos.length || 0} Docker Hub container repository(ies).` },
+        { id: 'V7', role: 'cloud_cdn_cname_tracer', agentName: 'Agent V7: Multi-Cloud & Edge CDN CNAME Chain Tracer', focus: 'Mapping AWS, GCP, Azure, Cloudflare, Akamai, and Fastly CNAME/NS/ASN chains', sampleFinding: `Mapped ${cloudIxp?.cloudCdnChains.length || 0} cloud/CDN dependency chain(s).` },
+        { id: 'V8', role: 'sovereign_compute_concentration', agentName: 'Agent V8: Sovereign Compute & Hyperscaler Concentration Analyst', focus: 'Measuring single-cloud/CDN concentration risk across bare-metal and edge layers', sampleFinding: `Evaluated hyperscaler & bare-metal compute concentration for ${entityDisplay}.` },
+        { id: 'V9', role: 'hardware_firmware_supply_linker', agentName: 'Agent V9: Hardware RF & Cloud Compute Supply-Chain Linker', focus: 'Linking Squad V compute/IXP infrastructure with Squad N/FCC hardware telemetry', sampleFinding: `Linked compute backbone telemetry with disclosed hardware and supply-chain profiles.` },
+        { id: 'V10', role: 'cloud_ixp_compute_compiler', agentName: 'Agent V10: Cloud, IXP Colocation & AI Compute Compiler', focus: 'Compiling 48_CLOUD_IXP_COLOCATION_AND_AI_COMPUTE_BACKBONE.md and cloud_ixp_compute_payload.json', sampleFinding: `Compiled Cloud, IXP Colocation & AI Compute Backbone report for ${entityDisplay}.` }
+      ]
+    },
+    {
+      id: 'squadW',
+      name: 'Squad W – Breach Velocity, State AG Disclosures & Exposed Surface',
+      code: 'SQUAD-W',
+      focus: `Query Washington State AG Socrata & CA/TX AG public breach records to compute consumer notification-delay gaps, passively verify /.git/HEAD, /.env, /robots.txt admin paths, and /.well-known/security.txt, and correlate with KEV/VT/OTX for ${entityDisplay}.`,
+      roles: [
+        { id: 'W1', role: 'wa_state_ag_socrata_harvester', agentName: 'Agent W1: Washington State AG Socrata Breach Harvester', focus: 'Querying data.wa.gov public breach dataset for confirmed breach dates and resident counts', sampleFinding: sqW[0] || `Queried WA/CA/TX State AG breach registries (${breachVel?.stateAgBreaches.length || 0} disclosure(s) matched).` },
+        { id: 'W2', role: 'ca_tx_state_ag_dorker', agentName: 'Agent W2: CA & TX Attorney General Breach Notice Indexer', focus: 'Indexing California OAG and Texas AG public data-breach disclosure filings', sampleFinding: `Indexed ${breachVel?.stateAgBreaches.filter((b) => b.sourceAgency !== 'WA_STATE_AG').length || 0} CA/TX State AG breach reference(s).` },
+        { id: 'W3', role: 'breach_notification_delay_analyst', agentName: 'Agent W3: Breach-to-Notification Delay Gap Analyst', focus: 'Calculating exact days elapsed between breach onset and public consumer disclosure', sampleFinding: sqW[1] || `Computed breach notification delay velocity (max delay: ${breachVel?.maxNotificationDelayDays ?? 'N/A'} days; total affected: ${(breachVel?.totalAffectedResidents || 0).toLocaleString('en-US')}).` },
+        { id: 'W4', role: 'git_head_passive_checker', agentName: 'Agent W4: Passive /.git/HEAD Repository Exposure Checker', focus: 'Non-intrusively checking /.git/HEAD for exposed source control metadata (clean -> BENIGN_CONTROL)', sampleFinding: `Verified /.git/HEAD passive exposure check (${breachVel?.passiveExposureChecks.find((c) => c.path === '/.git/HEAD')?.classification || 'BENIGN_CONTROL'}).` },
+        { id: 'W5', role: 'dotenv_passive_checker', agentName: 'Agent W5: Passive /.env Config Exposure Checker', focus: 'Non-intrusively checking /.env for leaked configuration metadata without storing secrets', sampleFinding: `Verified /.env passive exposure check (${breachVel?.passiveExposureChecks.find((c) => c.path === '/.env')?.classification || 'BENIGN_CONTROL'}).` },
+        { id: 'W6', role: 'robots_admin_path_auditor', agentName: 'Agent W6: /robots.txt Disallowed Admin & Staging Path Auditor', focus: 'Extracting disallowed admin, staging, internal, and debug routes from /robots.txt', sampleFinding: `Extracted ${breachVel?.robotsDisallowedAdminPaths.length || 0} sensitive disallowed admin/staging path(s) from /robots.txt.` },
+        { id: 'W7', role: 'security_txt_rfc9116_auditor', agentName: 'Agent W7: RFC 9116 /.well-known/security.txt Disclosure Auditor', focus: 'Auditing vulnerability disclosure readiness via /.well-known/security.txt', sampleFinding: `RFC 9116 security.txt status: ${breachVel?.securityTxtFound ? 'PRESENT' : 'NOT_PUBLISHED'}.` },
+        { id: 'W8', role: 'kev_vt_otx_breach_correlator', agentName: 'Agent W8: CISA KEV, VirusTotal & OTX Breach Surface Correlator', focus: 'Correlating State AG breach disclosures with CISA KEV, VirusTotal verdicts, and OTX pulses', sampleFinding: sqW[2] || `Correlated KEV=${breachVel?.correlatedKevCount || 0}, VT Malicious=${breachVel?.correlatedVtMalicious || 0}, OTX Pulses=${breachVel?.correlatedOtxPulses || 0}.` },
+        { id: 'W9', role: 'benign_surface_control_tagger', agentName: 'Agent W9: Clean Surface BENIGN_CONTROL Dampener Gatekeeper', focus: 'Tagging clean passive exposure checks as BENIGN_CONTROL to prevent false PageRank inflation', sampleFinding: `Surface hygiene control status: ${breachVel?.cleanExposureBenignControl ? 'BENIGN_CONTROL (clean)' : 'ELEVATED_EXPOSURE'}.` },
+        { id: 'W10', role: 'breach_velocity_compiler', agentName: 'Agent W10: Breach Velocity & Exposed Surface Compiler', focus: 'Compiling 49_BREACH_VELOCITY_STATE_AG_AND_EXPOSED_SURFACE.md and breach_velocity_payload.json', sampleFinding: `Compiled Breach Velocity, State AG Disclosures & Exposed Surface report for ${entityDisplay}.` }
+      ]
+    },
+    {
+      id: 'squadX',
+      name: 'Squad X – Real Estate, Shell-Address Clustering & Infrastructure Permits',
+      code: 'SQUAD-X',
+      focus: `Cluster GLEIF Level-2 subsidiaries, SEC Exhibit 21.1 entities, UK Companies House filings, and Form D vehicles by normalized street address/ZIP to unmask mail-drop registered-agent shell hubs vs. operational HQ, plus zoning/PUC permits for ${entityDisplay}.`,
+      roles: [
+        { id: 'X1', role: 'address_normalizer_clusterer', agentName: 'Agent X1: Street Address & ZIP Normalization Clusterer', focus: 'Normalizing street/suite/ZIP addresses across GLEIF, Exhibit 21.1, and Form D filings', sampleFinding: sqX[0] || `Clustered ${shellAddr?.clusteredAddresses.length || 0} unique corporate/subsidiary address node(s).` },
+        { id: 'X2', role: 'delaware_maildrop_detector', agentName: 'Agent X2: Delaware & Registered-Agent Mail-Drop Detector', focus: 'Detecting 1209 Orange St Wilmington DE, 251 Little Falls Dr, and registered-agent shell clusters', sampleFinding: sqX[1] || `Flagged ${shellAddr?.mailDropClusterCount || 0} registered-agent mail-drop shell cluster(s).` },
+        { id: 'X3', role: 'offshore_fiduciary_suite_mapper', agentName: 'Agent X3: Cayman, Jersey & Luxembourg Fiduciary Suite Mapper', focus: 'Identifying offshore fiduciary suites (Ugland House, St. Helier, Kirchberg, BVI) across subsidiaries', sampleFinding: `Detected ${shellAddr?.offshoreSuiteCount || 0} offshore fiduciary suite cluster(s).` },
+        { id: 'X4', role: 'operational_hq_verifier', agentName: 'Agent X4: Physical Operational Headquarters Boundary Verifier', focus: 'Distinguishing verified operational headquarters from legal incorporation mail-drops', sampleFinding: `Anchored operational HQ at ${shellAddr?.physicalHqAddress || liveIntel?.headquarters || countryDisplay}.` },
+        { id: 'X5', role: 'municipal_zoning_auditor', agentName: 'Agent X5: Municipal Zoning & Land-Use Filing Auditor', focus: 'Tracking municipal zoning variances and land acquisition notices tied to target operations', sampleFinding: `Tracked ${shellAddr?.infrastructurePermitsAndPuc.filter((p) => p.sourceCategory === 'MUNICIPAL_ZONING').length || 0} municipal zoning record(s).` },
+        { id: 'X6', role: 'state_puc_power_water_analyst', agentName: 'Agent X6: State PUC Power, Substation & Water Docket Analyst', focus: 'Auditing state Public Utility Commission power/substation/water allocation dockets', sampleFinding: sqX[2] || `Audited ${shellAddr?.infrastructurePermitsAndPuc.filter((p) => p.sourceCategory === 'STATE_PUC_POWER_WATER').length || 0} state PUC power/water docket(s).` },
+        { id: 'X7', role: 'datacenter_buildout_tracker', agentName: 'Agent X7: Industrial & Hyperscale Data-Center Permit Tracker', focus: 'Detecting unannounced data-center and industrial facility construction permits', sampleFinding: `Tracked ${shellAddr?.infrastructurePermitsAndPuc.filter((p) => p.sourceCategory === 'INDUSTRIAL_DATACENTER_PERMIT').length || 0} industrial/data-center permit signal(s).` },
+        { id: 'X8', role: 'uk_foreign_address_correlator', agentName: 'Agent X8: UK Companies House & Cross-Border Address Correlator', focus: 'Correlating UK Companies House registered office addresses with offshore parent entities', sampleFinding: `Correlated cross-border registered addresses against canonical entity tree.` },
+        { id: 'X9', role: 'shell_vs_physical_ratio_scorer', agentName: 'Agent X9: Shell-Address Concentration vs. Operational Ratio Scorer', focus: 'Quantifying corporate shell-hub clustering density for Bayesian & ACH scoring', sampleFinding: `Scored address shell-to-physical ratio across ${shellAddr?.clusteredAddresses.length || 0} cluster(s).` },
+        { id: 'X10', role: 'shell_address_infrastructure_compiler', agentName: 'Agent X10: Shell-Address Clustering & Physical Infrastructure Compiler', focus: 'Compiling 50_SHELL_ADDRESS_CLUSTERING_AND_PHYSICAL_INFRASTRUCTURE.md', sampleFinding: `Compiled Shell-Address Clustering & Physical Infrastructure report for ${entityDisplay}.` }
+      ]
+    },
+    {
+      id: 'squadY',
+      name: 'Squad Y – Ad-Tech Pipelines, Dark Patterns & Surveillance Monetization',
+      code: 'SQUAD-Y',
+      focus: `Parse live /ads.txt, /app-ads.txt, and /sellers.json, diff Wayback /terms & /privacy snapshots for forced arbitration, class-action waiver, biometric telemetry, and AI training clause insertions, and query ToS;DR v4 + EU DSA/GDPR indexes for ${entityDisplay}.`,
+      roles: [
+        { id: 'Y1', role: 'ads_txt_exchange_parser', agentName: 'Agent Y1: Live /ads.txt & /app-ads.txt Exchange Parser', focus: 'Parsing live programmatic ad exchanges and SSP accounts from /ads.txt and /app-ads.txt', sampleFinding: sqY[0] || `Parsed ${adTech?.adsTxtDirectCount || 0} DIRECT and ${adTech?.adsTxtResellerCount || 0} RESELLER programmatic exchange entry(ies).` },
+        { id: 'Y2', role: 'sellers_json_reseller_auditor', agentName: 'Agent Y2: IAB /sellers.json Supply-Chain Reseller Auditor', focus: 'Auditing /sellers.json intermediaries and publisher-to-reseller monetization chains', sampleFinding: `Audited ${adTech?.sellersJsonSellersCount || 0} seller entry(ies) in /sellers.json.` },
+        { id: 'Y3', role: 'wayback_terms_arbitration_differ', agentName: 'Agent Y3: Wayback /terms Forced Arbitration & Class-Waiver Differ', focus: 'Diffing historical Wayback /terms snapshots for forced arbitration and class-action waiver insertions', sampleFinding: sqY[1] || `Detected ${adTech?.policyWaybackClauseDiffs.filter((d) => d.clauseCategory === 'FORCED_ARBITRATION' || d.clauseCategory === 'CLASS_ACTION_WAIVER').length || 0} arbitration/class-waiver clause diff(s).` },
+        { id: 'Y4', role: 'wayback_privacy_biometric_differ', agentName: 'Agent Y4: Wayback /privacy Biometric & Telemetry Expansion Differ', focus: 'Detecting biometric, voiceprint, faceprint, and precise geolocation collection insertions in /privacy', sampleFinding: `Detected ${adTech?.policyWaybackClauseDiffs.filter((d) => d.clauseCategory === 'BIOMETRIC_TELEMETRY').length || 0} biometric/telemetry clause signal(s).` },
+        { id: 'Y5', role: 'ai_training_rights_clause_detector', agentName: 'Agent Y5: Silent AI Model-Training Rights Clause Detector', focus: 'Flagging newly inserted user-data AI/ML model training rights clauses across /terms and /privacy', sampleFinding: `Detected ${adTech?.policyWaybackClauseDiffs.filter((d) => d.clauseCategory === 'AI_MODEL_TRAINING').length || 0} AI model-training rights clause signal(s).` },
+        { id: 'Y6', role: 'tosdr_public_api_scorer', agentName: 'Agent Y6: ToS;DR Public API v4 Consumer-Rights Scorer', focus: 'Querying api.tosdr.org/search/v4/ for independent consumer-rights grades and case flags', sampleFinding: sqY[2] || `ToS;DR rating grade: ${adTech?.tosdrSummary?.ratingGrade || 'Unrated'} (${adTech?.tosdrSummary?.serviceName || entityDisplay}).` },
+        { id: 'Y7', role: 'eu_dsa_gdpr_enforcement_tracker', agentName: 'Agent Y7: EU DSA, GDPR, CNIL & Irish DPC Enforcement Tracker', focus: 'Indexing EU Digital Services Act, GDPR, CNIL, and Irish DPC enforcement and dark-pattern notices', sampleFinding: `Indexed ${adTech?.euDsaGdprNotices.length || 0} EU DSA / GDPR regulatory notice(s).` },
+        { id: 'Y8', role: 'surveillance_monetization_linker', agentName: 'Agent Y8: Mobile Tracker-to-Ad-Tech Monetization Linker', focus: 'Linking Squad U mobile SDK trackers with Squad Y programmatic SSP/reseller pipelines', sampleFinding: `Linked client/mobile tracker telemetry with programmatic ad-tech monetization footprint.` },
+        { id: 'Y9', role: 'dark_pattern_rights_erosion_scorer', agentName: 'Agent Y9: Consumer-Rights Erosion & Dark-Pattern Risk Scorer', focus: 'Scoring cumulative consumer-rights erosion across ToS diffs, ToS;DR, and ad-tech resellers', sampleFinding: `Scored consumer-rights erosion across ${adTech?.policyWaybackClauseDiffs.length || 0} audited policy clause(s).` },
+        { id: 'Y10', role: 'adtech_tos_surveillance_compiler', agentName: 'Agent Y10: Ad-Tech Supply Chain & ToS Diff Compiler', focus: 'Compiling 51_ADTECH_SUPPLY_CHAIN_DARK_PATTERNS_AND_TOS_DIFF.md', sampleFinding: `Compiled Ad-Tech Supply Chain, Dark Patterns & ToS Diff report for ${entityDisplay}.` }
+      ]
+    },
+    {
+      id: 'squadZ',
+      name: 'Squad Z – Sovereign Capstone: Stack-to-Power Synthesis & Active Cover-Up Detector',
+      code: 'SQUAD-Z',
+      focus: `Synthesize the end-to-end Full Stack-to-Power Architecture Map (V -> U/Y -> G/W -> Q/X -> P/R), run the Active Cover-Up / Scrubbing Detector (T1 SQLite Vault vs. T2 live run), emit FollowTheMoney capstone links, and promote Executive Snapshot metrics for ${entityDisplay}.`,
+      roles: [
+        { id: 'Z1', role: 'baremetal_to_client_synthesizer', agentName: 'Agent Z1: Bare-Metal IXP (V) -> Client JS/Ad-Tech (U/Y) Linker', focus: 'Connecting physical IXP/colocation compute infrastructure directly to client JS/mobile telemetry', sampleFinding: sqZ[0] || `Linked ${capstone?.executiveSnapshotMetrics.ixpAndColoCount || 0} IXP/Colo nodes to ${capstone?.executiveSnapshotMetrics.jsEndpointsCount || 0} JS endpoints & ${capstone?.executiveSnapshotMetrics.adTechResellersCount || 0} ad-tech resellers.` },
+        { id: 'Z2', role: 'breach_to_shell_correlator', agentName: 'Agent Z2: Breach Exposure (G/W) -> Shell-Address Clusters (Q/X) Linker', focus: 'Correlating State AG breach delays and cyber exposure with corporate mail-drop/offshore liability shields', sampleFinding: `Correlated breach delay (${capstone?.executiveSnapshotMetrics.maxBreachDelayDays ?? 'N/A'}d max) with ${capstone?.executiveSnapshotMetrics.mailDropShellClustersCount || 0} shell/offshore address cluster(s).` },
+        { id: 'Z3', role: 'shell_to_power_lobbying_linker', agentName: 'Agent Z3: Shell Clusters (Q/X) -> Lobbying, PACs & Courts (P/R) Linker', focus: 'Mapping corporate holding shells directly into Senate LDA lobbying, OpenFEC PACs, and federal courts', sampleFinding: `Unified corporate shell topology with political lobbying, PACs, and CourtListener federal dockets.` },
+        { id: 'Z4', role: 'coverup_github_deletion_detector', agentName: 'Agent Z4: T1 vs. T2 Deleted GitHub Repository Cover-Up Detector', focus: 'Comparing SQLite Vault T1 GitHub repo count against T2 run to detect post-investigation deletions', sampleFinding: sqZ[1] || `Cover-Up Detector baseline: ${capstone?.coverUpBaselineStatus || 'INITIAL_BASELINE_CAPTURED'} (${capstone?.activeCoverUpAlerts.filter((a) => a.alertType === 'DELETED_GITHUB_REPOS').length || 0} GitHub deletion alert(s)).` },
+        { id: 'Z5', role: 'coverup_wiki_whitewash_detector', agentName: 'Agent Z5: T1 vs. T2 Sudden Wikipedia Whitewash Escalation Detector', focus: 'Detecting post-investigation Wikipedia whitewash or edit-war escalations against SQLite Vault baseline', sampleFinding: `Wikipedia whitewash escalation alerts: ${capstone?.activeCoverUpAlerts.filter((a) => a.alertType === 'SUDDEN_WIKIPEDIA_WHITEWASH').length || 0}.` },
+        { id: 'Z6', role: 'coverup_tls_rotation_detector', agentName: 'Agent Z6: T1 vs. T2 TLS X.509 Certificate Rotation Detector', focus: 'Flagging unexpected TLS certificate fingerprint rotations between T1 and T2 runs', sampleFinding: `TLS certificate rotation alerts: ${capstone?.activeCoverUpAlerts.filter((a) => a.alertType === 'TLS_CERT_ROTATION').length || 0}.` },
+        { id: 'Z7', role: 'coverup_policy_scrub_detector', agentName: 'Agent Z7: Scrubbed Policy & HTTP 200->404/410 Silent Deletion Detector', focus: 'Flagging scrubbed legal/privacy pages and silent URL deletions occurring after investigation start', sampleFinding: sqZ[2] || `Scrubbed policy / silent deletion alerts: ${capstone?.activeCoverUpAlerts.filter((a) => a.alertType === 'SCRUBBED_POLICY_OR_SILENT_DELETION').length || 0}.` },
+        { id: 'Z8', role: 'capstone_ftm_graph_exporter', agentName: 'Agent Z8: Capstone FollowTheMoney (.ftm.json) Stack-to-Power Exporter', focus: 'Serializing Stack-to-Power infrastructure, shell clusters, and cover-up alerts into FollowTheMoney NDJSON', sampleFinding: `Exported Squad Z Stack-to-Power entities into evidence/followthemoney_graph.ftm.json.` },
+        { id: 'Z9', role: 'exec_snapshot_promoter', agentName: 'Agent Z9: Executive Summary & Printable Brief Snapshot Promoter', focus: 'Promoting compact Tech Architecture & Attack-Surface Snapshot into 00_EXEC_SUMMARY.md and EXECUTIVE_BRIEF_PRINTABLE.html', sampleFinding: `Promoted v29.0 Tech Architecture & Attack-Surface Snapshot to Executive Summary and Printable Brief.` },
+        { id: 'Z10', role: 'sovereign_capstone_compiler', agentName: 'Agent Z10: v31.0 Full-Alphabet Sovereign Capstone & Global Legal Counsel Compiler', focus: 'Compiling 52_SOVEREIGN_STACK_TO_POWER_CAPSTONE.md, 56_CROSS_CASE_ENTITY_COLLISIONS.md, and 57_SOVEREIGN_GLOBAL_LEGAL_COUNSEL_BRIEF.md across the sealed 260-agent / 26-squad A-Z matrix', sampleFinding: liveIntel?.globalLegalCounsel ? `Completed v31.0 Sovereign Capstone & Global Legal Counsel synthesis (${liveIntel.globalLegalCounsel.overallLegalExposureTier} · ${liveIntel.globalLegalCounsel.statutoryExposureMatrix.length} statutory rows · FRE 901/902(13)-(14) sealed) across all 26 squads (260 agents) for ${entityDisplay}.` : `Completed v31.0 Full-Alphabet Sovereign Capstone & Global Legal Counsel synthesis across all 26 squads (260 agents) for ${entityDisplay}.` }
       ]
     }
   ];
@@ -498,12 +618,14 @@ export function create200AgentSwarm(
 }
 
 export function isCompilerAgent(agent: Pick<AgentTask, 'id' | 'role'>): boolean {
-  return /^[A-T]10$/i.test(agent.id) || agent.role === 'summary_writer' || /_compiler$/i.test(agent.role);
+  return /^[A-Z]10$/i.test(agent.id) || agent.role === 'summary_writer' || /_compiler$/i.test(agent.role);
 }
 
-export const create160AgentSwarm = create200AgentSwarm;
-export const create120AgentSwarm = create200AgentSwarm;
-export const create80AgentSwarm = create200AgentSwarm;
-export const create50AgentSwarm = create200AgentSwarm;
+export const create200AgentSwarm = create260AgentSwarm;
+export const create160AgentSwarm = create260AgentSwarm;
+export const create120AgentSwarm = create260AgentSwarm;
+export const create80AgentSwarm = create260AgentSwarm;
+export const create50AgentSwarm = create260AgentSwarm;
+
 
 

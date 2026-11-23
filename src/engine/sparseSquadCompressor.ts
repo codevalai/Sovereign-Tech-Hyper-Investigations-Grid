@@ -2114,6 +2114,148 @@ export function extractGroundedHitsByAgent(
     }
   }
 
+  if (squadId === 'squadU' && liveIntel.clientTechArchitecture) {
+    const ct = liveIntel.clientTechArchitecture;
+    for (const b of ct.jsBundlesInspected.slice(0, 5)) {
+      pushToAgent('U1', 'Client_JS_Bundle', b.url, `Inspected ${b.bytesRead}B bundle (${b.apiRoutesFound.length} API routes, ${b.featureFlagsFound.length} flags)`, 'INFO', b.url);
+    }
+    for (const r of ct.discoveredApiRoutes.slice(0, 6)) {
+      pushToAgent('U2', 'Client_API_Route', r, `Extracted client internal API route: ${r}`, 'INFO');
+    }
+    for (const fl of ct.discoveredFeatureFlags.slice(0, 5)) {
+      pushToAgent('U3', 'Client_Feature_Flag', fl, `Client feature flag discovered: ${fl}`, 'INFO');
+    }
+    for (const sh of ct.stagingOrInternalHosts.slice(0, 5)) {
+      pushToAgent('U4', 'Staging_Host_Leak', sh, `Staging/internal host leaked in JS bundle: ${sh}`, 'MEDIUM');
+    }
+    for (const fp of ct.fingerprintingSignatures.slice(0, 6)) {
+      pushToAgent('U5', 'Browser_Fingerprinting', fp, `Client fingerprinting/telemetry signature: ${fp}`, 'MEDIUM');
+    }
+    for (const ep of ct.publicSchemaEndpoints.filter((e) => e.exposed).slice(0, 5)) {
+      pushToAgent('U6', 'Public_Schema_Endpoint', ep.path, `${ep.path}: ${ep.summary}`, 'MEDIUM', ep.url);
+    }
+    for (const pkg of ct.mobileAppIds.androidPackages.slice(0, 4)) {
+      pushToAgent('U7', 'Mobile_App_Android', pkg, `Android package ID via assetlinks/store: ${pkg}`, 'INFO');
+    }
+    for (const ex of ct.exodusPrivacyReports.slice(0, 4)) {
+      pushToAgent('U8', 'Exodus_Privacy_Trackers', ex.handle, `${ex.appName} (${ex.handle}): ${ex.trackersCount} tracker(s), ${ex.permissionsCount} permissions`, ex.trackersCount >= 5 ? 'HIGH' : 'MEDIUM', ex.reportUrl);
+    }
+  }
+
+  if (squadId === 'squadV' && liveIntel.cloudIxpCompute) {
+    const ci = liveIntel.cloudIxpCompute;
+    for (const net of ci.peeringDbNetworks.slice(0, 4)) {
+      pushToAgent('V1', 'PeeringDB_Network', net.asn, `${net.asn} (${net.networkName}) · ${net.ixpCount} IXPs · ${net.facilityCount} Colocation Facilities`, 'INFO', net.url);
+    }
+    for (const ix of ci.ixpExchanges.slice(0, 6)) {
+      pushToAgent('V2', 'PeeringDB_IXP', ix, `Peered at Internet Exchange Point: ${ix}`, 'INFO');
+    }
+    for (const fac of ci.colocationFacilities.slice(0, 6)) {
+      pushToAgent('V3', 'Colocation_Facility', fac, `Bare-metal colocation footprint: ${fac}`, 'INFO');
+    }
+    for (const t1 of ci.tier1TransitDependencies.slice(0, 4)) {
+      pushToAgent('V4', 'Tier1_Transit', t1, `Tier-1 transit/colocation anchor: ${t1}`, 'INFO');
+    }
+    for (const hf of ci.huggingFaceModels.slice(0, 5)) {
+      pushToAgent('V5', 'HuggingFace_Model', hf.modelId, `${hf.modelId} (${hf.pipelineTag} · ${hf.downloads.toLocaleString('en-US')} downloads)`, 'INFO', hf.url);
+    }
+    for (const dk of ci.dockerHubRepos.slice(0, 5)) {
+      pushToAgent('V6', 'DockerHub_Repo', `${dk.namespace}/${dk.name}`, `${dk.namespace}/${dk.name} (${dk.pullCount.toLocaleString('en-US')} pulls · updated ${dk.lastUpdated})`, 'INFO', dk.url);
+    }
+    for (const cc of ci.cloudCdnChains.slice(0, 6)) {
+      pushToAgent('V7', 'Cloud_CDN_Chain', `${cc.provider}:${cc.evidenceHost}`, `${cc.provider} (${cc.signalType}): ${cc.evidenceHost}`, 'INFO');
+    }
+  }
+
+  if (squadId === 'squadW' && liveIntel.breachVelocitySurface) {
+    const bv = liveIntel.breachVelocitySurface;
+    for (const br of bv.stateAgBreaches.slice(0, 6)) {
+      pushToAgent(
+        br.sourceAgency === 'WA_STATE_AG' ? 'W1' : 'W2',
+        br.sourceAgency,
+        `${br.organizationName}:${br.breachStartDate}`,
+        `${br.organizationName}: breach ${br.breachStartDate} -> notified ${br.notificationDate} (delay=${br.notificationDelayDays ?? 'N/A'}d, affected=${br.residentsAffected ?? 'N/A'})`,
+        (br.notificationDelayDays ?? 0) >= 60 ? 'HIGH' : 'MEDIUM',
+        br.url
+      );
+    }
+    if (bv.maxNotificationDelayDays !== null) {
+      pushToAgent('W3', 'Breach_Notification_Delay', liveIntel.entityName, `Max hidden breach delay: ${bv.maxNotificationDelayDays} days (avg ${bv.averageNotificationDelayDays ?? bv.maxNotificationDelayDays}d, ${bv.totalAffectedResidents.toLocaleString('en-US')} affected)`, bv.maxNotificationDelayDays >= 60 ? 'HIGH' : 'MEDIUM');
+    }
+    for (const chk of bv.passiveExposureChecks.slice(0, 5)) {
+      const targetAgent = chk.path === '/.git/HEAD' ? 'W4' : chk.path === '/.env' ? 'W5' : chk.path === '/robots.txt' ? 'W6' : 'W7';
+      pushToAgent(targetAgent, 'Passive_Exposure_Check', chk.path, `${chk.path} [${chk.classification}]: ${chk.detail}`, chk.classification === 'EXPOSED_CRITICAL' ? 'CRITICAL' : 'INFO', chk.url);
+    }
+  }
+
+  if (squadId === 'squadX' && liveIntel.shellAddressClustering) {
+    const sx = liveIntel.shellAddressClustering;
+    for (const cl of sx.clusteredAddresses.slice(0, 6)) {
+      const targetAgent =
+        cl.clusterClassification === 'MAIL_DROP_REGISTERED_AGENT_SHELL'
+          ? 'X2'
+          : cl.clusterClassification === 'OFFSHORE_FIDUCIARY_SUITE'
+            ? 'X3'
+            : 'X4';
+      pushToAgent(
+        targetAgent,
+        cl.clusterClassification,
+        cl.normalizedAddress,
+        `${cl.clusterClassification}: ${cl.normalizedAddress} (${cl.entityCount} entities: ${cl.entitiesAtAddress.slice(0, 3).join(', ')})`,
+        cl.clusterClassification === 'MAIL_DROP_REGISTERED_AGENT_SHELL' ? 'HIGH' : cl.clusterClassification === 'OFFSHORE_FIDUCIARY_SUITE' ? 'MEDIUM' : 'INFO'
+      );
+    }
+    for (const pm of sx.infrastructurePermitsAndPuc.slice(0, 5)) {
+      const targetAgent =
+        pm.sourceCategory === 'MUNICIPAL_ZONING' ? 'X5' : pm.sourceCategory === 'STATE_PUC_POWER_WATER' ? 'X6' : 'X7';
+      pushToAgent(targetAgent, pm.sourceCategory, pm.title.slice(0, 48), `${pm.jurisdiction}: ${pm.title}`, 'INFO', pm.url);
+    }
+  }
+
+  if (squadId === 'squadY' && liveIntel.adTechTosSurveillance) {
+    const ay = liveIntel.adTechTosSurveillance;
+    for (const ex of ay.adsTxtExchanges.slice(0, 6)) {
+      pushToAgent('Y1', `AdTech_${ex.sourceFile}`, `${ex.exchangeDomain}:${ex.publisherAccountId}`, `${ex.exchangeDomain} [${ex.relationship}] (${ex.sourceFile})`, ex.relationship === 'RESELLER' ? 'MEDIUM' : 'INFO');
+    }
+    for (const sel of ay.sellersJsonSample.slice(0, 4)) {
+      pushToAgent('Y2', 'Sellers_JSON', sel.sellerId, `${sel.name} (${sel.domain} · ${sel.sellerType})`, 'INFO');
+    }
+    for (const df of ay.policyWaybackClauseDiffs.slice(0, 6)) {
+      const targetAgent =
+        df.clauseCategory === 'AI_MODEL_TRAINING'
+          ? 'Y5'
+          : df.clauseCategory === 'BIOMETRIC_TELEMETRY'
+            ? 'Y4'
+            : 'Y3';
+      pushToAgent(targetAgent, `Wayback_${df.clauseCategory}`, `${df.policyPath}:${df.clauseCategory}`, `${df.policyPath} [${df.status}]: ${df.clauseCategory} — ${df.excerpt.slice(0, 90)}`, df.status === 'INSERTED_IN_LATEST' ? 'HIGH' : 'MEDIUM', df.waybackUrl);
+    }
+    if (ay.tosdrSummary) {
+      pushToAgent('Y6', 'ToSDR_v4', ay.tosdrSummary.serviceName, `ToS;DR Grade ${ay.tosdrSummary.ratingGrade} (${ay.tosdrSummary.serviceName})`, /^[DE]/i.test(ay.tosdrSummary.ratingGrade) ? 'HIGH' : 'INFO', ay.tosdrSummary.serviceUrl);
+    }
+    for (const eu of ay.euDsaGdprNotices.slice(0, 4)) {
+      pushToAgent('Y7', 'EU_DSA_GDPR', eu.regulator, `${eu.regulator}: ${eu.title}`, 'HIGH', eu.url);
+    }
+  }
+
+  if (squadId === 'squadZ' && liveIntel.stackToPowerCapstone) {
+    const cap = liveIntel.stackToPowerCapstone;
+    for (const layer of cap.stackToPowerChain) {
+      const targetAgent = layer.layerOrder === 1 || layer.layerOrder === 2 ? 'Z1' : layer.layerOrder === 3 ? 'Z2' : 'Z3';
+      pushToAgent(targetAgent, `StackToPower_${layer.layerCode}`, layer.layerTitle, `${layer.layerTitle} (${layer.verifiedSignalCount} signal(s)): ${layer.keyFindings[0] || ''}`, 'INFO');
+    }
+    for (const al of cap.activeCoverUpAlerts.slice(0, 6)) {
+      const targetAgent =
+        al.alertType === 'DELETED_GITHUB_REPOS'
+          ? 'Z4'
+          : al.alertType === 'SUDDEN_WIKIPEDIA_WHITEWASH'
+            ? 'Z5'
+            : al.alertType === 'TLS_CERT_ROTATION'
+              ? 'Z6'
+              : 'Z7';
+      pushToAgent(targetAgent, `CoverUp_${al.alertType}`, al.alertType, `${al.summary} (${al.beforeValue} -> ${al.afterValue})`, al.severity === 'CRITICAL' ? 'CRITICAL' : 'HIGH');
+    }
+  }
+
   const uniqueCitationCount = squadUniqueKeys.size;
   const duplicateAssignmentCount = Math.max(0, totalAssignmentCount - uniqueCitationCount);
 

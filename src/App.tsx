@@ -1,4 +1,4 @@
-import { Suspense, lazy, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Header } from './components/Header';
 import { InvestigationLauncher } from './components/InvestigationLauncher';
 import { SwarmExecutionView } from './components/SwarmExecutionView';
@@ -6,26 +6,13 @@ import { LeaderboardPanel } from './components/LeaderboardPanel';
 import { NewsFeedPanel } from './components/NewsFeedPanel';
 import { CivilizationalOrgansPanel } from './components/CivilizationalOrgansPanel';
 import { GlobalNewBusinessesAndMAPanel } from './components/GlobalNewBusinessesAndMAPanel';
+import { DossierViewerModal } from './components/DossierViewerModal';
+import { PowerMapModal } from './components/PowerMapModal';
+import { ShockwaveSimulatorModal } from './components/ShockwaveSimulatorModal';
+import { DossierZipReaderTab } from './components/DossierZipReaderTab';
+import { LiveForensicTelemetryPanel } from './components/LiveForensicTelemetryPanel';
+import { CustodyVaultAndComparatorTab } from './components/CustodyVaultAndComparatorTab';
 import { INITIAL_TECH_ENTITIES } from './data/entitiesDatabase';
-
-const DossierViewerModal = lazy(() =>
-  import('./components/DossierViewerModal').then((m) => ({ default: m.DossierViewerModal }))
-);
-const PowerMapModal = lazy(() =>
-  import('./components/PowerMapModal').then((m) => ({ default: m.PowerMapModal }))
-);
-const ShockwaveSimulatorModal = lazy(() =>
-  import('./components/ShockwaveSimulatorModal').then((m) => ({ default: m.ShockwaveSimulatorModal }))
-);
-const DossierZipReaderTab = lazy(() =>
-  import('./components/DossierZipReaderTab').then((m) => ({ default: m.DossierZipReaderTab }))
-);
-const LiveForensicTelemetryPanel = lazy(() =>
-  import('./components/LiveForensicTelemetryPanel').then((m) => ({ default: m.LiveForensicTelemetryPanel }))
-);
-const CustodyVaultAndComparatorTab = lazy(() =>
-  import('./components/CustodyVaultAndComparatorTab').then((m) => ({ default: m.CustodyVaultAndComparatorTab }))
-);
 import { INITIAL_NEWS_FEED } from './data/newsFeedDatabase';
 import { getAllUniqueCatalogEntities } from './data/sectorTop20Database';
 import { resolveInvestigationTarget } from './data/forensicDossierKnowledge';
@@ -98,7 +85,7 @@ export default function App() {
   const [squads, setSquads] = useState(() => create160AgentSwarm('SpaceX'));
   const formatLogLine = (msg: string) => `[${new Date().toISOString().slice(11, 19)}] ${msg}`;
   const [logs, setLogs] = useState<string[]>(() => [
-    formatLogLine('Sovereign Hyper-Investigations Grid initialized (200-Agent / 20-Squad Matrix).'),
+    formatLogLine('Sovereign Hyper-Investigations Grid initialized (260-Agent / 26-Squad Full-Alphabet Matrix A–Z · v29.0).'),
     formatLogLine('Civilization Frontier Stack: Space, Neurotech, Bioscience, Finance, Semiconductors, EPA, Patent/Grants, Dark-Pool & CourtListener indexed.'),
     formatLogLine('24/7 SQLite WAL Daemon & 5-Ring Sovereign Defense Watchdog online.'),
   ]);
@@ -600,7 +587,7 @@ export default function App() {
 
       setStageProgress(100);
       setCurrentStage('Stage 6: Sealed Cryptographic Dossier Ready');
-      addLog(`[COMPLETE] Sovereign 200-agent dossier complete (${finalResult.sourcesCount} live sources · ${finalResult.files.length} artifacts · ${elapsedSeconds}s). SHA256SUMS, IPFS CIDv1, Bitcoin/RFC 3161 anchor & offline HTML viewer verified.`);
+      addLog(`[COMPLETE] Sovereign 260-agent dossier complete (${finalResult.sourcesCount} live sources · ${finalResult.files.length} artifacts · ${elapsedSeconds}s). SHA256SUMS, IPFS CIDv1, Bitcoin/RFC 3161 anchor & offline HTML viewer verified.`);
     } finally {
       setIsRunning(false);
     }
@@ -781,7 +768,7 @@ export default function App() {
       {/* Top 3-Zone Header */}
       <Header
         onOpenPowerMap={() => setIsPowerMapOpen(true)}
-        activeAgentsCount={200}
+        activeAgentsCount={260}
         onNavigateToMatrix={() => setWorkspaceTab('grid')}
       />
 
@@ -814,7 +801,7 @@ export default function App() {
               }`}
             >
               <Radar className="w-3.5 h-3.5" />
-              <span>Live Investigation Matrix &amp; Top-20s (200 Agents)</span>
+              <span>Live Investigation Matrix &amp; Top-20s (260 Agents)</span>
             </button>
             <button
               type="button"
@@ -848,18 +835,14 @@ export default function App() {
 
         {workspaceTab === 'zip_reader' ? (
           <section>
-            <Suspense fallback={<div className="p-6 text-xs font-mono text-slate-400">Loading ZIP Forensic Reader...</div>}>
-              <DossierZipReaderTab currentResult={lastResult} />
-            </Suspense>
+            <DossierZipReaderTab currentResult={lastResult} />
           </section>
         ) : workspaceTab === 'vault' ? (
           <section>
-            <Suspense fallback={<div className="p-6 text-xs font-mono text-slate-400">Loading Custody Vault & Graph...</div>}>
-              <CustodyVaultAndComparatorTab
-                onSelectEntityForInvestigation={handleSelectEntityForInvestigation}
-                refreshTrigger={vaultRefreshCounter}
-              />
-            </Suspense>
+            <CustodyVaultAndComparatorTab
+              onSelectEntityForInvestigation={handleSelectEntityForInvestigation}
+              refreshTrigger={vaultRefreshCounter}
+            />
           </section>
         ) : (
           <>
@@ -905,12 +888,10 @@ export default function App() {
             {/* Section 2B: Interactive Live Forensic Telemetry & Entity Knowledge Graph */}
             {lastResult?.scope.liveIntel && (
               <section>
-                <Suspense fallback={<div className="p-6 text-xs font-mono text-slate-400">Loading Live Forensic Telemetry...</div>}>
-                  <LiveForensicTelemetryPanel
-                    result={lastResult}
-                    onInvestigateRelated={handleSelectEntityForInvestigation}
-                  />
-                </Suspense>
+                <LiveForensicTelemetryPanel
+                  result={lastResult}
+                  onInvestigateRelated={handleSelectEntityForInvestigation}
+                />
               </section>
             )}
 
@@ -973,38 +954,32 @@ export default function App() {
 
       {/* Modal: Full Dossier Viewer Workspace */}
       {isDossierViewerOpen && lastResult && (
-        <Suspense fallback={null}>
-          <DossierViewerModal
-            result={lastResult}
-            onClose={() => setIsDossierViewerOpen(false)}
-            onDownloadZip={handleDownloadZip}
-            onDownloadAuditBundle={handleDownloadAuditBundle}
-            initialSelectedFilename={selectedFilenameForViewer}
-          />
-        </Suspense>
+        <DossierViewerModal
+          result={lastResult}
+          onClose={() => setIsDossierViewerOpen(false)}
+          onDownloadZip={handleDownloadZip}
+          onDownloadAuditBundle={handleDownloadAuditBundle}
+          initialSelectedFilename={selectedFilenameForViewer}
+        />
       )}
 
       {/* Modal: Global Power Map & Consolidation Heatmaps */}
       {isPowerMapOpen && (
-        <Suspense fallback={null}>
-          <PowerMapModal
-            onClose={() => setIsPowerMapOpen(false)}
-            onInvestigateTarget={(entityName) => {
-              handleSelectEntityForInvestigation(entityName);
-            }}
-          />
-        </Suspense>
+        <PowerMapModal
+          onClose={() => setIsPowerMapOpen(false)}
+          onInvestigateTarget={(entityName) => {
+            handleSelectEntityForInvestigation(entityName);
+          }}
+        />
       )}
 
       {/* Modal: Deterministic Planetary Interdependency Cascade Model */}
       {isShockwaveModalOpen && (
-        <Suspense fallback={null}>
-          <ShockwaveSimulatorModal
-            onClose={() => setIsShockwaveModalOpen(false)}
-            onApplyShockwaveToLeaderboard={handleApplyShockwaveToLeaderboard}
-            liveDaemonEvents={realtimeFeedEvents}
-          />
-        </Suspense>
+        <ShockwaveSimulatorModal
+          onClose={() => setIsShockwaveModalOpen(false)}
+          onApplyShockwaveToLeaderboard={handleApplyShockwaveToLeaderboard}
+          liveDaemonEvents={realtimeFeedEvents}
+        />
       )}
 
       {/* Modal: Single Agent Raw Output Inspector */}

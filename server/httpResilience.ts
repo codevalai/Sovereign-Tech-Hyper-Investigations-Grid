@@ -2,6 +2,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
+import { isSafePublicUrl } from './authenticatedConnectors.ts';
 
 export interface HttpResilienceStats {
   totalRequests: number;
@@ -149,6 +150,16 @@ async function paceHostRequest(url: string): Promise<void> {
     bucket.nextAllowedAtMs = now + minIntervalMs;
     hostBuckets.set(hostname, bucket);
   }
+  if (hostBuckets.size > 500) {
+    for (const [k, v] of hostBuckets.entries()) {
+      if (v.nextAllowedAtMs <= now) hostBuckets.delete(k);
+    }
+    while (hostBuckets.size > 500) {
+      const oldest = hostBuckets.keys().next().value;
+      if (!oldest) break;
+      hostBuckets.delete(oldest);
+    }
+  }
 }
 
 function readCachedEntry(url: string): {
@@ -264,6 +275,20 @@ export async function resilientFetch(
 ): Promise<ResilientFetchResult> {
   const t0 = Date.now();
   stats.totalRequests++;
+
+  if (!isSafePublicUrl(url)) {
+    return {
+      ok: false,
+      status: 0,
+      url,
+      headers: {},
+      bodyText: '',
+      rawBuffer: Buffer.alloc(0),
+      fromCache: 'NONE',
+      truncated: false,
+      latencyMs: Date.now() - t0,
+    };
+  }
 
   const method = (options.method || 'GET').toUpperCase();
   const isCacheBustedUrl = /[?&]_cb=\d+/i.test(url);

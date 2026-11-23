@@ -1,4 +1,5 @@
 import { createHash } from 'node:crypto';
+import { isValidPublicDomain } from './authenticatedConnectors.ts';
 
 export interface InfraDnaProfile {
   domain: string;
@@ -120,8 +121,13 @@ export async function extractInfraDna(
   domain: string,
   extraSubdomains: string[] = []
 ): Promise<InfraDnaProfile> {
-  const cleanDomain = domain.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0];
-  if (!cleanDomain) {
+  const cleanDomain = domain
+    .trim()
+    .toLowerCase()
+    .replace(/^https?:\/\//, '')
+    .split('/')[0]
+    .replace(/:\d+$/, '');
+  if (!cleanDomain || !isValidPublicDomain(cleanDomain)) {
     return {
       domain: '',
       collectedAtUtc: new Date().toISOString(),
@@ -170,8 +176,8 @@ export async function extractInfraDna(
   const subCandidates = Array.from(
     new Set(
       extraSubdomains
-        .map((s) => s.trim().toLowerCase())
-        .filter((s) => s && s !== cleanDomain && s !== `www.${cleanDomain}` && s.includes('.'))
+        .map((s) => s.trim().toLowerCase().replace(/^https?:\/\//, '').split('/')[0].replace(/:\d+$/, ''))
+        .filter((s) => s && s !== cleanDomain && s !== `www.${cleanDomain}` && isValidPublicDomain(s))
     )
   ).slice(0, 3);
 

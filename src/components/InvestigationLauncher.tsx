@@ -1,4 +1,5 @@
 import React, { useState, useRef } from 'react';
+import { toSafeExternalUrl } from '../utils/safeUrl';
 import { 
   Search, 
   Upload, 
@@ -196,7 +197,7 @@ export const InvestigationLauncher: React.FC<InvestigationLauncherProps> = ({
       {/* Main Title & Calibrated Kicker */}
       <div className="mb-6">
         <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-amber-400 mb-2">
-          <span>01. Autonomous 200-Agent Live Forensic Matrix (Squads A–T)</span>
+          <span>01. Autonomous 260-Agent Live Forensic Matrix (Squads A–Z · v29.0)</span>
           <span className="text-slate-600">·</span>
           <span className="text-slate-400">Every Industry Worldwide · Small Local Businesses to Global Conglomerates &amp; Historical Firms</span>
         </div>
@@ -367,7 +368,7 @@ export const InvestigationLauncher: React.FC<InvestigationLauncherProps> = ({
                       <div>
                         <p className="text-xs font-mono font-medium">{uploadedFile.name}</p>
                         <p className="text-[11px] text-amber-400/80 font-mono tabular-nums">
-                          {uploadedFile.content.length} characters parsed and queued for 200-agent ingestion
+                          {uploadedFile.content.length} characters parsed and queued for 260-agent ingestion
                         </p>
                       </div>
                     </div>
@@ -397,7 +398,7 @@ export const InvestigationLauncher: React.FC<InvestigationLauncherProps> = ({
                         Click or drag lead files here (lawfully shareable records only)
                       </p>
                       <p className="text-[11px] text-slate-500 font-mono mt-0.5">
-                        Accepts .txt, .pdf, .csv, .json · Evaluated inside the 200-agent graph
+                        Accepts .txt, .pdf, .csv, .json · Evaluated inside the 260-agent graph
                       </p>
                     </div>
 
@@ -437,12 +438,12 @@ export const InvestigationLauncher: React.FC<InvestigationLauncherProps> = ({
             {isRunning ? (
               <>
                 <div className="w-5 h-5 border-2 border-amber-400 border-t-transparent rounded-full animate-spin" />
-                <span>Querying Live Registries &amp; Running 200-Agent Investigation...</span>
+                <span>Querying Live Registries &amp; Running 260-Agent Investigation...</span>
               </>
             ) : (
               <>
                 <ShieldCheck className="w-5 h-5" />
-                <span>Launch Live 200-Agent Investigation</span>
+                <span>Launch Live 260-Agent Investigation</span>
                 <ArrowRight className="w-5 h-5" />
               </>
             )}
@@ -482,14 +483,14 @@ export const InvestigationLauncher: React.FC<InvestigationLauncherProps> = ({
                 <div className="flex flex-wrap items-center gap-2 text-xs font-mono text-emerald-400 mb-1">
                   <span>● {lastResult.isLiveGrounded ? 'Live Registry & Web Grounded Complete' : 'Investigation Complete'}</span>
                   <span className="text-slate-600">·</span>
-                  <span>200 Agents Verified (Squads A–T)</span>
+                  <span>260 Agents Verified (Squads A–Z)</span>
                   <span className="text-slate-600">·</span>
                   <span className="text-slate-400 tabular-nums">ID: {lastResult.investigationId}</span>
                 </div>
                 <p className="text-sm font-mono tabular-nums text-slate-200">
                   Target: <strong className="text-amber-400">{lastResult.scope.liveIntel ? `${lastResult.scope.liveIntel.legalName} (${lastResult.scope.liveIntel.industry})` : lastResult.scope.entity}</strong>
                   <span className="mx-2 text-slate-600">·</span>
-                  200 agents
+                  260 agents
                   <span className="mx-2 text-slate-600">·</span>
                   {lastResult.sourcesCount} sources
                   <span className="mx-2 text-slate-600">·</span>
@@ -498,7 +499,7 @@ export const InvestigationLauncher: React.FC<InvestigationLauncherProps> = ({
                   Monopoly index (MAI): <strong className={lastResult.mai > 0.6 ? 'text-rose-400' : 'text-slate-300'}>{lastResult.mai.toFixed(2)}</strong>
                 </p>
                 <p className="text-xs text-slate-400 font-mono mt-1">
-                  Contains {lastResult.files.length} read-only forensic files including Proxy/Kinship (DEF 14A/Ex-21.1), FARA/LDA/OpenFEC Political Graph, Shadow Infra/Sub-Awards, EPA ECHO, Bayh-Dole Patents/Grants, 13F Dark-Pool/Bitcoin Anchors, CourtListener SLAPP/Bankruptcy, Sanctions/PEPs, BFT Corroboration Ledger, 200 Agent Reports, IPFS CIDv1 &amp; Ed25519 + Binary Merkle Proof Ledger + verify_dossier.mjs.
+                  Contains {lastResult.files.length} read-only forensic files including JS/Mobile Trackers (Squad U), PeeringDB/Cloud/AI (Squad V), State AG Breach Velocity (Squad W), Shell-Address Clusters (Squad X), Ad-Tech/ToS Diff (Squad Y), Stack-to-Power Cover-Up Capstone (Squad Z), Proxy/Kinship, Political Capture, FOIA/Labor/FCC/Aviation, 260 Agent Reports, IPFS CIDv1 &amp; Ed25519 + Binary Merkle Proof Ledger + verify_dossier.mjs.
                 </p>
               </div>
 
@@ -546,7 +547,7 @@ export const InvestigationLauncher: React.FC<InvestigationLauncherProps> = ({
                   {lastResult.groundingSources.slice(0, 10).map((src) => (
                     <a
                       key={src.uri}
-                      href={src.uri}
+                      href={toSafeExternalUrl(src.uri)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="inline-flex items-center gap-1.5 text-[11px] font-mono px-2.5 py-1 rounded bg-slate-900/90 border border-slate-800 hover:border-amber-500/50 text-slate-300 hover:text-amber-300 transition-colors max-w-xs truncate"

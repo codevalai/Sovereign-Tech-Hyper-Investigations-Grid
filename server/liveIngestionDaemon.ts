@@ -4,6 +4,7 @@ import path from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { Request, Response } from 'express';
 import { safeForensicFetch } from './adversarialShield.ts';
+import { isSafePublicUrl } from './authenticatedConnectors.ts';
 import { fetchLiveBitcoinMainnetTip, submitRfc3161TimestampRequest } from './blockchainAnchor.ts';
 import { findFuzzyEntityMatches } from '../src/engine/entityResolution.ts';
 import {
@@ -15,10 +16,14 @@ import { SEC_EDGAR_COMPLIANT_USER_AGENT } from './planetaryRegistryEngine.ts';
 import type {
   ClinicalTrialMutationSnapshot,
   ClinicalTrialSilentMutationAlert,
+  CrossCaseEntityCollisionRecord,
+  CrossCaseMemoryTelemetry,
   CrossEntityCorrelationReport,
   CrossEntityOverlapEdge,
   DorkArtifactRecord,
   ExternalAnchorReceiptRecord,
+  GlobalEntityFingerprintInput,
+  GlobalEntityFingerprintType,
   InfraDnaProfileRecord,
   LiveFeedEvent,
   LivingDeltaPatchRecord,
@@ -357,6 +362,22 @@ class SovereignRealtimeDaemon {
         sources_json TEXT NOT NULL,
         last_page_fetched INTEGER NOT NULL DEFAULT 0
       );
+
+      CREATE TABLE IF NOT EXISTS global_entity_memory (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        fingerprint_key TEXT NOT NULL,
+        fingerprint_type TEXT NOT NULL,
+        raw_label TEXT NOT NULL,
+        investigation_id TEXT NOT NULL,
+        target_entity TEXT NOT NULL,
+        source_module TEXT NOT NULL,
+        metadata_note TEXT NOT NULL DEFAULT '',
+        recorded_at_iso TEXT NOT NULL,
+        UNIQUE(fingerprint_key, fingerprint_type, investigation_id)
+      );
+      CREATE INDEX IF NOT EXISTS idx_gem_fingerprint ON global_entity_memory(fingerprint_key, fingerprint_type);
+      CREATE INDEX IF NOT EXISTS idx_gem_investigation ON global_entity_memory(investigation_id);
+      CREATE INDEX IF NOT EXISTS idx_gem_recorded ON global_entity_memory(recorded_at_iso DESC);
     `);
 
     // Non-destructive schema evolution for existing SQLite databases (preserves 100% of prior rows)
@@ -483,6 +504,10 @@ class SovereignRealtimeDaemon {
 
   public attachSseClient(req: Request, res: Response) {
     this.initDatabase();
+    if (this.sseClients.size >= 64) {
+      res.status(503).json({ error: 'Too many concurrent real-time telemetry streams.' });
+      return;
+    }
     res.writeHead(200, {
       'Content-Type': 'text/event-stream',
       'Cache-Control': 'no-cache, no-transform',
@@ -499,19 +524,29 @@ class SovereignRealtimeDaemon {
 
     this.sseClients.add(res);
 
+    let cleanedUp = false;
+    const cleanup = () => {
+      if (cleanedUp) return;
+      cleanedUp = true;
+      clearInterval(heartbeat);
+      this.sseClients.delete(res);
+    };
+
     const heartbeat = setInterval(() => {
+      if (res.writableEnded || res.destroyed) {
+        cleanup();
+        return;
+      }
       try {
         res.write(`: heartbeat ${Date.now()}\n\n`);
       } catch {
-        clearInterval(heartbeat);
-        this.sseClients.delete(res);
+        cleanup();
       }
     }, 10_000);
 
-    req.on('close', () => {
-      clearInterval(heartbeat);
-      this.sseClients.delete(res);
-    });
+    req.on('close', cleanup);
+    res.on('close', cleanup);
+    res.on('error', cleanup);
   }
 
   public getLatestEvents(
@@ -2121,10 +2156,11 @@ class SovereignRealtimeDaemon {
     const alerts: SilentDeletionAlertRecord[] = [];
     const checkOne = async (row: Record<string, unknown>) => {
       const url = String(row.url || '');
-      if (!url.startsWith('http')) return;
+      if (!isSafePublicUrl(url)) return;
       try {
         const res = await fetch(url, {
           method: 'HEAD',
+          redirect: 'manual',
           signal: AbortSignal.timeout(4500),
           headers: { 'User-Agent': 'SovereignOSINTStandingMonitor/22.0' },
         });
@@ -2676,16 +2712,17 @@ class SovereignRealtimeDaemon {
 
     await Promise.all(
       targetOwnedMissing.map(async (url) => {
+        if (!isSafePublicUrl(url)) return;
         try {
           let res = await fetch(url, {
             method: 'HEAD',
-            redirect: 'follow',
+            redirect: 'manual',
             signal: AbortSignal.timeout(3500),
           });
           if (res.status === 405 || res.status === 501) {
             res = await fetch(url, {
               method: 'GET',
-              redirect: 'follow',
+              redirect: 'manual',
               signal: AbortSignal.timeout(3500),
             });
           }
@@ -3074,6 +3111,224 @@ class SovereignRealtimeDaemon {
       .prepare(`DELETE FROM planetary_registry_events WHERE source_record_id LIKE ?`)
       .run(`${clean}%`);
     return Number(res.changes ?? 0);
+  }
+
+  public queryCrossCaseEntityCollisions(
+    currentInvestigationId: string,
+    fingerprints: GlobalEntityFingerprintInput[],
+    currentTargetEntity?: string
+  ): CrossCaseMemoryTelemetry {
+    this.initDatabase();
+    const store = new GlobalEntityMemoryStore(this.db!);
+    return store.findCrossCaseCollisions(currentInvestigationId, fingerprints, currentTargetEntity);
+  }
+
+  public recordGlobalEntityMemory(
+    investigationId: string,
+    targetEntity: string,
+    timestampIso: string,
+    fingerprints: GlobalEntityFingerprintInput[]
+  ): number {
+    this.initDatabase();
+    const store = new GlobalEntityMemoryStore(this.db!);
+    return store.recordFingerprints(investigationId, targetEntity, timestampIso, fingerprints);
+  }
+}
+
+export function normalizeGlobalEntityFingerprint(
+  type: GlobalEntityFingerprintType,
+  rawLabel: string
+): string {
+  const clean = String(rawLabel || '').trim();
+  if (!clean) return '';
+  if (type === 'WALLET_ADDRESS') {
+    return clean.toLowerCase();
+  }
+  return clean
+    .toLowerCase()
+    .replace(/\s*\([^)]*\)\s*/g, ' ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\b(?:inc|incorporated|corp|corporation|llc|ltd|limited|plc|gmbh|the)\b/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+export class GlobalEntityMemoryStore {
+  private db: DatabaseSync;
+  private ownsDb: boolean;
+
+  constructor(dbOrPath: DatabaseSync | string) {
+    if (typeof dbOrPath === 'string') {
+      const dir = path.dirname(dbOrPath);
+      fs.mkdirSync(dir, { recursive: true });
+      this.db = new DatabaseSync(dbOrPath);
+      this.ownsDb = true;
+      this.db.exec(`
+        PRAGMA journal_mode = WAL;
+        PRAGMA synchronous = NORMAL;
+        PRAGMA busy_timeout = 5000;
+        CREATE TABLE IF NOT EXISTS global_entity_memory (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          fingerprint_key TEXT NOT NULL,
+          fingerprint_type TEXT NOT NULL,
+          raw_label TEXT NOT NULL,
+          investigation_id TEXT NOT NULL,
+          target_entity TEXT NOT NULL,
+          source_module TEXT NOT NULL,
+          metadata_note TEXT NOT NULL DEFAULT '',
+          recorded_at_iso TEXT NOT NULL,
+          UNIQUE(fingerprint_key, fingerprint_type, investigation_id)
+        );
+        CREATE INDEX IF NOT EXISTS idx_gem_fingerprint ON global_entity_memory(fingerprint_key, fingerprint_type);
+        CREATE INDEX IF NOT EXISTS idx_gem_investigation ON global_entity_memory(investigation_id);
+        CREATE INDEX IF NOT EXISTS idx_gem_recorded ON global_entity_memory(recorded_at_iso DESC);
+      `);
+    } else {
+      this.db = dbOrPath;
+      this.ownsDb = false;
+    }
+  }
+
+  public recordFingerprints(
+    investigationId: string,
+    targetEntity: string,
+    timestampIso: string,
+    fingerprints: GlobalEntityFingerprintInput[]
+  ): number {
+    const invId = String(investigationId || '').trim().slice(0, 120);
+    const target = String(targetEntity || '').trim().slice(0, 160);
+    const ts = String(timestampIso || new Date().toISOString()).slice(0, 40);
+    if (!invId || !target) return 0;
+
+    const stmt = this.db.prepare(`
+      INSERT OR IGNORE INTO global_entity_memory (
+        fingerprint_key, fingerprint_type, raw_label, investigation_id,
+        target_entity, source_module, metadata_note, recorded_at_iso
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+
+    let inserted = 0;
+    for (const fp of fingerprints) {
+      const key = normalizeGlobalEntityFingerprint(fp.fingerprintType, fp.rawLabel);
+      if (key.length < 3) continue;
+      const res = stmt.run(
+        key,
+        fp.fingerprintType,
+        String(fp.rawLabel || '').trim().slice(0, 220),
+        invId,
+        target,
+        String(fp.sourceModule || 'unknown').slice(0, 80),
+        String(fp.metadataNote || '').slice(0, 240),
+        ts
+      );
+      if (Number(res.changes ?? 0) > 0) inserted++;
+    }
+    return inserted;
+  }
+
+  public findCrossCaseCollisions(
+    currentInvestigationId: string,
+    fingerprints: GlobalEntityFingerprintInput[],
+    currentTargetEntity?: string
+  ): CrossCaseMemoryTelemetry {
+    const invId = String(currentInvestigationId || '').trim();
+    const currentTargetNorm = currentTargetEntity
+      ? normalizeGlobalEntityFingerprint('CANONICAL_ENTITY', currentTargetEntity)
+      : '';
+    const stmt = this.db.prepare(`
+      SELECT fingerprint_key, fingerprint_type, raw_label, investigation_id,
+             target_entity, source_module, recorded_at_iso
+      FROM global_entity_memory
+      WHERE fingerprint_key = ?
+        AND fingerprint_type = ?
+        AND investigation_id != ?
+      ORDER BY recorded_at_iso DESC
+      LIMIT 6
+    `);
+
+    const crossTargetCollisions: CrossCaseEntityCollisionRecord[] = [];
+    const sameTargetPriorRuns: CrossCaseEntityCollisionRecord[] = [];
+    const seen = new Set<string>();
+    const priorCrossInvestigations = new Set<string>();
+    const priorSameInvestigations = new Set<string>();
+    let checked = 0;
+
+    for (const fp of fingerprints) {
+      const key = normalizeGlobalEntityFingerprint(fp.fingerprintType, fp.rawLabel);
+      if (key.length < 3) continue;
+      checked++;
+      const rows = stmt.all(key, fp.fingerprintType, invId) as Array<Record<string, unknown>>;
+      for (const row of rows) {
+        const priorInvId = String(row.investigation_id || '');
+        const dedupKey = `${key}|${fp.fingerprintType}|${priorInvId}`;
+        if (seen.has(dedupKey)) continue;
+        seen.add(dedupKey);
+
+        const priorTargetRaw = String(row.target_entity || 'Prior Investigation');
+        const priorTargetNorm = normalizeGlobalEntityFingerprint('CANONICAL_ENTITY', priorTargetRaw);
+        const isSameTarget =
+          Boolean(currentTargetNorm) &&
+          Boolean(priorTargetNorm) &&
+          (priorTargetNorm === currentTargetNorm ||
+            (currentTargetNorm.length >= 4 && priorTargetNorm.includes(currentTargetNorm)) ||
+            (priorTargetNorm.length >= 4 && currentTargetNorm.includes(priorTargetNorm)));
+
+        const baseSeverity: CrossCaseEntityCollisionRecord['severity'] =
+          fp.fingerprintType === 'WALLET_ADDRESS' ||
+          fp.fingerprintType === 'OFFSHORE_INTERMEDIARY' ||
+          fp.fingerprintType === 'SHELL_ADDRESS'
+            ? 'CRITICAL'
+            : fp.fingerprintType === 'DIRECTOR_OR_PSC' || fp.fingerprintType === 'NAMED_BANK'
+              ? 'HIGH'
+              : 'MEDIUM';
+
+        const record: CrossCaseEntityCollisionRecord = {
+          fingerprintKey: key,
+          fingerprintType: fp.fingerprintType,
+          matchedLabel: String(fp.rawLabel || row.raw_label || key),
+          priorInvestigationId: priorInvId,
+          priorTargetEntity: priorTargetRaw,
+          priorRecordedAtIso: String(row.recorded_at_iso || ''),
+          priorSourceModule: String(row.source_module || 'prior_run'),
+          currentSourceModule: fp.sourceModule,
+          severity: isSameTarget ? 'MEDIUM' : baseSeverity,
+          collisionScope: isSameTarget ? 'SAME_TARGET_PRIOR_RUN' : 'CROSS_TARGET',
+        };
+
+        if (isSameTarget) {
+          priorSameInvestigations.add(priorInvId);
+          sameTargetPriorRuns.push(record);
+        } else {
+          priorCrossInvestigations.add(priorInvId);
+          crossTargetCollisions.push(record);
+        }
+      }
+    }
+
+    const crossCapped = crossTargetCollisions.slice(0, 40);
+    const sameCapped = sameTargetPriorRuns.slice(0, 40);
+
+    const summaryVerdict =
+      crossCapped.length > 0
+        ? `CROSS-TARGET COLLISION ALERT: ${crossCapped.length} shared fingerprint(s) matched across ${priorCrossInvestigations.size} distinct prior target investigation(s) in SQLite WAL global_entity_memory (${sameCapped.length} same-target prior run snapshot(s) separated).`
+        : sameCapped.length > 0
+          ? `Screened ${checked} fingerprint(s): 0 cross-target collisions across distinct entities (${sameCapped.length} longitudinal snapshot overlap(s) across ${priorSameInvestigations.size} prior run(s) of the same target entity).`
+          : `Screened ${checked} entity/bank/principal/wallet fingerprint(s) against SQLite WAL global_entity_memory: 0 cross-case collisions detected.`;
+
+    return {
+      fingerprintsCheckedCount: checked,
+      priorInvestigationsMatched: priorCrossInvestigations.size,
+      collisions: crossCapped,
+      crossTargetCollisions: crossCapped,
+      sameTargetPriorRuns: sameCapped,
+      summaryVerdict,
+    };
+  }
+
+  public close(): void {
+    if (this.ownsDb) {
+      this.db.close();
+    }
   }
 }
 

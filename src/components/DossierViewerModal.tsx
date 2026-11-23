@@ -79,7 +79,7 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
     setTimeout(() => URL.revokeObjectURL(url), 1000);
   };
 
-  const getFileIcon = (filename: string, type: string) => {
+  const getFileIcon = (filename: string) => {
     if (filename.endsWith('.csv')) return <FileSpreadsheet className="w-4 h-4 text-emerald-400" />;
     if (filename.endsWith('.json')) return <FileCode className="w-4 h-4 text-cyan-400" />;
     if (filename.endsWith('.html')) return <Globe className="w-4 h-4 text-amber-400" />;
@@ -100,7 +100,7 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
         f.filename.startsWith('swarm/') ||
         f.filename.startsWith('sanctions/') ||
         f.filename.startsWith('finance/') ||
-        /^(?:1[6-9]|2\d|3\d)_/.test(f.filename) ||
+        /^(?:1[6-9]|[2-5]\d)_/.test(f.filename) ||
         f.filename === 'UNVERIFIED_INTELLIGENCE_WATCHLIST.md'
       );
     }
@@ -252,7 +252,7 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
                 onClick={() => setActiveFolderTab('raw')}
                 className={`px-2 py-1 rounded whitespace-nowrap ${activeFolderTab === 'raw' ? 'bg-amber-500/20 text-amber-300 font-semibold' : 'text-neutral-400 hover:text-white'}`}
               >
-                200 Agents
+                260 Agents
               </button>
             </div>
 
@@ -285,7 +285,7 @@ export const DossierViewerModal: React.FC<DossierViewerModalProps> = ({
                     }`}
                   >
                     <div className="flex items-center gap-2 truncate">
-                      {getFileIcon(file.filename, file.type)}
+                      {getFileIcon(file.filename)}
                       <span className="truncate">{file.filename}</span>
                     </div>
                     {isSelected && <ChevronRight className="w-3.5 h-3.5 text-amber-400 shrink-0" />}

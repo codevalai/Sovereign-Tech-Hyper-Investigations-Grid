@@ -16,7 +16,19 @@ import {
   buildUboAndSupplyChainMarkdown,
   buildTechEntityFromLiveIntel
 } from '../data/forensicDossierKnowledge';
-import { AcquisitionItem, InvestigationResult, InvestigationScope, LiveFeedEvent, SignalDensityMetrics, SwarmSquad, TechEntity } from '../types/investigation';
+import {
+  AcquisitionItem,
+  FollowTheMoneySankeyData,
+  FollowTheMoneySankeyLink,
+  FollowTheMoneySankeyNode,
+  InvestigationResult,
+  InvestigationScope,
+  LiveBusinessIntelligence,
+  LiveFeedEvent,
+  SignalDensityMetrics,
+  SwarmSquad,
+  TechEntity,
+} from '../types/investigation';
 import {
   buildClaimCitationsForAgent,
   buildForensicPropertyGraph,
@@ -46,6 +58,19 @@ import { buildFollowTheMoneyNdjson } from '../engine/followTheMoneyExporter';
 import { runAdversarialRedTeamAchPass } from '../engine/adversarialAchEngine';
 import { runAuthorToEntityMetadataPivots } from '../engine/metadataPivotEngine';
 import { validateAndNormalizeSourceTag } from '../engine/entityDisambiguation';
+import {
+  renderGlobalLegalCounselBriefMarkdown,
+  synthesizeGlobalLegalCounselTelemetry,
+} from '../engine/globalLegalCounselSynthesizer';
+import {
+  buildCanonicalIdentityAnchor,
+  EntityDisambiguationGate,
+  resolveCanonicalLeadership,
+} from '../engine/entityDisambiguationGate';
+import {
+  normalizeEntityTaxonomy,
+  truncateAtWordBoundary,
+} from '../utils/textNormalization';
 import {
   buildDeltaAlertMarkdown,
   buildStandaloneDiffDossiersMjs,
@@ -91,7 +116,94 @@ export function generateInvestigationDossier(
 
   const allCatalogEntities = getAllUniqueCatalogEntities(INITIAL_TECH_ENTITIES);
 
-  const liveIntel = scope.liveIntel;
+  const rawLiveIntel = scope.liveIntel;
+
+  // FIX 5A + Patch 1 + Patch 3.2 + Patch 5: Build CanonicalIdentityAnchor, disambiguate grounding sources,
+  // sync canonical leadership, and normalize raw taxonomy upfront so ALL 390+ dossier artifacts share
+  // one zero-contradiction, zero-contamination state.
+  const primaryDomainForSources =
+    rawLiveIntel?.cyberTelemetry?.primaryDomain ||
+    rawLiveIntel?.extremeDorkingAndDna?.domain ||
+    rawLiveIntel?.officialWebsite ||
+    undefined;
+
+  const dossierAnchor = rawLiveIntel
+    ? rawLiveIntel.canonicalIdentityAnchor ||
+      buildCanonicalIdentityAnchor({
+        canonicalName: rawLiveIntel.entityName,
+        legalName: rawLiveIntel.legalName,
+        exactDomain: primaryDomainForSources || rawLiveIntel.officialWebsite,
+        knownAliases: [
+          ...(rawLiveIntel.dbaNames || []),
+          ...(rawLiveIntel.query ? [rawLiveIntel.query] : []),
+          ...(scope.entity ? [scope.entity] : []),
+        ],
+        industry: rawLiveIntel.industry,
+        wikipediaSummary: rawLiveIntel.executiveSummary,
+      })
+    : undefined;
+  const dossierDisambiguationGate = dossierAnchor
+    ? new EntityDisambiguationGate(dossierAnchor)
+    : undefined;
+
+  const validatedGroundingSources = rawLiveIntel
+    ? rawLiveIntel.groundingSources
+        .map((s) => validateAndNormalizeSourceTag(s, primaryDomainForSources))
+        .filter((s) => (dossierDisambiguationGate ? dossierDisambiguationGate.gateGroundingSource(s) : true))
+    : [];
+
+  const allQuarantinedCollisions = (() => {
+    const merged = [
+      ...(rawLiveIntel?.quarantinedEntityCollisions || []),
+      ...(dossierDisambiguationGate?.getQuarantinedRecords() || []),
+    ];
+    const seen = new Set<string>();
+    return merged.filter((rec) => {
+      const key = `${rec.source}|${rec.title.toLowerCase()}|${(rec.url || '').toLowerCase()}`;
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+  })();
+
+  // Patch 3.2: Canonical Leadership Sync so Section 2 never outputs "Not publicly disclosed" if Section 1 has verified names
+  const syncedLeadership = rawLiveIntel
+    ? resolveCanonicalLeadership({
+        registryDirectorsAndOfficers: rawLiveIntel.legalDbaPivots?.mergedDirectors || [],
+        registryPscOwners: rawLiveIntel.legalDbaPivots?.mergedPscsAndUbos || [],
+        secRelatedPersons: (rawLiveIntel.sovereignRegistries?.secFormDRelatedPersons || []).map(
+          (rp) => `${rp.name} (${rp.relationships.join(' / ')} — SEC Form D)`
+        ),
+        wikidataFounders: rawLiveIntel.founders,
+        wikidataExecutives: rawLiveIntel.keyExecutives,
+        narrativeTexts: [rawLiveIntel.executiveSummary, rawLiveIntel.originStory],
+      })
+    : { founders: [], keyExecutives: [] };
+
+  // Patch 5: Normalized display taxonomy (zero raw "infobox" / "Industry: website" artifacts)
+  const normalizedEntityType = rawLiveIntel
+    ? normalizeEntityTaxonomy(rawLiveIntel.entityType, 'Private Operating Enterprise', 'entityType')
+    : '';
+  const normalizedIndustry = rawLiveIntel
+    ? normalizeEntityTaxonomy(rawLiveIntel.industry, 'Commercial / Digital Technology Enterprise', 'industry')
+    : '';
+  const normalizedNaics = rawLiveIntel
+    ? normalizeEntityTaxonomy(rawLiveIntel.naicsOrSicCode, 'Not explicitly mapped in US SEC SIC', 'naics')
+    : '';
+
+  const liveIntel: LiveBusinessIntelligence | undefined = rawLiveIntel
+    ? {
+        ...rawLiveIntel,
+        entityType: normalizedEntityType,
+        industry: normalizedIndustry,
+        naicsOrSicCode: normalizedNaics,
+        founders: syncedLeadership.founders,
+        keyExecutives: syncedLeadership.keyExecutives,
+        groundingSources: validatedGroundingSources,
+        canonicalIdentityAnchor: dossierAnchor,
+        quarantinedEntityCollisions: allQuarantinedCollisions,
+      }
+    : undefined;
 
   // Resolve any company (live-grounded across all industries), sector sweep, or jurisdiction hub cleanly in read-only mode
   const resolved = resolveInvestigationTarget(
@@ -134,15 +246,6 @@ export function generateInvestigationDossier(
       documents: liveIntel?.extremeDorkingAndDna?.minedDocuments || [],
       liveIntel,
     });
-  // FIX 5A: Domain-validate all grounding sources before emitting 00_EXEC_SUMMARY.md and 08_SOURCE_INDEX.csv
-  const primaryDomainForSources =
-    liveIntel?.cyberTelemetry?.primaryDomain ||
-    liveIntel?.extremeDorkingAndDna?.domain ||
-    liveIntel?.officialWebsite ||
-    undefined;
-  const validatedGroundingSources = liveIntel
-    ? liveIntel.groundingSources.map((s) => validateAndNormalizeSourceTag(s, primaryDomainForSources))
-    : [];
 
   // Pre-build Squad C API/SDK Contract JSON upfront so Phase-5 ACH-LEAD (FIX 4) can cross-reference attached user leads directly against it
   const squadCSdkContractJson = liveIntel
@@ -150,7 +253,7 @@ export function generateInvestigationDossier(
         {
           target_entity: liveIntel.entityName,
           official_website: liveIntel.officialWebsite,
-          industry: liveIntel.industry,
+          industry: normalizedIndustry,
           operational_profile: liveIntel.technicalOrOperationalProfile,
           cyber_telemetry_summary: liveIntel.cyberTelemetry,
           grounding_sources: validatedGroundingSources,
@@ -172,7 +275,10 @@ export function generateInvestigationDossier(
       );
 
   const liveIntelWithPivots = liveIntel
-    ? { ...liveIntel, metadataPivots, groundingSources: validatedGroundingSources }
+    ? {
+        ...liveIntel,
+        metadataPivots,
+      }
     : undefined;
   const preRedTeamBayesian = computeBayesianFraudRiskPosterior(fri, liveIntelWithPivots, benford);
   const { achReport, postRedTeamBayesian: bayesianPosterior } = runAdversarialRedTeamAchPass({
@@ -197,6 +303,56 @@ export function generateInvestigationDossier(
       ? `\n**Calibration Note:** Raw heuristic FRI (${fri.toFixed(2)}) reflects uncalibrated signal volume; Bayesian Posterior (${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}%) reflects post-Red-Team ACH calibration after filtering enterprise noise.`
       : '';
 
+  const formatAsn = (raw: string | number | undefined | null): string => {
+    const stripped = String(raw || '').trim().replace(/^(?:AS)+/i, '');
+    return stripped ? `AS${stripped}` : 'AS-N/A';
+  };
+
+  // v31.0 Global Legal Counsel Telemetry (live Squad P/Z result or deterministic offline synthesis)
+  const resolvedGlobalLegalCounsel =
+    liveIntel?.globalLegalCounsel && liveIntel.globalLegalCounsel.statutoryExposureMatrix.length > 0
+      ? liveIntel.globalLegalCounsel
+      : synthesizeGlobalLegalCounselTelemetry({
+          entityName: matchedEntity.name,
+          legalName: matchedEntity.legalName,
+          country: liveIntel?.country || matchedEntity.country || 'United States',
+          headquarters: liveIntel?.headquarters || matchedEntity.hqCity || matchedEntity.country || 'Global',
+          industry: normalizedIndustry || matchedEntity.category || 'Enterprise',
+          naicsOrSicCode: normalizedNaics,
+          liveIntel: liveIntelWithPivots,
+          ecfrRegulations: liveIntel?.globalLegalCounsel?.ecfrRegulations || [],
+          controllingPrecedents: liveIntel?.globalLegalCounsel?.controllingPrecedents || [],
+          ukLegislationHits: liveIntel?.globalLegalCounsel?.ukLegislationHits || [],
+          ukCaseLawHits: liveIntel?.globalLegalCounsel?.ukCaseLawHits || [],
+          eurLexHits: liveIntel?.globalLegalCounsel?.eurLexHits || [],
+          apisQueried: liveIntel?.globalLegalCounsel?.apisQueried || [],
+          detectedJurisdictions: liveIntel?.globalLegalCounsel?.detectedJurisdictions || [
+            liveIntel?.country || matchedEntity.country || 'United States',
+          ],
+          detectedSectorTriggers: liveIntel?.globalLegalCounsel?.detectedSectorTriggers || [
+            normalizedIndustry || matchedEntity.category || 'General Corporate',
+          ],
+          ukNexusDetected: Boolean(
+            liveIntel?.globalLegalCounsel?.ukNexusDetected ||
+              /\b(united kingdom|u\.?k\.?|england|scotland|wales|london)\b/i.test(
+                `${liveIntel?.country || matchedEntity.country || ''} ${liveIntel?.headquarters || ''}`
+              ) ||
+              (liveIntel?.proxyKinship?.ukCompaniesHouseUbo?.companies?.length || 0) > 0
+          ),
+          euNexusDetected: Boolean(
+            liveIntel?.globalLegalCounsel?.euNexusDetected ||
+              /\b(european union|ireland|germany|france|netherlands|luxembourg|belgium)\b/i.test(
+                `${liveIntel?.country || matchedEntity.country || ''} ${liveIntel?.headquarters || ''}`
+              )
+          ),
+          offshoreCrossBorderDiscoveryEligible: Boolean(
+            liveIntel?.globalLegalCounsel?.offshoreCrossBorderDiscoveryEligible ||
+              (liveIntel?.globalBankingFlows?.offshoreBankingJurisdictions?.length || 0) > 0 ||
+              (liveIntel?.globalBlacklistsOffshore?.icijOffshoreLeaksHits?.length || 0) > 0
+          ),
+          generatedAtIso: timestampIso,
+        });
+
   // 1. 00_EXEC_SUMMARY.md
   const file00 = {
     filename: '00_EXEC_SUMMARY.md',
@@ -205,8 +361,8 @@ export function generateInvestigationDossier(
     content: liveIntel
       ? `# SOVEREIGN HYPER-INVESTIGATIONS GRID — LIVE EXECUTIVE DOSSIER
 **Target Business:** ${liveIntel.entityName} (${liveIntel.legalName})
-${liveIntel.dbaNames.length > 0 ? `**DBA / Trade Names:** ${liveIntel.dbaNames.join(', ')}\n` : ''}**Entity Classification:** ${liveIntel.entityType} · **Status:** ${liveIntel.operatingStatus}
-**Industry / Sector:** ${liveIntel.industry} · **NAICS/SIC:** ${liveIntel.naicsOrSicCode}
+${liveIntel.dbaNames.length > 0 ? `**DBA / Trade Names:** ${liveIntel.dbaNames.join(', ')}\n` : ''}**Entity Classification:** ${normalizedEntityType} · **Status:** ${liveIntel.operatingStatus}
+**Industry / Sector:** ${normalizedIndustry} · **NAICS/SIC:** ${normalizedNaics}
 **Business Scale:** ${liveIntel.businessScale} · **Founded:** ${liveIntel.foundedDateExact}
 **Headquarters / Location:** ${liveIntel.headquarters} (${liveIntel.country})
 **Stock Ticker / Registry ID:** ${liveIntel.stockTickerOrRegistryId} · **GLEIF LEI:** ${liveIntel.canonicalLei || liveIntel.leiCode}
@@ -231,17 +387,150 @@ ${liveIntel.executiveSummary}
 ${scope.uploadedFileName ? `- **Attached Lead Document:** ${scope.uploadedFileName} (ingested and cross-referenced)` : ''}
 
 ## 2. VERIFIED OWNERSHIP, LEADERSHIP & OPERATIONS
-- **Founders:** ${liveIntel.founders.length > 0 ? liveIntel.founders.join(', ') : 'Not publicly disclosed'}
-- **Key Executives / Owners:** ${liveIntel.keyExecutives.length > 0 ? liveIntel.keyExecutives.join(', ') : 'Not publicly disclosed'}${(liveIntel.externalSpvInvestors || liveIntel.sovereignRegistries?.externalSpvInvestors || []).length > 0 ? `\n- **External SPV / Fund Investors (SEC Form D · Isolated from Executives):** ${(liveIntel.externalSpvInvestors || liveIntel.sovereignRegistries?.externalSpvInvestors || []).slice(0, 8).map((inv) => `${inv.name} [${inv.role} via ${inv.spvIssuerName}]`).join(', ')}` : ''}
+- **Founders:** ${syncedLeadership.founders.length > 0 ? syncedLeadership.founders.join(', ') : 'Not publicly disclosed'}
+- **Key Executives / Owners:** ${syncedLeadership.keyExecutives.length > 0 ? syncedLeadership.keyExecutives.join(', ') : 'Not publicly disclosed'}${(liveIntel.externalSpvInvestors || liveIntel.sovereignRegistries?.externalSpvInvestors || []).length > 0 ? `\n- **External SPV / Fund Investors (SEC Form D · Isolated from Executives):** ${(liveIntel.externalSpvInvestors || liveIntel.sovereignRegistries?.externalSpvInvestors || []).slice(0, 8).map((inv) => `${inv.name} [${inv.role} via ${inv.spvIssuerName}]`).join(', ')}` : ''}${liveIntel.legalDbaPivots && liveIntel.legalDbaPivots.extractedLegalEntities.length > 0 ? `\n- **Phase-4 Operating Legal Entities (d/b/a Pivots):** ${liveIntel.legalDbaPivots.extractedLegalEntities.join(', ')}${liveIntel.legalDbaPivots.mergedPscsAndUbos.length > 0 ? ` · PSCs/UBOs: ${liveIntel.legalDbaPivots.mergedPscsAndUbos.slice(0, 4).join(', ')}` : ''}${liveIntel.legalDbaPivots.mergedRegisteredAddresses.length > 0 ? ` · Registered Address: ${liveIntel.legalDbaPivots.mergedRegisteredAddresses[0]}` : ''}` : ''}
 - **Ownership / UBO Chain:** ${liveIntel.ownershipAndUboChain.length > 0 ? liveIntel.ownershipAndUboChain.join(' -> ') : liveIntel.legalName}
-- **Products & Services:** ${liveIntel.productsAndServices.join(' · ') || liveIntel.industry}
+- **Products & Services:** ${liveIntel.productsAndServices.join(' · ') || normalizedIndustry}
 - **Business Model & Market Position:** ${liveIntel.primaryMarketMechanism}
 - **Subsidiaries / Branches (${liveIntel.subsidiaries.length}):** ${liveIntel.subsidiaries.length > 0 ? liveIntel.subsidiaries.join(', ') : 'Single-entity / None listed publicly'}
 
-## 3. REGULATORY, LEGAL & M&A SUMMARY
+## 3. REGULATORY, LEGAL, POLITICAL INFLUENCE & M&A SUMMARY
 - **Regulatory & Legal Dockets (${liveIntel.regulatoryAndLegalDockets.length}):**
 ${liveIntel.regulatoryAndLegalDockets.length > 0 ? liveIntel.regulatoryAndLegalDockets.map((d) => `  * **${d.title}** (${d.forum}, ${d.status}): ${d.summary}`).join('\n') : '  * None identified in live public records search.'}
-- **Acquisitions Verified:** ${liveIntel.acquisitions.length} · **Divestitures Verified:** ${liveIntel.divestitures.length} · **In-Process Deals:** ${liveIntel.inProcessDeals.length} · **Grants / Subsidies:** ${liveIntel.governmentSubsidiesAndGrants.length}
+${(liveIntel.legalSlappBankruptcy?.courtDockets?.length ?? 0) > 0 ? `- **CourtListener REST v4 RECAP Dockets & Judicial Opinions (${liveIntel.legalSlappBankruptcy!.courtDockets.length}):**\n${liveIntel.legalSlappBankruptcy!.courtDockets.slice(0, 6).map((cd) => `  * **${cd.caseName}** [\`${cd.recordType || 'RECAP_DOCKET'}\` · \`${cd.docketNumber}\`] — ${cd.court} · Filed ${cd.dateFiled} · Judge: ${cd.judgeAssigned}`).join('\n')}` : ''}
+- **Acquisitions Verified:** ${liveIntel.acquisitions.length} · **Divestitures Verified:** ${liveIntel.divestitures.length} · **In-Process Deals:** ${liveIntel.inProcessDeals.length} · **Grants / Subsidies:** ${liveIntel.governmentSubsidiesAndGrants.length} · **Regulations.gov Agency Comments:** ${liveIntel.politicalInfluence?.regulationsGovComments?.length ?? 0}
+
+### Political Influence & Partisan Split (OpenFEC · US Senate LDA · ProPublica 990)
+${(() => {
+  const pol = liveIntel.politicalInfluence;
+  const committees = pol?.openFecSummary?.committees || [];
+  const pacIds = committees.map((c) => `\`${c.committeeId}\` (${c.name})`).join(', ') || 'None matched on OpenFEC';
+  const pacDisb = Math.round(pol?.openFecSummary?.totalPacDisbursementsUsd || 0);
+  const ps = pol?.openFecSummary?.partisanSplit || {
+    demUsd: 0,
+    repUsd: 0,
+    indOtherUsd: 0,
+    totalUsd: 0,
+    demPct: 0,
+    repPct: 0,
+    indOtherPct: 0,
+    topRecipientCommittees: [],
+  };
+  const top5Str =
+    ps.topRecipientCommittees.length > 0
+      ? ps.topRecipientCommittees
+          .slice(0, 5)
+          .map(
+            (tc, idx) =>
+              `  ${idx + 1}. **${tc.committeeName}** [\`${tc.party}\`] — $${Math.round(tc.totalAmountUsd).toLocaleString('en-US')} (${tc.count} filing${tc.count === 1 ? '' : 's'})`
+          )
+          .join('\n')
+      : '  * None disclosed in sampled executive Schedule A filings.';
+  const nonprofits = pol?.affiliatedNonprofits || [];
+  const npAssets = Math.round(nonprofits.reduce((s, n) => s + (n.totalAssetsUsd || 0), 0));
+  const revSum = pol?.revolvingDoorSummary;
+  const schedE = pol?.openFecSummary?.scheduleEIndependentExpenditures || [];
+  const schedETotal = Math.round(schedE.reduce((s, e) => s + (e.amountUsd || 0), 0));
+  return [
+    `- **Corporate PAC ID(s) & Total Cycle Disbursements (OpenFEC Schedule B):** ${pacIds} · **Total Disbursements:** $${pacDisb.toLocaleString('en-US')}`,
+    `- **Executive & Board Schedule A Partisan Split (USD & %):** **DEM:** $${Math.round(ps.demUsd).toLocaleString('en-US')} (${ps.demPct}%) · **REP:** $${Math.round(ps.repUsd).toLocaleString('en-US')} (${ps.repPct}%) · **IND/OTHER:** $${Math.round(ps.indOtherUsd).toLocaleString('en-US')} (${ps.indOtherPct}%) · **Total:** $${Math.round(ps.totalUsd).toLocaleString('en-US')}`,
+    `- **Top 5 Recipient Committees / Lawmakers:**\n${top5Str}`,
+    `- **Affiliated 501(c)(3)/(c)(4) Foundations (ProPublica 990):** ${nonprofits.length} vehicle(s) · **Total Disclosed Assets:** $${npAssets.toLocaleString('en-US')}`,
+    `- **US Senate LDA Revolving Door & Agencies Lobbied:** ${revSum?.totalFormerGovLobbyists ?? 0} former federal official(s) (\`covered_position\`) · Quarterly Lobbying Spend: $${Math.round(revSum?.quarterlySpendUsd ?? 0).toLocaleString('en-US')} · Targeted Agencies: ${revSum?.targetedAgencies?.slice(0, 8).join(', ') || 'None indexed'} · Agency-Contract Overlaps: ${revSum?.agencyContractOverlaps?.length ?? 0}`,
+    `- **OpenFEC Schedule E Super PAC Independent Expenditures:** ${schedE.length} record(s) totaling $${schedETotal.toLocaleString('en-US')}`,
+  ].join('\n');
+})()}
+
+### Tech Architecture & Attack-Surface Snapshot (Squads U–Z · v29.0)
+${(() => {
+  const u = liveIntel.clientTechArchitecture;
+  const v = liveIntel.cloudIxpCompute;
+  const w = liveIntel.breachVelocitySurface;
+  const x = liveIntel.shellAddressClustering;
+  const y = liveIntel.adTechTosSurveillance;
+  const z = liveIntel.stackToPowerCapstone;
+  const cloudBackbone =
+    v && v.cloudCdnChains.length > 0
+      ? Array.from(new Set(v.cloudCdnChains.map((c) => `${c.provider} (${c.signalType})`))).join(', ')
+      : 'None classified from DNS CNAMEs';
+  const ixpList =
+    v && v.peeringDbNetworks.length > 0
+      ? v.peeringDbNetworks
+          .slice(0, 3)
+          .map((n) => `${formatAsn(n.asn)} ${n.networkName} (${n.ixpCount} IXPs / ${n.facilityCount} Colo Facs)`)
+          .join(' · ')
+      : 'No PeeringDB ASN colocation matched';
+  const mobileTrackers = u?.exodusPrivacyReports.reduce((sum, a) => sum + a.trackersCount, 0) ?? 0;
+  const shellClusters = x ? x.mailDropClusterCount + x.offshoreSuiteCount : 0;
+  const coverUpCount = z?.activeCoverUpAlerts.length ?? 0;
+  const exposedCritCount =
+    w?.passiveExposureChecks.filter((p) => p.classification === 'EXPOSED_CRITICAL').length ?? 0;
+  const adsTotal = (y?.adsTxtDirectCount ?? 0) + (y?.adsTxtResellerCount ?? 0);
+  return [
+    `- **Client JS & Mobile Forensics (Squad U):** ${u?.jsBundlesInspected.length ?? 0} first-party JS bundle(s) · ${u?.discoveredApiRoutes.length ?? 0} hidden API route(s) · ${u?.fingerprintingSignatures.length ?? 0} browser fingerprinting signature(s) · ${u?.publicSchemaEndpoints.filter((e) => e.exposed).length ?? 0} public schema/deep-link endpoint(s) · ${mobileTrackers} Exodus mobile SDK tracker(s)`,
+    `- **Cloud, IXP & AI Compute Backbone (Squad V):** ${cloudBackbone} · **PeeringDB:** ${ixpList} · **AI/Containers:** ${v?.huggingFaceModels.length ?? 0} HF model(s) · ${v?.dockerHubRepos.length ?? 0} Docker repo(s)`,
+    `- **Breach Velocity & Exposed Surface (Squad W):** ${w?.stateAgBreaches.length ?? 0} State AG breach disclosure(s) (Max Delay: ${w?.maxNotificationDelayDays ?? 0}d · Avg: ${w?.averageNotificationDelayDays ?? 0}d · ${Math.round(w?.totalAffectedResidents ?? 0).toLocaleString('en-US')} residents) · Passive Exposure Status: \`${w?.cleanExposureBenignControl ? 'BENIGN_CONTROL (Clean /.git & /.env)' : `${exposedCritCount} EXPOSED PATH(S)`}\``,
+    `- **Shell-Address Clustering & Infrastructure (Squad X):** ${shellClusters} mail-drop/offshore fiduciary cluster(s) (${x?.mailDropClusterCount ?? 0} registered-agent mail-drops · ${x?.offshoreSuiteCount ?? 0} offshore suites · Physical HQ: ${x?.physicalHqAddress || 'Unresolved'}) · ${x?.infrastructurePermitsAndPuc.length ?? 0} zoning/PUC permit hit(s)`,
+    `- **Ad-Tech Supply Chain & ToS Erosion (Squad Y):** ${adsTotal} \`ads.txt\` line(s) (${y?.adsTxtResellerCount ?? 0} resellers / ${y?.adsTxtDirectCount ?? 0} direct) · ${y?.sellersJsonSellersCount ?? 0} \`sellers.json\` node(s) · ToS;DR Grade: **${y?.tosdrSummary?.ratingGrade || 'N/A'}** · ${y?.policyWaybackClauseDiffs.filter((d) => d.status === 'INSERTED_IN_LATEST').length ?? 0} newly inserted coercive ToS/Privacy clause(s)`,
+    `- **Sovereign Stack-to-Power & Active Cover-Up Detector (Squad Z):** ${z?.stackToPowerChain.length ?? 0} Stack-to-Power layer(s) · **Active Cover-Up Alerts (T1 vs. T2):** ${coverUpCount > 0 ? `**${coverUpCount} ALERT(S) DETECTED** (${z!.activeCoverUpAlerts.map((a) => a.alertType).join(', ')})` : '0 alerts (baseline or stable snapshot)'}`,
+  ].join('\n');
+})()}
+${(() => {
+  const oc = liveIntel.darkPoolCrypto?.onChainForensics;
+  if (!oc) return '';
+  const hasOnChainHits =
+    Boolean(oc.evmIntelligence || oc.solanaIntelligence || oc.bitcoinIntelligence) ||
+    oc.dexScreenerMarket.pairsFound > 0 ||
+    oc.defiLlamaIntel.matchedHacks.length > 0 ||
+    oc.defiLlamaIntel.matchedTreasuries.length > 0 ||
+    !oc.cleanOnChainBenignControl;
+  if (!hasOnChainHits) return '';
+  const totalStolenUsd = oc.defiLlamaIntel.matchedHacks.reduce((s, h) => s + h.amountStolenUsd, 0);
+  const totalTreasuryUsd = oc.defiLlamaIntel.matchedTreasuries.reduce((s, t) => s + t.totalTreasuryUsd, 0);
+  const backdoorCount =
+    (oc.evmIntelligence?.privilegedAdminBackdoors.length ?? 0) +
+    (oc.evmIntelligence?.unverifiedSelectorsDecoded.filter((s) => s.isPrivilegedBackdoor).length ?? 0);
+  const whalePct =
+    oc.solanaIntelligence?.top10HolderPct ??
+    oc.goPlusAudit.solanaTokenSecurity?.top10HolderPct ??
+    oc.goPlusAudit.evmTokenSecurity?.top10HolderPct ??
+    null;
+  return [
+    ``,
+    `### On-Chain & Smart Contract Risk Summary (Squad O · Multi-Chain AML)`,
+    `- **Target Classification & RPC Posture:** \`${oc.targetClassification}\` (EVM: \`${oc.rpcModes.evmRpc}\` · SOL: \`${oc.rpcModes.solanaRpc}\` · Audit: \`${oc.rpcModes.contractAudit}\`) · Resolved ENS: \`${oc.resolvedEnsName || 'None'}\``,
+    `- **OFAC SDN Digital Currency Screening:** ${oc.ofacSanctionsScreening.targetDirectMatch ? '**CRITICAL DIRECT MATCH**' : oc.ofacSanctionsScreening.taintedCounterparties.length > 0 ? `**${oc.ofacSanctionsScreening.taintedCounterparties.length} TAINTED COUNTERPARTIES**` : `\`BENIGN_CONTROL\` (0 hits across ${oc.ofacSanctionsScreening.totalSanctionedAddressesIndexed.toLocaleString('en-US')} indexed OFAC addresses)`}`,
+    `- **Smart Contract, AML & Whale Audit:** Backdoor/Privileged Functions=${backdoorCount} · GoPlus Honeypot/Malicious=${oc.goPlusAudit.evmAddressSecurity?.isMalicious || oc.goPlusAudit.evmTokenSecurity?.isHoneypot ? '**FLAGGED**' : 'CLEAN'} · RugCheck=${oc.rugCheckAudit?.riskLevel || 'N/A'} · Top-10 Holder Concentration=${whalePct !== null ? `${whalePct}%` : 'N/A'}`,
+    `- **DEX Liquidity & DeFiLlama Intelligence:** ${oc.dexScreenerMarket.pairsFound} DexScreener pair(s) (${oc.dexScreenerMarket.anomalies.length} anomalies) · DeFiLlama Hacks: ${oc.defiLlamaIntel.matchedHacks.length} ($${Math.round(totalStolenUsd).toLocaleString('en-US')} stolen) · Treasuries: ${oc.defiLlamaIntel.matchedTreasuries.length} ($${Math.round(totalTreasuryUsd).toLocaleString('en-US')})`,
+    `- **Active On-Chain Risk Flags (${oc.riskFlags.length}):** ${oc.riskFlags.length > 0 ? oc.riskFlags.map((f) => `\`${f}\``).join(', ') : '`NONE (BENIGN_CONTROL)`'}`,
+  ].join('\n');
+})()}
+${(() => {
+  const gb = liveIntel.globalBankingFlows;
+  const le = liveIntel.primaryLegalEnforcement;
+  const pn = liveIntel.phoenixNewEndeavors;
+  const cm = liveIntel.crossCaseMemory;
+  const mhFlows = liveIntel.darkPoolCrypto?.onChainForensics?.multi_hop_treasury_flows || [];
+  const syncAlerts = liveIntel.darkPoolCrypto?.onChainForensics?.synchronized_cashout_alerts || [];
+  const crossTargetHits = cm?.crossTargetCollisions ?? cm?.collisions ?? [];
+  const sameTargetRuns = cm?.sameTargetPriorRuns ?? [];
+  const strongStatRows = resolvedGlobalLegalCounsel.statutoryExposureMatrix.filter((r) => r.evidentiaryStrength === 'STRONG').length;
+  const modStatRows = resolvedGlobalLegalCounsel.statutoryExposureMatrix.filter((r) => r.evidentiaryStrength === 'MODERATE').length;
+  return [
+    ``,
+    `### Global "Follow the Money", Banking, Enforcement, Phoenix & Cross-Case Memory (v30.0 / v31.0)`,
+    `- **Capital Inflows & Named Banking Rails (Squads F/I):** Form D Offerings: **$${Math.round(gb?.totalFormDOfferingUsd ?? 0).toLocaleString('en-US')}** (${gb?.formDCapTableOfferings.length ?? 0} filings) · Federal Prime/Sub Flows: **$${Math.round(gb?.totalProcurementFlowUsd ?? 0).toLocaleString('en-US')}** · Named Banks/Rails: **${gb?.namedBanksAndPaymentRails.length ?? 0}** · Credit Facilities/UK Charges: **${gb?.creditFacilitiesAndCharges.length ?? 0}** · Offshore Jurisdictions: **${gb?.offshoreBankingJurisdictions.length ?? 0}**`,
+    `- **Multi-Hop On-Chain Treasury & Cash-Out Synchronizer (Squad O):** ${mhFlows.length} multi-hop treasury/off-ramp flow(s) · **${syncAlerts.length}** event-synchronized cash-out alert(s) (Δt <= 14d)`,
+    `- **Primary RECAP Filings & Global Enforcement (Squad P):** ${le?.recapDocumentsMined.length ?? 0} primary complaint/exhibit doc(s) mined · **${le?.globalEnforcementHits.length ?? 0}** global enforcement hit(s) (SEC/CFTC/DOJ/FinCEN/UK FCA/FTC/CFPB/EC) · ${le?.pivotsEnqueuedToPhase4.length ?? 0} entity/bank/wallet pivot(s) fed to Phase-4`,
+    `- **Phoenix Companies & New-Endeavor Radar (Squads Q/X):** ${pn?.principalsPivoted.length ?? 0} principal(s) pivoted -> ${pn?.affiliatedEntities.length ?? 0} affiliated entity/entities · **${pn?.phoenixCompanyAlerts.length ?? 0}** Phoenix Company alert(s) · **${pn?.newEndeavorRadar.length ?? 0}** New-Endeavor Radar hit(s)`,
+    `- **Cross-Target Entity Collisions (Squad Z · SQLite WAL Memory):** ${crossTargetHits.length > 0 ? `**${crossTargetHits.length} CROSS-TARGET COLLISION(S) across ${cm?.priorInvestigationsMatched ?? 0} distinct prior target(s)** (${crossTargetHits.slice(0, 4).map((c) => `\`${c.fingerprintType}:${c.matchedLabel}\` <-> ${c.priorTargetEntity}`).join(' · ')})` : `0 cross-target collisions across distinct entities (${cm?.fingerprintsCheckedCount ?? 0} fingerprints indexed${sameTargetRuns.length > 0 ? ` · ${sameTargetRuns.length} same-target prior run snapshot(s) separated in 56_` : ''})`}`,
+    ``,
+    `### Global Legal Exposure & Jurisdiction Verdict (Squads P & Z · v31.0)`,
+    `- **Overall Legal Exposure Tier:** **\`${resolvedGlobalLegalCounsel.overallLegalExposureTier}\`** · **Active Jurisdictions:** ${resolvedGlobalLegalCounsel.detectedJurisdictions.join(', ') || 'Baseline Global'}`,
+    `- **Statutory Exposure Matrix:** ${resolvedGlobalLegalCounsel.statutoryExposureMatrix.length} statutory track(s) (**${strongStatRows} STRONG** · **${modStatRows} MODERATE**) · **Live Authorities:** ${resolvedGlobalLegalCounsel.ecfrRegulations.length} eCFR, ${resolvedGlobalLegalCounsel.controllingPrecedents.length} CourtListener precedents, ${resolvedGlobalLegalCounsel.ukLegislationHits.length + resolvedGlobalLegalCounsel.ukCaseLawHits.length} UK, ${resolvedGlobalLegalCounsel.eurLexHits.length} EU`,
+    `- **Corporate Veil & Admissibility Posture:** Veil=\`${resolvedGlobalLegalCounsel.corporateVeilAssessment.overallVeilIntegrity}\` · \`28 U.S.C. § 1782\` Discovery=${resolvedGlobalLegalCounsel.offshoreCrossBorderDiscoveryEligible ? 'ELIGIBLE' : 'NOT_TRIGGERED'} · **FRE 901/902(13)–(14):** SHA-256 + Binary Merkle + Ed25519 Sealed · **Actionable Work Product:** ${resolvedGlobalLegalCounsel.regulatoryReferrals.length} referral brief(s), ${resolvedGlobalLegalCounsel.targetedFoiaTemplates.length} targeted FOIA/FOI template(s) (see \`57_SOVEREIGN_GLOBAL_LEGAL_COUNSEL_BRIEF.md\`)`,
+  ].join('\n');
+})()}
 
 ## 4. COMPLETE DOSSIER APPENDICES INCLUDED IN THIS ZIP PACK
 - **Beginning-to-Present Corporate Lifecycle:** \`11_COMPANY_LIFECYCLE_BEGINNING_TO_PRESENT.md\`
@@ -259,11 +548,27 @@ ${liveIntel.regulatoryAndLegalDockets.length > 0 ? liveIntel.regulatoryAndLegalD
 - **Squad L Stealth Edits, Botnet C2, RPKI & Adversarial AI:** \`23_STEALTH_EDITS_BOTNET_C2_AND_ADVERSARIAL_AI_AUDIT.md\`
 - **Squad M Environmental EPA ECHO (CWA/CAA/RCRA) & Extraction:** \`24_ENVIRONMENTAL_EPA_ECHO_AND_RESOURCE_EXTRACTION.md\`
 - **Squad N Patent Warfare, PTAB/SEP & Bayh-Dole Academic Grant Capture:** \`25_PATENT_TROLLS_AND_ACADEMIC_GRANT_LAUNDERING.md\`
-- **Squad O Dark-Pool Derivatives (13F/NPORT-P) & Bitcoin Mempool Anchoring:** \`26_DARK_POOL_DERIVATIVES_AND_CRYPTO_TREASURY.md\`
+- **Squad O Dark-Pool Derivatives, Multi-Chain Crypto & Multi-Hop Treasury Tracer:** \`26_DARK_POOL_DERIVATIVES_AND_CRYPTO_TREASURY.md\`
 - **Squad P Legal SLAPP Warfare, Forced Arbitration & Judge Shopping:** \`27_LEGAL_SLAPP_JUDGE_SHOPPING_AND_ARBITRATION.md\`
-- **Squad Q Proxy Ventures, Kinship & Shadow Subsidiaries:** \`39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md\` + \`evidence/proxy_kinship_graph.json\`
-- **Squad R Political Affiliation, Lobbying & Dark-Money Graph:** \`40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md\` + \`evidence/political_influence_ledger.json\`
+- **Squad Q Proxy Ventures, 13F Ownership, Board Interlocks & Shadow Subsidiaries:** \`39_PROXY_VENTURES_KINSHIP_AND_SHADOW_SUBSIDIARIES.md\` + \`evidence/proxy_kinship_graph.json\`
+- **Squad R Political Affiliation, Partisan Split, Revolving Door & Dark Money:** \`40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md\` + \`evidence/political_influence_ledger.json\`
 - **Squad S Shadow Infrastructure DNA & Sub-Award Pass-Through:** \`41_SHADOW_INFRA_DNA_AND_SUBAWARD_PASS_THROUGH.md\` + \`evidence/raw_payloads/shadow_infra_subaward_payload.json\`
+- **v28.0 Municipal & State FOIA Intelligence (MuckRock API v2):** \`42_MUNICIPAL_FOIA_AND_LOCAL_CONTRACTS.md\` + \`evidence/raw_payloads/muckrock_foia_payload.json\`
+- **v28.0 Labor Warfare, DOL OLMS Persuaders & WARN Layoff Forensics:** \`43_LABOR_WARFARE_LAYOFFS_AND_PERSUADER_AUDIT.md\`
+- **v28.0 Secret Hardware & Experimental Spectrum Prototypes (FCC ID & ULS):** \`44_FCC_PROTOTYPES_AND_SPECTRUM_INTEL.md\`
+- **v28.0 Global Corruption Blacklists & Offshore Leaks (World Bank / SAM.gov / ICIJ):** \`45_GLOBAL_BLACKLISTS_AND_OFFSHORE_LEAKS.md\`
+- **v28.0 Physical Asset & FAA Aviation Shadow-Trust Unmasking:** \`46_AVIATION_SHADOW_TRUSTS_AND_PHYSICAL_ASSETS.md\`
+- **Squad U Client-Side Tech Architecture, JS Bundles & Mobile Trackers:** \`47_CLIENT_TECH_STACK_JS_BUNDLES_AND_MOBILE_TRACKERS.md\` + \`evidence/raw_payloads/client_tech_architecture_payload.json\`
+- **Squad V Cloud, IXP Colocation, AI Compute & Hardware Backbone:** \`48_CLOUD_IXP_COLOCATION_AND_AI_COMPUTE_BACKBONE.md\` + \`evidence/raw_payloads/cloud_ixp_compute_payload.json\`
+- **Squad W Breach Velocity, State AG Disclosures & Exposed Storage:** \`49_BREACH_VELOCITY_STATE_AG_AND_EXPOSED_SURFACE.md\` + \`evidence/raw_payloads/breach_velocity_payload.json\`
+- **Squad X Real Estate, Shell-Address Clustering & Infrastructure Permits:** \`50_SHELL_ADDRESS_CLUSTERING_AND_PHYSICAL_INFRASTRUCTURE.md\` + \`evidence/raw_payloads/shell_address_clustering_payload.json\`
+- **Squad Y Ad-Tech Supply Chain, Dark Patterns & ToS/Privacy Diff:** \`51_ADTECH_SUPPLY_CHAIN_DARK_PATTERNS_AND_TOS_DIFF.md\` + \`evidence/raw_payloads/adtech_tos_surveillance_payload.json\`
+- **Squad Z Sovereign Stack-to-Power Capstone & Active Cover-Up Detector:** \`52_SOVEREIGN_STACK_TO_POWER_CAPSTONE.md\` + \`evidence/raw_payloads/stack_to_power_capstone_payload.json\`
+- **v30.0 Global Banking, Offshore Accounts & Capital Flows (Squads F/I):** \`53_GLOBAL_BANKING_OFFSHORE_ACCOUNTS_AND_CAPITAL_FLOWS.md\` + \`evidence/raw_payloads/global_banking_capital_flows.json\`
+- **v30.0 Primary RECAP Legal Filings & Global Regulatory Enforcement (Squad P):** \`54_PRIMARY_LEGAL_FILINGS_AND_GLOBAL_ENFORCEMENT.md\` + \`evidence/raw_payloads/recap_and_enforcement_payload.json\`
+- **v30.0 Phoenix Companies, Serial Directors & New-Endeavor Radar (Squads Q/X):** \`55_PHOENIX_COMPANIES_SERIAL_DIRECTORS_AND_NEW_ENDEAVORS.md\` + \`evidence/raw_payloads/phoenix_and_new_endeavors_payload.json\`
+- **v30.0 Cross-Case Entity Collisions & Global Entity Memory (Squad Z):** \`56_CROSS_CASE_ENTITY_COLLISIONS.md\` + \`evidence/raw_payloads/cross_case_entity_collisions.json\`
+- **v31.0 Sovereign Global Legal Counsel Brief — Prosecutorial, Compliance, Admissibility & FOIA Work Product (Squads P & Z):** \`57_SOVEREIGN_GLOBAL_LEGAL_COUNSEL_BRIEF.md\` + \`evidence/raw_payloads/global_legal_counsel_payload.json\`
 - **Squad T Phase-5 Adversarial Red-Team ACH & Collision Steelmanning:** \`38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md\` + \`evidence/ach_red_team_matrix.json\`
 - **Bayesian Risk Posterior, Multi-Hop Causal Chains & Live TLS X.509 Audit:** \`37_BAYESIAN_RISK_CAUSAL_CHAINS_AND_TLS.md\` + \`evidence/bayesian_and_graph_analytics.json\`
 - **Court-Ready Printable Executive Brief (Print-to-PDF):** \`EXECUTIVE_BRIEF_PRINTABLE.html\`
@@ -283,7 +588,7 @@ ${validatedGroundingSources.map((s, idx) => `${idx + 1}. [${s.sourceType.toUpper
 **Execution Guarantee:** STRICTLY READ-ONLY ISOLATED SCRATCHPAD · ZERO MUTATIONS TO EXISTING LEDGERS OR SCHEMAS
 **Investigation ID:** ${investigationId}
 **Date of Synthesis:** ${new Date().toUTCString()}
-**Swarm Composition:** 20 Squads · 200 Autonomous Agents (Squads A–T) · Ed25519 + Binary Merkle + IPFS CIDv1 Sealed
+**Swarm Composition:** 26 Squads · 260 Autonomous Agents (Squads A–Z · v31.0) · Ed25519 + Binary Merkle + IPFS CIDv1 Sealed
 **Source Coverage:** ${sourcesCount} authenticated endpoints
 **Fraud Risk Index (FRI):** ${fri} / 1.00 (${fri > 0.6 ? 'ELEVATED' : fri > 0.3 ? 'MODERATE' : 'LOW'})
 **Bayesian Fraud Risk Posterior:** ${(bayesianPosterior.posteriorProbability * 100).toFixed(1)}% [${bayesianPosterior.riskTier}] (Prior ${(bayesianPosterior.priorProbability * 100).toFixed(1)}% · BF=${bayesianPosterior.combinedBayesFactor}x · 95% CI ${(bayesianPosterior.confidenceInterval95[0] * 100).toFixed(1)}%–${(bayesianPosterior.confidenceInterval95[1] * 100).toFixed(1)}%)${friBayesianCalibrationNoteLine}
@@ -554,7 +859,29 @@ ${liveIntel.regulatoryAndLegalDockets.length > 0 ? liveIntel.regulatoryAndLegalD
 - **Summary:** ${c.summary}
 `).join('\n') : 'No major antitrust actions, enforcement dockets, or public lawsuits were identified in live public records search for this entity.'}
 
-## 3. COMPLIANCE SUMMARY
+## 3. COURTLISTENER REST v4 RECAP DOCKETS & JUDICIAL OPINIONS (${liveIntel.legalSlappBankruptcy?.courtDockets?.length ?? 0})
+| Case Name | Type | Docket # | Court | Date Filed | Judge | Source |
+|-----------|------|----------|-------|------------|-------|--------|
+${(liveIntel.legalSlappBankruptcy?.courtDockets?.length ?? 0) > 0
+  ? liveIntel.legalSlappBankruptcy!.courtDockets
+      .map(
+        (cd) =>
+          `| **${cd.caseName.replace(/\|/g, '-')}** | \`${cd.recordType || 'RECAP_DOCKET'}\` | \`${cd.docketNumber.replace(/\|/g, '-')}\` | ${cd.court.replace(/\|/g, '-')} | ${cd.dateFiled} | ${cd.judgeAssigned.replace(/\|/g, '-')} | [CourtListener](${cd.url}) |`
+      )
+      .join('\n')
+  : '| Zero CourtListener REST v4 RECAP dockets or judicial opinions matched | N/A | N/A | N/A | N/A | N/A | https://www.courtlistener.com |'}
+
+## 4. REGULATIONS.GOV CORPORATE AGENCY COMMENT LETTERS (${liveIntel.politicalInfluence?.regulationsGovComments?.length ?? 0})
+${(liveIntel.politicalInfluence?.regulationsGovComments?.length ?? 0) > 0
+  ? liveIntel.politicalInfluence!.regulationsGovComments!
+      .map(
+        (rc, i) =>
+          `${i + 1}. **${rc.agencyId}** (\`${rc.docketId}\` · ${rc.postedDate}) — **${rc.title}** (${rc.organization}) — [Regulations.gov](${rc.url})`
+      )
+      .join('\n')
+  : '- Zero corporate public-comment letters matched via Regulations.gov API v4.'}
+
+## 5. COMPLIANCE SUMMARY
 ${liveIntel.squadHighlights.squadB.map((s, i) => `${i + 1}. ${s}`).join('\n') || `- Standard statutory compliance posture observed in ${liveIntel.country}.`}
 `
       : `# SQUAD B — REGULATORY, LEGAL & ANTITRUST EXPOSURE
@@ -1247,11 +1574,13 @@ CONSOLIDATION SIGNALS: ${matchedEntity.consolidationSignals.join(' | ')}`
     {
       key: 'darkpool_crypto_payload',
       filename: 'evidence/raw_payloads/darkpool_crypto_payload.json',
-      description: 'Raw Telemetry Payload: SEC Form 13F-HR/NPORT-P & Live Bitcoin Mempool Chain Tip',
+      description: 'Raw Telemetry Payload: SEC Form 13F-HR/NPORT-P, Live Bitcoin Mempool Tip & v30.0 Multi-Hop On-Chain Treasury / Synchronized Cash-Out Forensics',
       fallback: {
         derivativesVerdict: `Composite 13F dark-pool & crypto treasury baseline for ${matchedEntity.legalName}`,
         form13fAndNportFilings: [],
         mempoolTipHeight: null,
+        multi_hop_treasury_flows: liveIntel?.darkPoolCrypto?.onChainForensics?.multi_hop_treasury_flows || [],
+        synchronized_cashout_alerts: liveIntel?.darkPoolCrypto?.onChainForensics?.synchronized_cashout_alerts || [],
       },
     },
     {
@@ -1494,10 +1823,188 @@ CONSOLIDATION SIGNALS: ${matchedEntity.consolidationSignals.join(' | ')}`
         summaryVerdict: 'SHADOW_INFRA_SUBAWARD_UNAVAILABLE_OFFLINE',
       }) as unknown as Record<string, unknown>,
     },
+    {
+      key: 'client_tech_architecture_payload',
+      filename: 'evidence/raw_payloads/client_tech_architecture_payload.json',
+      description: 'v29.0 Squad U Raw Client-Side Tech Architecture, JS Bundles, Well-Known Schemas & Exodus Mobile Trackers Payload',
+      fallback: (liveIntel?.clientTechArchitecture || {
+        primaryDomain: liveIntel?.officialWebsite || '',
+        homepageFetched: false,
+        jsBundlesInspected: [],
+        discoveredApiRoutes: [],
+        discoveredFeatureFlags: [],
+        stagingOrInternalHosts: [],
+        fingerprintingSignatures: [],
+        publicSchemaEndpoints: [],
+        mobileAppIds: { androidPackages: [], iosBundleIds: [] },
+        exodusPrivacyReports: [],
+        summaryVerdict: 'CLIENT_TECH_ARCHITECTURE_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'cloud_ixp_compute_payload',
+      filename: 'evidence/raw_payloads/cloud_ixp_compute_payload.json',
+      description: 'v29.0 Squad V Raw PeeringDB IXP/Colocation, Cloud/CDN CNAMEs, Hugging Face & Docker Hub Backbone Payload',
+      fallback: (liveIntel?.cloudIxpCompute || {
+        peeringDbNetworks: [],
+        colocationFacilities: [],
+        ixpExchanges: [],
+        tier1TransitDependencies: [],
+        huggingFaceModels: [],
+        dockerHubRepos: [],
+        cloudCdnChains: [],
+        summaryVerdict: 'CLOUD_IXP_COMPUTE_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'breach_velocity_payload',
+      filename: 'evidence/raw_payloads/breach_velocity_payload.json',
+      description: 'v29.0 Squad W Raw State AG Breach Velocity (WA/CA/TX) & Passive Exposure Verification Payload',
+      fallback: (liveIntel?.breachVelocitySurface || {
+        stateAgBreaches: [],
+        averageNotificationDelayDays: null,
+        maxNotificationDelayDays: null,
+        totalAffectedResidents: 0,
+        passiveExposureChecks: [],
+        robotsDisallowedAdminPaths: [],
+        securityTxtFound: false,
+        correlatedKevCount: 0,
+        correlatedVtMalicious: 0,
+        correlatedOtxPulses: 0,
+        cleanExposureBenignControl: true,
+        summaryVerdict: 'BREACH_VELOCITY_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'shell_address_clustering_payload',
+      filename: 'evidence/raw_payloads/shell_address_clustering_payload.json',
+      description: 'v29.0 Squad X Raw Shell-Address Clustering (Registered-Agent Mail-Drops, Offshore Fiduciary Suites) & Infrastructure Permits Payload',
+      fallback: (liveIntel?.shellAddressClustering || {
+        clusteredAddresses: [],
+        mailDropClusterCount: 0,
+        offshoreSuiteCount: 0,
+        physicalHqAddress: liveIntel?.headquarters || 'Unresolved',
+        infrastructurePermitsAndPuc: [],
+        summaryVerdict: 'SHELL_ADDRESS_CLUSTERING_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'adtech_tos_surveillance_payload',
+      filename: 'evidence/raw_payloads/adtech_tos_surveillance_payload.json',
+      description: 'v29.0 Squad Y Raw Ad-Tech Supply Chain (ads.txt/sellers.json), Wayback ToS/Privacy Clause Diff & ToS;DR v4 Payload',
+      fallback: (liveIntel?.adTechTosSurveillance || {
+        primaryDomain: liveIntel?.officialWebsite || '',
+        adsTxtDirectCount: 0,
+        adsTxtResellerCount: 0,
+        adsTxtExchanges: [],
+        sellersJsonSellersCount: 0,
+        sellersJsonSample: [],
+        policyWaybackClauseDiffs: [],
+        tosdrSummary: null,
+        euDsaGdprNotices: [],
+        summaryVerdict: 'ADTECH_TOS_SURVEILLANCE_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'stack_to_power_capstone_payload',
+      filename: 'evidence/raw_payloads/stack_to_power_capstone_payload.json',
+      description: 'v29.0 Squad Z Sovereign Stack-to-Power Capstone Synthesis & T1-vs-T2 Active Cover-Up Detector Payload',
+      fallback: (liveIntel?.stackToPowerCapstone || {
+        generatedAtIso: timestampIso,
+        stackToPowerChain: [],
+        activeCoverUpAlerts: [],
+        coverUpBaselineStatus: 'INITIAL_BASELINE_CAPTURED',
+        executiveSnapshotMetrics: {
+          jsEndpointsCount: 0,
+          mobileTrackersCount: 0,
+          ixpAndColoCount: 0,
+          cloudProviders: [],
+          adTechResellersCount: 0,
+          maxBreachDelayDays: null,
+          mailDropShellClustersCount: 0,
+          activeCoverUpAlertsCount: 0,
+        },
+        summaryVerdict: 'STACK_TO_POWER_CAPSTONE_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'global_banking_capital_flows',
+      filename: 'evidence/raw_payloads/global_banking_capital_flows.json',
+      description: 'v30.0 Squads F/I Raw Global Banking, SEC Form D/ADV, Credit Agreements, UK CH Charges, Offshore Jurisdictions & USASpending Flows Payload',
+      fallback: (liveIntel?.globalBankingFlows || {
+        formDCapTableOfferings: [],
+        formAdvInstitutionalBackers: [],
+        creditFacilitiesAndCharges: [],
+        namedBanksAndPaymentRails: [],
+        offshoreBankingJurisdictions: [],
+        procurementPrimeToSubFlows: [],
+        totalFormDOfferingUsd: 0,
+        totalProcurementFlowUsd: 0,
+        summaryVerdict: 'GLOBAL_BANKING_CAPITAL_FLOWS_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'recap_and_enforcement_payload',
+      filename: 'evidence/raw_payloads/recap_and_enforcement_payload.json',
+      description: 'v30.0 Squad P Raw CourtListener RECAP Free-PDF/Plaintext Miner & Global Regulatory Enforcement Feeds Payload',
+      fallback: (liveIntel?.primaryLegalEnforcement || {
+        recapDocumentsMined: [],
+        globalEnforcementHits: [],
+        pivotsEnqueuedToPhase4: [],
+        feedsQueried: [],
+        summaryVerdict: 'RECAP_AND_GLOBAL_ENFORCEMENT_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'phoenix_and_new_endeavors_payload',
+      filename: 'evidence/raw_payloads/phoenix_and_new_endeavors_payload.json',
+      description: 'v30.0 Squads Q/X Raw Phoenix Company Detector, Multi-Hop Officer/PSC Pivots & New-Endeavor Radar Payload',
+      fallback: (liveIntel?.phoenixNewEndeavors || {
+        principalsPivoted: [],
+        affiliatedEntities: [],
+        phoenixCompanyAlerts: [],
+        newEndeavorRadar: [],
+        githubCommitEmailDna: [],
+        summaryVerdict: 'PHOENIX_AND_NEW_ENDEAVORS_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'cross_case_entity_collisions',
+      filename: 'evidence/raw_payloads/cross_case_entity_collisions.json',
+      description: 'v30.0 / v31.0 Squad Z Indexed SQLite WAL Global Entity Memory & Cross-Target vs. Same-Target Entity Collisions Payload',
+      fallback: (liveIntel?.crossCaseMemory || {
+        fingerprintsCheckedCount: 0,
+        priorInvestigationsMatched: 0,
+        collisions: [],
+        crossTargetCollisions: [],
+        sameTargetPriorRuns: [],
+        summaryVerdict: 'CROSS_CASE_ENTITY_MEMORY_UNAVAILABLE_OFFLINE',
+      }) as unknown as Record<string, unknown>,
+    },
+    {
+      key: 'global_legal_counsel_payload',
+      filename: 'evidence/raw_payloads/global_legal_counsel_payload.json',
+      description: 'v31.0 Squads P & Z Global Legal Counsel Payload (eCFR, CourtListener Opinions, UK Legislation/Case Law, EUR-Lex, Exposure Matrix, MTD Simulation, SOL Clocks, Referrals & FOIA Templates)',
+      fallback: resolvedGlobalLegalCounsel as unknown as Record<string, unknown>,
+    },
   ];
 
   const rawPayloadFiles = rawPayloadSpecs.map((spec) => {
-    const payloadObj = rp[spec.key] && typeof rp[spec.key] === 'object' ? rp[spec.key] : spec.fallback;
+    const baseObj = rp[spec.key] && typeof rp[spec.key] === 'object' ? rp[spec.key] : spec.fallback;
+    const payloadObj =
+      spec.key === 'darkpool_crypto_payload' && baseObj && typeof baseObj === 'object'
+        ? {
+            ...(baseObj as Record<string, unknown>),
+            multi_hop_treasury_flows:
+              (baseObj as Record<string, unknown>).multi_hop_treasury_flows ??
+              liveIntel?.darkPoolCrypto?.onChainForensics?.multi_hop_treasury_flows ??
+              [],
+            synchronized_cashout_alerts:
+              (baseObj as Record<string, unknown>).synchronized_cashout_alerts ??
+              liveIntel?.darkPoolCrypto?.onChainForensics?.synchronized_cashout_alerts ??
+              [],
+          }
+        : baseObj;
     return {
       filename: spec.filename,
       description: spec.description,
@@ -1547,7 +2054,7 @@ CONSOLIDATION SIGNALS: ${matchedEntity.consolidationSignals.join(' | ')}`
     type: 'markdown' as const,
     content: liveIntel
       ? `# SQUAD E — CLAIMS VS. REALITY & COMPLIANCE PATTERN ANALYSIS (LIVE)
-**Audit Scope:** Squads A–T (200 Agents) + 3-Stage Bayesian Log-Odds Tribunal (Prosecutor -> Defense -> Judge) + Ring-1 BFT Quorum
+**Audit Scope:** Squads A–Z (260 Agents · v29.0) + 3-Stage Bayesian Log-Odds Tribunal (Prosecutor -> Defense -> Judge) + Ring-1 BFT Quorum
 **Target Business:** ${liveIntel.entityName} (${liveIntel.industry})
 
 ## 1. VERIFIED CLAIMS VS. REALITY MATRIX
@@ -1568,6 +2075,7 @@ ${promotedTribunalEntries.length > 0 ? promotedTribunalEntries.map((e) => `### [
 - **Squad J Forensic Accounting (Beneish M / Altman Z / Sloan TATA):** ${liveIntel.accountingForensics?.summaryVerdict || 'Evaluated in 21_FORENSIC_ACCOUNTING_M_SCORE_AND_ACCRUAL_AUDIT.md'}.
 - **Squad M–P Live Matrix Signals:** EPA ECHO (${liveIntel.environmentalEpa?.epaFacilitiesCount || 0} facilities / $${Math.round(liveIntel.environmentalEpa?.totalPenaltiesUsd || 0).toLocaleString('en-US')} penalties) · NIH/NSF Grants (${(liveIntel.patentGrantCapture?.nihAwardsCount || 0) + (liveIntel.patentGrantCapture?.nsfAwardsCount || 0)}) · 13F/NPORT (${liveIntel.darkPoolCrypto?.form13fAndNportFilings.length || 0}) · CourtListener Dockets (${liveIntel.legalSlappBankruptcy?.courtListenerDocketsCount || 0}).
 - **Squad Q–S Proxy, Political & Shadow Infra Signals:** Proxy/Kinship (${liveIntel.proxyKinship?.relatedPersonTransactions.length || 0} Item 404 · ${liveIntel.proxyKinship?.form4IndirectOwnerships.length || 0} Form 4 indirect · ${liveIntel.proxyKinship?.exhibit21SubsidiaryDiff.vanishedSubsidiaries.length || 0} vanished Ex-21.1 subs) · Political/FARA (${liveIntel.politicalInfluence?.faraMatches.length || 0} FARA · $${Math.round((liveIntel.politicalInfluence?.openFecSummary.totalPacDisbursementsUsd || 0) + (liveIntel.politicalInfluence?.openFecSummary.totalExecutiveContributionsUsd || 0)).toLocaleString('en-US')} OpenFEC · ${liveIntel.politicalInfluence?.affiliatedNonprofits.length || 0} 501(c)) · Shadow Infra & Sub-Awards (${liveIntel.shadowInfraSubawards?.sharedInfraDomains.filter((d) => d.classification === 'UNDISCLOSED_FRONT_OR_PARTNER').length || 0} front domains · $${Math.round(liveIntel.shadowInfraSubawards?.totalSubawardPassThroughUsd || 0).toLocaleString('en-US')} sub-awards).
+- **Squad U–Z Full-Alphabet Tech Stack & Power Signals:** Client JS/Mobile (${liveIntel.clientTechArchitecture?.discoveredApiRoutes.length || 0} routes / ${liveIntel.clientTechArchitecture?.fingerprintingSignatures.length || 0} FP sigs) · Cloud/IXP (${liveIntel.cloudIxpCompute?.peeringDbNetworks.length || 0} PeeringDB ASNs / ${liveIntel.cloudIxpCompute?.cloudCdnChains.length || 0} cloud CNAMEs) · State AG Breaches (${liveIntel.breachVelocitySurface?.stateAgBreaches.length || 0}, max delay ${liveIntel.breachVelocitySurface?.maxNotificationDelayDays ?? 0}d) · Shell Clusters (${(liveIntel.shellAddressClustering?.mailDropClusterCount || 0) + (liveIntel.shellAddressClustering?.offshoreSuiteCount || 0)}) · Ad-Tech/ToS (${(liveIntel.adTechTosSurveillance?.adsTxtDirectCount || 0) + (liveIntel.adTechTosSurveillance?.adsTxtResellerCount || 0)} ads.txt / ToS;DR ${liveIntel.adTechTosSurveillance?.tosdrSummary?.ratingGrade || 'N/A'}) · Active Cover-Up Alerts (${liveIntel.stackToPowerCapstone?.activeCoverUpAlerts.length || 0}).
 - **Ring-1 BFT Corroboration Ratio:** **${bftSummary.corroboratedFactRatio}** (${bftSummary.statutoryRootSourcesCount} statutory roots vs. ${bftSummary.untrustedIngressCount} untrusted ingress sources).
 - **Legal Structuring & Loopholes:** See \`14_LAWFUL_FRAUD_LOOPHOLES_AND_ARBITRAGE_MAP.md\` & \`fraud_loopholes_matrix.csv\`.
 
@@ -1576,7 +2084,7 @@ ${promotedTribunalEntries.length > 0 ? promotedTribunalEntries.map((e) => `### [
 - **Market Concentration Index (MAI):** **${mai}**
 `
       : `# SQUAD E — FRAUD & MONOPOLY PATTERN ANALYSIS
-**Audit Scope:** Squads A–T (200 Agents) + 3-Stage Bayesian Log-Odds Tribunal (Prosecutor -> Defense -> Judge)
+**Audit Scope:** Squads A–Z (260 Agents · v29.0) + 3-Stage Bayesian Log-Odds Tribunal (Prosecutor -> Defense -> Judge)
 **Entity:** ${matchedEntity.name}
 
 ## 1. THE CONTRADICTION MATRIX ("SAY X / DO Y")
@@ -2789,6 +3297,19 @@ ${JSON.stringify(citations, null, 2)}
             `- **Checked IPs:** \`${das.spamhausDropCheck.checkedIps.join(', ') || 'None'}\` · **Spamhaus DROP CIDRs Indexed:** ${das.spamhausDropCheck.listEntriesCount} · **Abuse.ch SSLBL Certs Indexed:** ${das.spamhausDropCheck.sslblEntriesCount}`,
           ]
         : []),
+      ...(liveIntel?.cyberTelemetry?.virusTotalIntel
+        ? [
+            `### VirusTotal v3 Domain Reputation & Passive DNS (\`${liveIntel.cyberTelemetry.virusTotalIntel.domain}\`)`,
+            `- **Engine Verdicts:** **${liveIntel.cyberTelemetry.virusTotalIntel.maliciousCount} Malicious** · **${liveIntel.cyberTelemetry.virusTotalIntel.suspiciousCount} Suspicious** · ${liveIntel.cyberTelemetry.virusTotalIntel.harmlessCount} Harmless · **Reputation Score:** \`${liveIntel.cyberTelemetry.virusTotalIntel.reputationScore}\``,
+            `- **Registrar:** ${liveIntel.cyberTelemetry.virusTotalIntel.registrar} · **Created:** ${liveIntel.cyberTelemetry.virusTotalIntel.creationDate} · **Passive DNS Records:** ${liveIntel.cyberTelemetry.virusTotalIntel.lastDnsRecords.length} ([VirusTotal](${liveIntel.cyberTelemetry.virusTotalIntel.url}))`,
+          ]
+        : []),
+      ...(liveIntel?.cyberTelemetry?.otxThreatIntel
+        ? [
+            `### AlienVault OTX Threat Intelligence (\`${liveIntel.cyberTelemetry.otxThreatIntel.domain}\`)`,
+            `- **Pulse Count:** **${liveIntel.cyberTelemetry.otxThreatIntel.pulseCount}** · **Classification:** \`${liveIntel.cyberTelemetry.otxThreatIntel.classification}\` · **Malware Families:** ${liveIntel.cyberTelemetry.otxThreatIntel.malwareFamilies.join(', ') || 'None'} ([AlienVault OTX](${liveIntel.cyberTelemetry.otxThreatIntel.url}))`,
+          ]
+        : []),
       ``,
       `## 4. Software Supply Chain (npm / PyPI / Crates.io / Docker Hub), Google OSV.dev & FIRST.org EPSS`,
       ...(das &&
@@ -2946,9 +3467,9 @@ ${JSON.stringify(citations, null, 2)}
 
   const fileRejectedHypotheses = {
     filename: 'truth/rejected_hypotheses.json',
-    description: 'Stage-3 Bayesian Tribunal Falsified / Rejected Hypotheses (P(H|E) < 0.40)',
+    description: 'Stage-3 Bayesian Tribunal Falsified Hypotheses & Entity Collision Quarantine (P(H|E) < 0.40 + ENTITY_COLLISION_FILTERED)',
     type: 'json' as const,
-    content: buildRejectedHypothesesJson(matchedEntity, tribunal, timestampIso)
+    content: buildRejectedHypothesesJson(matchedEntity, tribunal, timestampIso, allQuarantinedCollisions)
   };
 
   // Collect all dossier & evidence files included in the Binary Merkle Tree
@@ -3468,7 +3989,7 @@ ${
     ? `| Signal | Category | Likelihood Ratio | Log-Odds Δ | Direction | Observed Telemetry |\n|--------|----------|-----------------:|-----------:|-----------|--------------------|\n${bayesianPosterior.evidenceContributions
         .map(
           (c) =>
-            `| **${c.label.replace(/\|/g, '-')}** | \`${c.category}\` | \`${c.likelihoodRatio}x\` | \`${c.logOddsDelta >= 0 ? '+' : ''}${c.logOddsDelta}\` | **${c.direction}** | ${c.observedValue.replace(/\|/g, '-')} |`
+            `| **${c.label.replace(/\|/g, '-')}** | \`${c.category}\` | \`${c.likelihoodRatio.toFixed(4)}x\` | \`${c.logOddsDelta >= 0 ? '+' : ''}${c.logOddsDelta.toFixed(4)}\` | **${c.direction}** | ${c.observedValue.replace(/\|/g, '-')} |`
         )
         .join('\n')}`
     : '- No elevated forensic likelihood ratios triggered beyond the baseline prior probability.'
@@ -3576,8 +4097,9 @@ ${entropyReports
 **Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
 **Generated At:** \`${timestampIso}\`  
 **Pre-Red-Team Bayesian Posterior:** **${(achReport.preRedTeamPosterior * 100).toFixed(1)}%**  
-**Post-Red-Team Bayesian Posterior:** **${(achReport.postRedTeamPosterior * 100).toFixed(1)}%** (Combined Red-Team Negative LR: **\`${achReport.combinedNegativeLr}x\`**, Log-Odds Δ: \`${achReport.totalRedTeamLogOddsDelta}\`)  
-**Findings Stress-Tested (Top 10 Highest Severity):** **${achReport.totalFindingsEvaluated}** · **Survived:** **${achReport.survivedCount}** · **Weakened:** **${achReport.weakenedCount}** · **Refuted (Non-Diagnostic):** **${achReport.refutedCount}**  
+**Post-Red-Team Bayesian Posterior:** **${(achReport.postRedTeamPosterior * 100).toFixed(1)}%**  
+**ACH ↔ Bayesian Parity Breakdown:** **Lead LR:** \`${(achReport.leadLikelihoodRatio ?? 1).toFixed(4)}x\` (Δ \`${(achReport.leadLogOddsDelta ?? 0) >= 0 ? '+' : ''}${(achReport.leadLogOddsDelta ?? 0).toFixed(4)}\`) · **Core ACH Calibration LR:** \`${(achReport.coreAchCalibrationLr ?? achReport.combinedNegativeLr).toFixed(4)}x\` (Δ \`${(achReport.coreAchLogOddsDelta ?? achReport.totalRedTeamLogOddsDelta) >= 0 ? '+' : ''}${(achReport.coreAchLogOddsDelta ?? achReport.totalRedTeamLogOddsDelta).toFixed(4)}\`) · **Combined Post-ACH LR:** **\`${achReport.combinedNegativeLr.toFixed(4)}x\`** (Total Log-Odds Δ: \`${achReport.totalRedTeamLogOddsDelta >= 0 ? '+' : ''}${achReport.totalRedTeamLogOddsDelta.toFixed(4)}\`)  
+**Findings Stress-Tested:** **${achReport.totalFindingsEvaluated}** (${achReport.coreFindingsEvaluated ?? achReport.totalFindingsEvaluated} core${achReport.findings.some((f) => f.findingId === 'ACH-LEAD') ? ' + 1 isolated ACH-LEAD' : ''}) · **Survived:** **${achReport.survivedCount}** · **Weakened:** **${achReport.weakenedCount}** · **Refuted (Non-Diagnostic):** **${achReport.refutedCount}** · **Uncorroborated Single-Source:** **${achReport.uncorroboratedCount ?? 0}**  
 **Bulletproof Threshold (>85% Post-ACH Survival):** **\`${achReport.bulletproofThresholdMet ? 'SURVIVED_BULLETPROOF' : 'CALIBRATED_STANDARD'}\`**
 
 > **Executive ACH Verdict:** ${achReport.executiveVerdict}
@@ -3588,10 +4110,13 @@ ${entropyReports
 ${
   achReport.findings.length > 0
     ? `| ID | Severity | Signal | H1 (Adverse Hypothesis) | H0 (Benign Steelman) | Avg Diag. | Neg LR | Verdict |\n|----|----------|--------|-------------------------|----------------------|----------:|-------:|---------|\n${achReport.findings
-        .map(
-          (f) =>
-            `| \`${f.findingId}\` | **${f.severity}** | \`${f.sourceAgentOrSignal.replace(/\|/g, '-')}\` | ${f.h1AdverseHypothesis.slice(0, 110).replace(/\|/g, '-')} | ${f.h0BenignSteelman.slice(0, 110).replace(/\|/g, '-')} | \`${f.diagnosticityAvg}\` | \`${f.negativeLikelihoodRatio}x\` | **\`${f.verdict}\`** |`
-        )
+        .map((f) => {
+          const signalLabel =
+            f.corroborating_streams && f.corroborating_streams.length > 1
+              ? f.corroborating_streams.join(' + ')
+              : f.sourceAgentOrSignal;
+          return `| \`${f.findingId}\` | **${f.severity}** | \`${signalLabel.replace(/\|/g, '-')}\` | ${truncateAtWordBoundary(f.h1AdverseHypothesis, 110).replace(/\|/g, '-')} | ${truncateAtWordBoundary(f.h0BenignSteelman, 110).replace(/\|/g, '-')} | \`${f.diagnosticityAvg}\` | \`${f.negativeLikelihoodRatio.toFixed(4)}x\` | **\`${f.verdict}\`** |`;
+        })
         .join('\n')}`
     : '- Zero elevated adverse findings required Phase-5 ACH falsification on this run.'
 }
@@ -3710,6 +4235,65 @@ ${
         )
         .join('\n')
     : '| N/A | `NO_DIFF` | Fewer than 2 historical Exhibit 21.1 filings available or zero vanished subsidiaries. |'
+}
+
+---
+
+## 6. TOP INSTITUTIONAL 13F / 13G OWNERSHIP HOLDERS (${pq?.institutional13fHolders?.length ?? 0})
+| Institutional Manager | Filing Type | Filing Date | Disclosed Stake | Source |
+|-----------------------|-------------|-------------|-----------------|--------|
+${
+  pq?.institutional13fHolders && pq.institutional13fHolders.length > 0
+    ? pq.institutional13fHolders
+        .map(
+          (h) =>
+            `| **${h.holderName.replace(/\|/g, '-')}** | \`${h.formType || '13F-HR'}\` | ${h.filingDate || 'N/A'} | ${h.sharesOrValue || 'See SEC 13F/13G'} | [SEC EDGAR](${h.sourceUrl}) |`
+        )
+        .join('\n')
+    : '| None indexed | N/A | N/A | N/A | N/A |'
+}
+
+---
+
+## 7. CROSS-ENTITY BOARD & EXECUTIVE INTERLOCKS (\`BOARD_INTERLOCK\`: ${pq?.boardInterlocks?.length ?? 0})
+| Individual Name | Classification | Interlocked Organizations / Funds | Corroborating Sources |
+|-----------------|----------------|-----------------------------------|-----------------------|
+${
+  pq?.boardInterlocks && pq.boardInterlocks.length > 0
+    ? pq.boardInterlocks
+        .map(
+          (il) =>
+            `| **${il.personName.replace(/\|/g, '-')}** | \`${il.classification}\` | ${il.organizations.join('; ').replace(/\|/g, '-')} | ${il.sources.join(', ').replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| None detected | `NO_INTERLOCK` | No executives/directors matched across >= 2 distinct SEC filings or external Form D funds. | N/A |'
+}
+
+---
+
+## 8. UK COMPANIES HOUSE SUBSIDIARIES, DIRECTORS & PSC / UBO CHAINS (${pq?.ukCompaniesHouseUbo?.companies?.length ?? 0} entities · ${pq?.ukCompaniesHouseUbo?.totalPscUbos ?? 0} PSC/UBOs)
+> **Status:** ${pq?.ukCompaniesHouseUbo?.summaryVerdict || 'Optional `COMPANIES_HOUSE_API_KEY` not configured; zero-key UK search fallback active.'}
+
+| Company # | UK Entity Name | Status | Directors / Officers | Persons with Significant Control (PSC / UBO) | Source |
+|-----------|----------------|--------|----------------------|----------------------------------------------|--------|
+${
+  pq?.ukCompaniesHouseUbo?.companies?.length
+    ? pq.ukCompaniesHouseUbo.companies
+        .map((c) => {
+          const officersStr =
+            c.officers
+              .slice(0, 5)
+              .map((o) => `${o.name} (${o.officerRole})`)
+              .join('; ') || 'None disclosed';
+          const pscStr =
+            c.personsWithSignificantControl
+              .slice(0, 5)
+              .map((p) => `${p.name} [${p.naturesOfControl.slice(0, 2).join(', ') || p.kind}]`)
+              .join('; ') || 'None disclosed';
+          return `| \`${c.companyNumber}\` | **${c.title.replace(/\|/g, '-')}** | \`${c.companyStatus}\` | ${officersStr.replace(/\|/g, '-')} | ${pscStr.replace(/\|/g, '-')} | [Companies House](${c.url}) |`;
+        })
+        .join('\n')
+    : '| N/A | Zero authenticated UK Companies House UBO entities matched | N/A | N/A | N/A | https://find-and-update.company-information.service.gov.uk |'
 }
 `,
   };
@@ -3839,6 +4423,102 @@ ${
         .join('\n')
     : '| N/A | Zero verified affiliated 501(c)(3)/(c)(4) foundations or policy vehicles | N/A | N/A | $0 | $0 | https://projects.propublica.org/nonprofits |'
 }
+
+---
+
+## 5. EXECUTIVE & BOARD PARTISAN SPLIT (OPENFEC SCHEDULE A)
+| Party Bucket | Total Disclosed USD | Share (%) |
+|--------------|---------------------|-----------|
+| **Democratic (\`DEM\`)** | $${Math.round(pi?.openFecSummary.partisanSplit?.demUsd ?? 0).toLocaleString('en-US')} | ${pi?.openFecSummary.partisanSplit?.demPct ?? 0}% |
+| **Republican (\`REP\`)** | $${Math.round(pi?.openFecSummary.partisanSplit?.repUsd ?? 0).toLocaleString('en-US')} | ${pi?.openFecSummary.partisanSplit?.repPct ?? 0}% |
+| **Independent / Nonpartisan / Other (\`IND/OTHER\`)** | $${Math.round(pi?.openFecSummary.partisanSplit?.indOtherUsd ?? 0).toLocaleString('en-US')} | ${pi?.openFecSummary.partisanSplit?.indOtherPct ?? 0}% |
+
+### Top 5 Recipient Committees / Lawmakers
+| Rank | Recipient Committee / Lawmaker | Party Tag | Filings | Total USD |
+|------|--------------------------------|-----------|---------|-----------|
+${
+  pi?.openFecSummary.partisanSplit?.topRecipientCommittees?.length
+    ? pi.openFecSummary.partisanSplit.topRecipientCommittees
+        .map(
+          (tc, idx) =>
+            `| ${idx + 1} | **${tc.committeeName.replace(/\|/g, '-')}** | \`${tc.party}\` | ${tc.count} | $${Math.round(tc.totalAmountUsd).toLocaleString('en-US')} |`
+        )
+        .join('\n')
+    : '| — | Zero executive recipient committees indexed | N/A | 0 | $0 |'
+}
+
+---
+
+## 6. US SENATE LDA REVOLVING DOOR, SPECIFIC BILLS & AGENCY-CONTRACT OVERLAPS
+**Former Federal Officials Hired (\`covered_position\`):** ${pi?.revolvingDoorSummary?.totalFormerGovLobbyists ?? 0} · **Quarterly Lobbying Spend:** $${Math.round(pi?.revolvingDoorSummary?.quarterlySpendUsd ?? 0).toLocaleString('en-US')}  
+**Federal Agencies Lobbied (\`government_entities\`):** ${pi?.revolvingDoorSummary?.targetedAgencies?.join(', ') || 'None indexed'}
+
+### 6A. Revolving-Door Lobbyists (\`covered_position\`)
+| Lobbyist Name | Former Federal Government Position | Lobbying Firm / Registrant | Year | Agencies Targeted |
+|---------------|------------------------------------|----------------------------|------|-------------------|
+${
+  pi?.revolvingDoorSummary?.revolvingDoorRoster?.length
+    ? pi.revolvingDoorSummary.revolvingDoorRoster
+        .map(
+          (r) =>
+            `| **${r.lobbyistName.replace(/\|/g, '-')}** | ${r.coveredPosition.replace(/\|/g, '-')} | ${r.registrantName.replace(/\|/g, '-')} | ${r.filingYear || 'N/A'} | ${(r.agencies.join(', ') || 'Federal').replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| None detected | Zero covered former federal government positions disclosed in sampled LDA filings | N/A | N/A | N/A |'
+}
+
+### 6B. Agency-Lobbying vs. USASpending Contract Overlaps (${pi?.revolvingDoorSummary?.agencyContractOverlaps?.length ?? 0})
+| Federal Agency | Senate LDA Lobbying Mentions | USASpending Awards | Federal Obligated USD |
+|----------------|------------------------------|--------------------|-----------------------|
+${
+  pi?.revolvingDoorSummary?.agencyContractOverlaps?.length
+    ? pi.revolvingDoorSummary.agencyContractOverlaps
+        .map(
+          (ov) =>
+            `| **${ov.agency.replace(/\|/g, '-')}** | ${ov.lobbyingCount} | ${ov.federalAwardCount} | $${Math.round(ov.federalObligatedUsd).toLocaleString('en-US')} |`
+        )
+        .join('\n')
+    : '| None detected | 0 | 0 | $0 |'
+}
+
+### 6C. Specific Bills & Regulatory Targets (\`specific_issues\`)
+${
+  pi?.revolvingDoorSummary?.specificBillsOrIssues?.length
+    ? pi.revolvingDoorSummary.specificBillsOrIssues.map((b) => `- ${b}`).join('\n')
+    : '- No specific bill descriptions extracted from sampled LDA filings.'
+}
+
+---
+
+## 7. OPENFEC SCHEDULE E — SUPER PAC INDEPENDENT EXPENDITURES (${pi?.openFecSummary.scheduleEIndependentExpenditures?.length ?? 0})
+| Date | Super PAC Committee | Support / Oppose | Candidate | Party | Amount (USD) | Purpose | Source |
+|------|---------------------|------------------|-----------|-------|--------------|---------|--------|
+${
+  pi?.openFecSummary.scheduleEIndependentExpenditures?.length
+    ? pi.openFecSummary.scheduleEIndependentExpenditures
+        .map(
+          (se) =>
+            `| ${se.expenditureDate} | **${se.committeeName.replace(/\|/g, '-')}** (\`${se.committeeId}\`) | \`${se.supportOppose}\` | ${se.candidateName.replace(/\|/g, '-')} | \`${se.candidateParty}\` | $${Math.round(se.amountUsd).toLocaleString('en-US')} | ${se.purpose.replace(/\|/g, '-').slice(0, 80)} | [OpenFEC](${se.url}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero matched corporate or founder-linked Schedule E Super PAC expenditures | N/A | N/A | N/A | $0 | N/A | https://www.fec.gov/data/independent-expenditures/ |'
+}
+
+---
+
+## 8. REGULATIONS.GOV CORPORATE PUBLIC-COMMENT LETTERS (${pi?.regulationsGovComments?.length ?? 0})
+| Posted Date | Federal Agency | Docket ID | Comment / Rulemaking Title | Organization / Submitter | Source |
+|-------------|----------------|-----------|----------------------------|--------------------------|--------|
+${
+  pi?.regulationsGovComments?.length
+    ? pi.regulationsGovComments
+        .map(
+          (rc) =>
+            `| ${rc.postedDate} | **${rc.agencyId.replace(/\|/g, '-')}** | \`${rc.docketId.replace(/\|/g, '-')}\` | ${rc.title.replace(/\|/g, '-').slice(0, 110)} | ${rc.organization.replace(/\|/g, '-')} | [Regulations.gov](${rc.url}) |`
+        )
+        .join('\n')
+    : '| N/A | None | N/A | Zero corporate rulemaking comment letters returned from Regulations.gov v4 | N/A | https://www.regulations.gov |'
+}
 `,
   };
 
@@ -3901,6 +4581,1037 @@ ${
     : '| N/A | N/A | Zero federal sub-award pass-through records returned | N/A | N/A | $0 | N/A |'
 }
 `,
+  };
+
+  // ===========================================================================
+  // v28.0 DEEP-STATE 5-PILLAR DOSSIER ARTIFACTS (FILES 42 – 46 + MUCKROCK RAW)
+  // ===========================================================================
+  const mf = liveIntel?.municipalFoia;
+  const fileMuckRockPayloadJson = {
+    filename: 'evidence/raw_payloads/muckrock_foia_payload.json',
+    description: 'v28.0 Raw MuckRock API v2 Completed Municipal & State FOIA Payload',
+    type: 'json' as const,
+    content: JSON.stringify(
+      (liveIntel?.rawPayloads as Record<string, unknown> | undefined)?.muckrock_foia_payload ?? {
+        status: 'NO_LIVE_MUCKROCK_PAYLOAD',
+        target: matchedEntity.legalName,
+        totalCompletedRequests: mf?.totalCompletedRequests ?? 0,
+        resultsSample: mf?.releases ?? [],
+      },
+      null,
+      2
+    ),
+  };
+
+  const file42MunicipalFoiaMd = {
+    filename: '42_MUNICIPAL_FOIA_AND_LOCAL_CONTRACTS.md',
+    description: 'v28.0 MuckRock API v2 Local Police, City & State Completed FOIA Releases (ALPR, Vendor Contracts, Tax Abatements)',
+    type: 'markdown' as const,
+    content: `# 42. MUNICIPAL & STATE FOIA INTELLIGENCE (MUCKROCK API v2 — v28.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Completed FOIA Requests Matched:** ${mf?.totalCompletedRequests ?? 0} (${mf?.releases.length ?? 0} sampled)  
+**Distinct Municipal/State Agencies:** ${mf?.agenciesHit.length ?? 0}  
+**Surveillance / Police Audit / Contract / Tax-Abatement Hits:** ${mf?.surveillanceOrContractHits ?? 0}  
+**Forensic Verdict:** **${mf?.summaryVerdict || 'NO_LIVE_MUNICIPAL_FOIA_TELEMETRY'}**
+
+> **Raw Payload Custody:** Sealed at \`evidence/raw_payloads/muckrock_foia_payload.json\`.
+
+---
+
+## COMPLETED MUNICIPAL & STATE FOIA RELEASES
+| Request ID | Completed Date | Category | Agency | Jurisdiction | Title | Files | Source |
+|------------|----------------|----------|--------|--------------|-------|-------|--------|
+${
+  mf && mf.releases.length > 0
+    ? mf.releases
+        .map(
+          (r) =>
+            `| \`${r.requestId}\` | ${r.datetimeDone} | \`${r.category}\` | **${r.agencyName.replace(/\|/g, '-')}** | ${r.jurisdiction.replace(/\|/g, '-')} | ${r.title.replace(/\|/g, '-').slice(0, 120)} | ${r.fileCount} | [MuckRock](${r.url}) |`
+        )
+        .join('\n')
+    : '| N/A | N/A | `NONE` | Zero completed MuckRock FOIA releases indexed for target | N/A | N/A | 0 | https://www.muckrock.com/ |'
+}
+`,
+  };
+
+  const lw = liveIntel?.laborWarfare;
+  const file43LaborWarfareMd = {
+    filename: '43_LABOR_WARFARE_LAYOFFS_AND_PERSUADER_AUDIT.md',
+    description: 'v28.0 DOL OLMS Union-Busting Persuader Disclosures (LM-10/LM-20/LM-21), WARN Act Mass Layoffs, H-1B LCA & Form 4 Timing Audit',
+    type: 'markdown' as const,
+    content: `# 43. LABOR WARFARE, LAYOFFS & PERSUADER AUDIT (DOL OLMS / WARN / H-1B — v28.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**DOL OLMS Persuader Filings (LM-10 / LM-20 / LM-21):** ${lw?.olmsPersuaderFilings.length ?? 0}  
+**WARN Act Mass-Layoff Notices Indexed:** ${lw?.warnActLayoffs.length ?? 0}  
+**H-1B LCA Workforce Signals:** ${lw?.h1bLcaSignals.length ?? 0}  
+**WARN Layoff vs. SEC Form 4 Insider-Sale Correlations:** ${lw?.layoffInsiderCorrelations.length ?? 0}  
+**Forensic Verdict:** **${lw?.summaryVerdict || 'NO_LIVE_LABOR_WARFARE_TELEMETRY'}**
+
+---
+
+## 1. DOL OLMS UNION-BUSTING PERSUADER FILINGS (LM-10 / LM-20 / LM-21)
+| Form | Year | Consultant / Record | Excerpt | Source |
+|------|------|---------------------|---------|--------|
+${
+  lw && lw.olmsPersuaderFilings.length > 0
+    ? lw.olmsPersuaderFilings
+        .map(
+          (o) =>
+            `| \`${o.formType}\` | ${o.filingYear} | **${o.consultantFirm.replace(/\|/g, '-')}** | ${o.snippet.replace(/\|/g, '-').slice(0, 140)} | [DOL OLMS](${o.url}) |`
+        )
+        .join('\n')
+    : '| N/A | N/A | Zero DOL OLMS LM-10/LM-20/LM-21 persuader disclosures indexed | N/A | https://olmsapps.dol.gov/ |'
+}
+
+---
+
+## 2. WARN ACT MASS-LAYOFF NOTICES
+| Notice Date | State / Jurisdiction | Est. Employees | Notice Title | Source |
+|-------------|----------------------|----------------|--------------|--------|
+${
+  lw && lw.warnActLayoffs.length > 0
+    ? lw.warnActLayoffs
+        .map(
+          (w) =>
+            `| ${w.noticeDate} | ${w.stateOrJurisdiction.replace(/\|/g, '-')} | ${w.estimatedEmployees ?? 'N/A'} | **${w.noticeTitle.replace(/\|/g, '-')}** | [WARN Record](${w.sourceUrl}) |`
+        )
+        .join('\n')
+    : '| N/A | N/A | N/A | Zero WARN Act layoff notices matched in public records | N/A |'
+}
+
+---
+
+## 3. LAYOFF DATE VS. SEC FORM 4 INSIDER-SALE TIMING CORRELATIONS ([-45d, +30d])
+| Layoff Date | SEC Filing Date | Δ Days | Form | Accession | Forensic Correlation Note |
+|-------------|-----------------|--------|------|-----------|---------------------------|
+${
+  lw && lw.layoffInsiderCorrelations.length > 0
+    ? lw.layoffInsiderCorrelations
+        .map(
+          (c) =>
+            `| ${c.layoffDate} | ${c.insiderFilingDate} | ${c.dayDelta >= 0 ? `+${c.dayDelta}` : c.dayDelta}d | \`${c.formType}\` | \`${c.accessionNumber}\` | ${c.note.replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| N/A | N/A | N/A | N/A | N/A | Zero Form 4 filings overlapped within [-45, +30] days of indexed WARN notices. |'
+}
+
+---
+
+## 4. H-1B LCA PUBLIC WORKFORCE SIGNALS
+| Fiscal Year | Record Title | Excerpt | Source |
+|-------------|--------------|---------|--------|
+${
+  lw && lw.h1bLcaSignals.length > 0
+    ? lw.h1bLcaSignals
+        .map(
+          (h) =>
+            `| ${h.fiscalYear} | **${h.title.replace(/\|/g, '-')}** | ${h.snippet.replace(/\|/g, '-').slice(0, 140)} | [Source](${h.sourceUrl}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero H-1B LCA signals extracted | N/A | N/A |'
+}
+`,
+  };
+
+  const fccData = liveIntel?.fccSpectrum;
+  const file44FccPrototypesMd = {
+    filename: '44_FCC_PROTOTYPES_AND_SPECTRUM_INTEL.md',
+    description: 'v28.0 FCC Equipment Authorization (FCC ID) Hardware Prototypes & FCC ULS Experimental Spectrum Licenses',
+    type: 'markdown' as const,
+    content: `# 44. SECRET HARDWARE & EXPERIMENTAL SPECTRUM PROTOTYPES (FCC ID & ULS — v28.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**FCC Equipment Authorizations (FCC ID):** ${fccData?.fccEquipmentAuthorizations.length ?? 0}  
+**FCC ULS Experimental / Spectrum Licenses:** ${fccData?.ulsExperimentalLicenses.length ?? 0}  
+**Forensic Verdict:** **${fccData?.summaryVerdict || 'NO_LIVE_FCC_SPECTRUM_TELEMETRY'}**
+
+---
+
+## 1. FCC EQUIPMENT AUTHORIZATIONS (FCC ID & RF TEST REPORTS)
+| FCC ID | Grantee Code | Risk Tag | Frequency Band | Grant Date | Product / Filing Description | Source |
+|--------|--------------|----------|----------------|------------|------------------------------|--------|
+${
+  fccData && fccData.fccEquipmentAuthorizations.length > 0
+    ? fccData.fccEquipmentAuthorizations
+        .map(
+          (e) =>
+            `| \`${e.fccId}\` | \`${e.granteeCode}\` | **${e.prototypeRiskTag}** | ${e.frequencyBand.replace(/\|/g, '-')} | ${e.grantDate} | ${e.productDescription.replace(/\|/g, '-')} | [FCC Filing](${e.url}) |`
+        )
+        .join('\n')
+    : '| N/A | N/A | `NONE` | N/A | N/A | Zero FCC ID equipment authorizations matched | https://apps.fcc.gov/oetcf/eas/reports/GenericSearch.cfm |'
+}
+
+---
+
+## 2. FCC UNIVERSAL LICENSING SYSTEM (ULS) SPECTRUM & EXPERIMENTAL LICENSES
+| Call Sign | Licensee Name | Service Code | Status | Grant / Exp Date | Location / FRN | Source |
+|-----------|---------------|--------------|--------|------------------|----------------|--------|
+${
+  fccData && fccData.ulsExperimentalLicenses.length > 0
+    ? fccData.ulsExperimentalLicenses
+        .map(
+          (l) =>
+            `| \`${l.callSign}\` | **${l.licenseeName.replace(/\|/g, '-')}** | ${l.serviceCode.replace(/\|/g, '-')} | \`${l.status}\` | ${l.grantDate} | ${l.locationOrFreq.replace(/\|/g, '-')} | [FCC ULS](${l.url}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero FCC ULS spectrum licenses matched | N/A | N/A | N/A | N/A | https://wireless2.fcc.gov/UlsApp/UlsSearch/searchLicense.jsp |'
+}
+`,
+  };
+
+  const gbo = liveIntel?.globalBlacklistsOffshore;
+  const file45GlobalBlacklistsMd = {
+    filename: '45_GLOBAL_BLACKLISTS_AND_OFFSHORE_LEAKS.md',
+    description: 'v28.0 World Bank Debarred Firms, SAM.gov Exclusions & ICIJ Offshore Leaks (Panama/Paradise/Pandora Papers) Audit',
+    type: 'markdown' as const,
+    content: `# 45. GLOBAL CORRUPTION BLACKLISTS & OFFSHORE LEAKS AUDIT (v28.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Corporate Entities / Subsidiaries Screened:** ${gbo?.screenedEntityNames.length ?? 0} (${gbo?.screenedEntityNames.join(', ') || matchedEntity.legalName})  
+**Executives / Directors Screened:** ${gbo?.screenedExecutiveNames.length ?? 0}  
+**Total Verified Hits:** ${gbo?.totalVerifiedHits ?? 0} · **Graph Classification:** \`${gbo?.cleanScreeningBenignControl ? 'BENIGN_CONTROL (PageRank Risk Dampener)' : 'ESCALATED_TO_PHASE5_ACH'}\`  
+**Forensic Verdict:** **${gbo?.summaryVerdict || 'BENIGN_CONTROL: Clean global corruption & offshore screening baseline.'}**
+
+---
+
+## 1. WORLD BANK DEBARRED FIRMS (${gbo?.worldBankDebarments.length ?? 0})
+| Firm Name | Country | Grounds | From | To | Matched Target | Source |
+|-----------|---------|---------|------|----|----------------|--------|
+${
+  gbo && gbo.worldBankDebarments.length > 0
+    ? gbo.worldBankDebarments
+        .map(
+          (w) =>
+            `| **${w.firmName.replace(/\|/g, '-')}** | ${w.country} | ${w.grounds.replace(/\|/g, '-')} | ${w.fromDate} | ${w.toDate} | ${w.matchedTarget} | [World Bank](${w.url}) |`
+        )
+        .join('\n')
+    : '| None | N/A | Clean World Bank Debarment Screening (`BENIGN_CONTROL`) | N/A | N/A | 0 hits | https://www.worldbank.org/en/projects-operations/procurement/debarred-firms |'
+}
+
+---
+
+## 2. SAM.GOV FEDERAL EXCLUSIONS (${gbo?.samGovExclusions.length ?? 0})
+| Entity Name | Exclusion Type | Agency | Active Date | Matched Target | Source |
+|-------------|----------------|--------|-------------|----------------|--------|
+${
+  gbo && gbo.samGovExclusions.length > 0
+    ? gbo.samGovExclusions
+        .map(
+          (s) =>
+            `| **${s.entityName.replace(/\|/g, '-')}** | ${s.exclusionType} | ${s.excludingAgency} | ${s.activeDate} | ${s.matchedTarget} | [SAM.gov](${s.url}) |`
+        )
+        .join('\n')
+    : '| None | Clean SAM.gov Federal Exclusions Screening (`BENIGN_CONTROL`) | GSA / SAM.gov | N/A | 0 hits | https://sam.gov/ |'
+}
+
+---
+
+## 3. ICIJ OFFSHORE LEAKS — PANAMA / PARADISE / PANDORA PAPERS (${gbo?.icijOffshoreLeaksHits.length ?? 0})
+| Offshore Node Name | Dataset | Jurisdiction | Matched Query | Match Basis | Source |
+|--------------------|---------|--------------|---------------|-------------|--------|
+${
+  gbo && gbo.icijOffshoreLeaksHits.length > 0
+    ? gbo.icijOffshoreLeaksHits
+        .map(
+          (i) =>
+            `| **${i.nodeName.replace(/\|/g, '-')}** | ${i.dataset.replace(/\|/g, '-')} | ${i.jurisdiction.replace(/\|/g, '-')} | ${i.matchedQuery.replace(/\|/g, '-')} | \`${i.matchBasis}\` | [ICIJ](${i.url}) |`
+        )
+        .join('\n')
+    : '| None | Clean ICIJ Offshore Leaks Screening (`BENIGN_CONTROL`) | N/A | N/A | `CLEAN` | https://offshoreleaks.icij.org/ |'
+}
+`,
+  };
+
+  const avData = liveIntel?.aviationShadowTrusts;
+  const file46AviationTrustsMd = {
+    filename: '46_AVIATION_SHADOW_TRUSTS_AND_PHYSICAL_ASSETS.md',
+    description: 'v28.0 FAA Aircraft Registry Corporate Owner-Trust Unmasking (Bank of Utah, TVPX, Wilmington Trust, Wells Fargo Trust) & SEC 8-K M&A Window Correlation',
+    type: 'markdown' as const,
+    content: `# 46. PHYSICAL ASSET & FAA AVIATION SHADOW-TRUST UNMASKING (v28.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Target HQ / Hangar ZIP Codes Audited:** ${avData?.hqZipCodesChecked.join(', ') || 'No US 5-digit HQ ZIP extracted'}  
+**FAA Aircraft N-Numbers Indexed:** ${avData?.aircraftRecords.length ?? 0} (${avData?.aircraftRecords.filter((a) => a.isShadowTrust).length ?? 0} corporate owner-trust vehicles)  
+**SEC 8-K M&A Correlation Windows:** ${avData?.maWindowCorrelations.length ?? 0}  
+**Forensic Verdict:** **${avData?.summaryVerdict || 'NO_LIVE_AVIATION_SHADOW_TRUST_TELEMETRY'}**
+
+---
+
+## 1. FAA AIRCRAFT REGISTRY & OWNER-TRUST UNMASKING TABLE
+| Tail N-Number | Registered Owner / Trustee | Shadow Trust? | Aircraft Model | City / State / ZIP | HQ ZIP Match | Source |
+|---------------|----------------------------|---------------|----------------|--------------------|--------------|--------|
+${
+  avData && avData.aircraftRecords.length > 0
+    ? avData.aircraftRecords
+        .map(
+          (a) =>
+            `| \`${a.nNumber}\` | **${a.registrantName.replace(/\|/g, '-')}** | ${a.isShadowTrust ? `YES (\`${a.trusteeInstitution}\`)` : 'NO'} | ${a.aircraftModel.replace(/\|/g, '-')} | ${a.cityStateZip.replace(/\|/g, '-')} | ${a.zipMatchesHq ? 'YES' : 'NO'} | [FAA / Registry](${a.sourceUrl}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero FAA N-number corporate or owner-trust aircraft matched | NO | N/A | N/A | NO | https://registry.faa.gov/aircraftinquiry/ |'
+}
+
+---
+
+## 2. TAIL-NUMBER ACTIVITY VS. SEC 8-K M&A DISCLOSURE WINDOWS
+| Tail N-Number | Trustee / Registrant | SEC 8-K Date | SEC 8-K Filing | Correlation Note |
+|---------------|----------------------|--------------|----------------|------------------|
+${
+  avData && avData.maWindowCorrelations.length > 0
+    ? avData.maWindowCorrelations
+        .map(
+          (m) =>
+            `| \`${m.nNumber}\` | ${m.trusteeOrRegistrant.replace(/\|/g, '-')} | ${m.sec8kDate} | ${m.sec8kTitle.replace(/\|/g, '-')} | ${m.correlationNote.replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| N/A | N/A | N/A | N/A | Zero FAA tail-to-8-K M&A correlation windows triggered. |'
+}
+`,
+  };
+
+  // ===========================================================================
+  // v29.0 FULL-ALPHABET SOVEREIGN ARCHITECTURE ARTIFACTS (SQUADS U–Z · FILES 47–52)
+  // ===========================================================================
+  const v29U = liveIntel?.clientTechArchitecture;
+  const file47ClientTechStackMd = {
+    filename: '47_CLIENT_TECH_STACK_JS_BUNDLES_AND_MOBILE_TRACKERS.md',
+    description: 'v29.0 Squad U (U1–U10): Client-Side Tech Architecture, First-Party JS Bundle Dissection, Well-Known API/Mobile Schemas & Exodus Privacy Trackers',
+    type: 'markdown' as const,
+    content: `# 47. CLIENT-SIDE TECH ARCHITECTURE, JS BUNDLES & MOBILE TRACKER FORENSICS (SQUAD U · v29.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Primary Domain Audited:** \`${v29U?.primaryDomain || liveIntel?.officialWebsite || 'N/A'}\`  
+**Generated At:** \`${timestampIso}\`  
+**Homepage HTML Fetched:** ${v29U?.homepageFetched ? 'YES' : 'NO'} · **First-Party JS Bundles Audited (<=512KB cap, max 5):** ${v29U?.jsBundlesInspected.length ?? 0}  
+**Internal API Routes Extracted:** ${v29U?.discoveredApiRoutes.length ?? 0} · **Feature Flags:** ${v29U?.discoveredFeatureFlags.length ?? 0} · **Staging/Internal Hostnames:** ${v29U?.stagingOrInternalHosts.length ?? 0}  
+**Browser Fingerprinting Signatures:** ${v29U?.fingerprintingSignatures.length ?? 0} · **Mobile Deep-Link Handles:** ${(v29U?.mobileAppIds.androidPackages.length ?? 0) + (v29U?.mobileAppIds.iosBundleIds.length ?? 0)}  
+**Exodus Privacy Reports Matched:** ${v29U?.exodusPrivacyReports.length ?? 0}  
+**Forensic Verdict:** **${v29U?.summaryVerdict || 'NO_LIVE_CLIENT_TECH_ARCHITECTURE_TELEMETRY'}**
+
+---
+
+## 1. FIRST-PARTY JAVASCRIPT BUNDLES DISSECTED (<=512KB CAP)
+| Script Bundle URL | Bytes Read | API Routes | Feature Flags | Staging Hosts | Fingerprinting Signatures |
+|-------------------|------------|------------|---------------|---------------|---------------------------|
+${
+  v29U && v29U.jsBundlesInspected.length > 0
+    ? v29U.jsBundlesInspected
+        .map(
+          (b) =>
+            `| \`${b.url.replace(/\|/g, '-')}\` | ${b.bytesRead.toLocaleString('en-US')} | ${b.apiRoutesFound.length} | ${b.featureFlagsFound.length} | ${b.stagingHostsFound.length} | ${b.fingerprintingSignatures.join(', ') || 'None'} |`
+        )
+        .join('\n')
+    : '| N/A | 0 | 0 | 0 | 0 | Zero first-party script bundles fetched in this run |'
+}
+
+---
+
+## 2. EXTRACTED INTERNAL API ROUTES, FEATURE FLAGS, STAGING HOSTS & FINGERPRINTING
+- **Internal API Routes (\`/api/\`, \`/v1/\`, \`/graphql\`):** ${v29U && v29U.discoveredApiRoutes.length > 0 ? v29U.discoveredApiRoutes.slice(0, 30).map((r) => `\`${r}\``).join(', ') : 'None extracted'}
+- **Client Feature Flags:** ${v29U && v29U.discoveredFeatureFlags.length > 0 ? v29U.discoveredFeatureFlags.slice(0, 25).map((f) => `\`${f}\``).join(', ') : 'None extracted'}
+- **Staging / Internal Hostnames:** ${v29U && v29U.stagingOrInternalHosts.length > 0 ? v29U.stagingOrInternalHosts.slice(0, 20).map((h) => `\`${h}\``).join(', ') : 'None extracted'}
+- **Client Telemetry / Fingerprinting Primitives (Canvas, WebGL, AudioContext, Service Worker):** ${v29U && v29U.fingerprintingSignatures.length > 0 ? v29U.fingerprintingSignatures.join(' · ') : 'None detected'}
+
+---
+
+## 3. PASSIVE PUBLIC SCHEMA & MOBILE DEEP-LINK PROBES
+| Endpoint | HTTP Status | Exposed? | Summary |
+|----------|-------------|----------|---------|
+${
+  v29U && v29U.publicSchemaEndpoints.length > 0
+    ? v29U.publicSchemaEndpoints
+        .map(
+          (e) =>
+            `| \`${e.path}\` | ${e.httpStatus || 'ERR'} | ${e.exposed ? 'YES' : 'NO'} | ${e.summary.replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| `/openapi.json`, `/swagger.json`, `/.well-known/*` | N/A | NO | Passive probes unavailable offline |'
+}
+
+---
+
+## 4. ANDROID / iOS HANDLES & EXODUS PRIVACY MOBILE SDK TRACKER AUDIT
+- **Android Package Handles (\`assetlinks.json\`):** ${v29U && v29U.mobileAppIds.androidPackages.length > 0 ? v29U.mobileAppIds.androidPackages.map((p) => `\`${p}\``).join(', ') : 'None published'}
+- **iOS App / Bundle Handles (\`apple-app-site-association\`):** ${v29U && v29U.mobileAppIds.iosBundleIds.length > 0 ? v29U.mobileAppIds.iosBundleIds.map((p) => `\`${p}\``).join(', ') : 'None published'}
+
+| Android Package | App Name | Trackers Count | Permissions Count | Tracker SDK Names | Mode | Report Source |
+|-----------------|----------|----------------|-------------------|-------------------|------|---------------|
+${
+  v29U && v29U.exodusPrivacyReports.length > 0
+    ? v29U.exodusPrivacyReports
+        .map(
+          (t) =>
+            `| \`${t.handle}\` | ${t.appName.replace(/\|/g, '-')} | ${t.trackersCount} | ${t.permissionsCount} | ${t.trackers.slice(0, 10).join(', ').replace(/\|/g, '-') || 'None'} | \`${t.sourceMode}\` | [Exodus](${t.reportUrl}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero Exodus Privacy mobile tracker reports matched | 0 | 0 | None | PUBLIC_FALLBACK | https://reports.exodus-privacy.eu.org |'
+}
+`,
+  };
+
+  const v29V = liveIntel?.cloudIxpCompute;
+  const file48CloudIxpComputeMd = {
+    filename: '48_CLOUD_IXP_COLOCATION_AND_AI_COMPUTE_BACKBONE.md',
+    description: 'v29.0 Squad V (V1–V10): Cloud/CDN CNAME Classification, PeeringDB IXP & Bare-Metal Colocation Facilities, Hugging Face Hub AI Models & Docker Hub Containers',
+    type: 'markdown' as const,
+    content: `# 48. CLOUD, IXP COLOCATION, AI COMPUTE & HARDWARE SUPPLY CHAIN BACKBONE (SQUAD V · v29.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Cloud / CDN CNAME Signals:** ${v29V?.cloudCdnChains.length ?? 0} · **PeeringDB Networks:** ${v29V?.peeringDbNetworks.length ?? 0}  
+**IXP Exchanges:** ${v29V?.ixpExchanges.length ?? 0} · **Bare-Metal Colocation Facilities:** ${v29V?.colocationFacilities.length ?? 0}  
+**Hugging Face Hub Models:** ${v29V?.huggingFaceModels.length ?? 0} · **Docker Hub Repositories:** ${v29V?.dockerHubRepos.length ?? 0}  
+**Forensic Verdict:** **${v29V?.summaryVerdict || 'NO_LIVE_CLOUD_IXP_COMPUTE_TELEMETRY'}**
+
+---
+
+## 1. CLOUD & CDN CNAME INFRASTRUCTURE CLASSIFICATION
+| Provider | Signal Type | Evidence Host |
+|----------|-------------|---------------|
+${
+  v29V && v29V.cloudCdnChains.length > 0
+    ? v29V.cloudCdnChains
+        .map((c) => `| **${c.provider}** | \`${c.signalType}\` | \`${c.evidenceHost.replace(/\|/g, '-')}\` |`)
+        .join('\n')
+    : '| Unclassified | N/A | Zero AWS/GCP/Azure/Cloudflare/Akamai/Fastly CNAME/NS signals observed |'
+}
+
+---
+
+## 2. PEERINGDB AUTONOMOUS SYSTEM, IXP & BARE-METAL COLOCATION FACILITIES
+| ASN | Network Name | Policy | Info Type | IXP Count | Colocation Facilities | Source |
+|-----|--------------|--------|-----------|-----------|-----------------------|--------|
+${
+  v29V && v29V.peeringDbNetworks.length > 0
+    ? v29V.peeringDbNetworks
+        .map(
+          (n) =>
+            `| \`${formatAsn(n.asn)}\` | **${n.networkName.replace(/\|/g, '-')}** | ${n.policyGeneral} | ${n.infoType} | ${n.ixpCount} | ${n.facilityCount} | [PeeringDB](${n.url}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero PeeringDB network records matched target ASN or organization name | N/A | N/A | 0 | 0 | https://www.peeringdb.com |'
+}
+
+- **Indexed IXP Exchanges:** ${v29V && v29V.ixpExchanges.length > 0 ? v29V.ixpExchanges.join(', ') : 'None'}
+- **Indexed Colocation Facilities:** ${v29V && v29V.colocationFacilities.length > 0 ? v29V.colocationFacilities.join(', ') : 'None'}
+- **Tier-1 Transit / Colo Dependencies:** ${v29V && v29V.tier1TransitDependencies.length > 0 ? v29V.tier1TransitDependencies.join(', ') : 'None'}
+
+---
+
+## 3. HUGGING FACE HUB AI MODEL FOOTPRINT
+| Model ID | Author | Pipeline Tag | Downloads | Likes | Source |
+|----------|--------|--------------|-----------|-------|--------|
+${
+  v29V && v29V.huggingFaceModels.length > 0
+    ? v29V.huggingFaceModels
+        .map(
+          (m) =>
+            `| \`${m.modelId}\` | ${m.author} | ${m.pipelineTag} | ${m.downloads.toLocaleString('en-US')} | ${m.likes.toLocaleString('en-US')} | [HF Hub](${m.url}) |`
+        )
+        .join('\n')
+    : '| N/A | N/A | Zero matched Hugging Face Hub model repositories | 0 | 0 | https://huggingface.co |'
+}
+
+---
+
+## 4. DOCKER HUB CONTAINER IMAGE & RUNTIME SUPPLY CHAIN
+| Repository | Pull Count | Stars | Last Updated | Source |
+|------------|------------|-------|--------------|--------|
+${
+  v29V && v29V.dockerHubRepos.length > 0
+    ? v29V.dockerHubRepos
+        .map(
+          (d) =>
+            `| \`${d.namespace}/${d.name}\` | ${d.pullCount.toLocaleString('en-US')} | ${d.starCount.toLocaleString('en-US')} | ${d.lastUpdated} | [Docker Hub](${d.url}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero matched Docker Hub organization repositories | 0 | N/A | https://hub.docker.com |'
+}
+`,
+  };
+
+  const v29W = liveIntel?.breachVelocitySurface;
+  const v29WExposedCount =
+    v29W?.passiveExposureChecks.filter((p) => p.classification === 'EXPOSED_CRITICAL').length ?? 0;
+  const file49BreachVelocityMd = {
+    filename: '49_BREACH_VELOCITY_STATE_AG_AND_EXPOSED_SURFACE.md',
+    description: 'v29.0 Squad W (W1–W10): Breach Velocity, WA/CA/TX State AG Disclosures, Notification-Delay Gaps, Passive Storage/Metadata Exposure & CISA KEV/VT/OTX Correlation',
+    type: 'markdown' as const,
+    content: `# 49. BREACH VELOCITY, STATE AG DISCLOSURES & EXPOSED SURFACE AUDIT (SQUAD W · v29.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**State AG Breach Filings Indexed (WA / CA / TX):** ${v29W?.stateAgBreaches.length ?? 0}  
+**Max Notification Delay:** ${v29W?.maxNotificationDelayDays ?? 0} day(s) · **Avg Delay:** ${v29W?.averageNotificationDelayDays ?? 0} day(s) · **Affected Residents:** ${Math.round(v29W?.totalAffectedResidents ?? 0).toLocaleString('en-US')}  
+**Passive Exposure Posture:** \`${v29W?.cleanExposureBenignControl ? 'BENIGN_CONTROL (Clean /.git & /.env)' : `EXPOSED_SURFACE (${v29WExposedCount} critical hit(s))`}\`  
+**Correlated CISA KEV:** ${v29W?.correlatedKevCount ?? 0} · **VT Malicious:** ${v29W?.correlatedVtMalicious ?? 0} · **OTX Pulses:** ${v29W?.correlatedOtxPulses ?? 0} · **\`security.txt\` Present:** ${v29W?.securityTxtFound ? 'YES' : 'NO'}  
+**Forensic Verdict:** **${v29W?.summaryVerdict || 'NO_LIVE_BREACH_VELOCITY_TELEMETRY'}**
+
+---
+
+## 1. STATE ATTORNEY GENERAL DATA BREACH DISCLOSURES & NOTIFICATION-DELAY GAPS
+| State Agency | Organization Name | Breach Start | Notification Date | Delay (Days) | Affected Residents | Breach Type | Source |
+|--------------|-------------------|--------------|-------------------|--------------|--------------------|-------------|--------|
+${
+  v29W && v29W.stateAgBreaches.length > 0
+    ? v29W.stateAgBreaches
+        .map(
+          (b) =>
+            `| \`${b.sourceAgency}\` | **${b.organizationName.replace(/\|/g, '-')}** | ${b.breachStartDate || 'Undisclosed'} | ${b.notificationDate || 'Undisclosed'} | ${b.notificationDelayDays !== null ? `${b.notificationDelayDays}d` : 'N/A'} | ${b.residentsAffected !== null ? b.residentsAffected.toLocaleString('en-US') : 'N/A'} | ${b.breachType.replace(/\|/g, '-')} | [AG Record](${b.url}) |`
+        )
+        .join('\n')
+    : '| N/A | Zero WA/CA/TX State AG breach filings matched target entity | N/A | N/A | 0d | 0 | None | https://data.wa.gov/resource/sb4j-ca4h.json |'
+}
+
+---
+
+## 2. PASSIVE EXPOSED METADATA & STORAGE SURFACE VERIFICATION
+| Path Probed | HTTP Status | Classification | Detail |
+|-------------|-------------|----------------|--------|
+${
+  v29W && v29W.passiveExposureChecks.length > 0
+    ? v29W.passiveExposureChecks
+        .map(
+          (c) =>
+            `| \`${c.path}\` | ${c.httpStatus || 'ERR'} | **\`${c.classification}\`** | ${c.detail.replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| `/.git/HEAD`, `/.env`, `/.well-known/security.txt` | N/A | `BENIGN_CONTROL` | Passive verification unavailable offline |'
+}
+
+- **\`robots.txt\` Disallowed Admin / Staging / Internal Paths:** ${v29W && v29W.robotsDisallowedAdminPaths.length > 0 ? v29W.robotsDisallowedAdminPaths.map((p) => `\`${p}\``).join(', ') : 'None flagged'}
+`,
+  };
+
+  const v29X = liveIntel?.shellAddressClustering;
+  const file50ShellAddressClusteringMd = {
+    filename: '50_SHELL_ADDRESS_CLUSTERING_AND_PHYSICAL_INFRASTRUCTURE.md',
+    description: 'v29.0 Squad X (X1–X10): Real Estate, Registered-Agent Mail-Drop & Offshore Fiduciary Shell-Address Clustering vs. Physical HQ & Municipal/PUC Permits',
+    type: 'markdown' as const,
+    content: `# 50. REAL ESTATE, SHELL-ADDRESS CLUSTERING & PHYSICAL INFRASTRUCTURE PERMITS (SQUAD X · v29.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Unique Addresses Clustered (GLEIF / Exhibit 21.1 / UK CH / Form D):** ${v29X?.clusteredAddresses.length ?? 0}  
+**Registered-Agent Mail-Drop Clusters:** ${v29X?.mailDropClusterCount ?? 0} · **Offshore Fiduciary Suites:** ${v29X?.offshoreSuiteCount ?? 0} · **Physical Operational HQ:** ${v29X?.physicalHqAddress || liveIntel?.headquarters || 'Unresolved'}  
+**Zoning / PUC Power / Water / Data-Center Permits:** ${v29X?.infrastructurePermitsAndPuc.length ?? 0}  
+**Forensic Verdict:** **${v29X?.summaryVerdict || 'NO_LIVE_SHELL_ADDRESS_CLUSTERING_TELEMETRY'}**
+
+---
+
+## 1. SHELL-ADDRESS & REGISTERED-AGENT MAIL-DROP CLUSTERS
+| Normalized Address | Classification | Matched Pattern / Jurisdiction | Entity Count | Clustered Entities | Sources |
+|--------------------|----------------|--------------------------------|--------------|--------------------|---------|
+${
+  v29X && v29X.clusteredAddresses.length > 0
+    ? v29X.clusteredAddresses
+        .map(
+          (cl) =>
+            `| ${cl.normalizedAddress.replace(/\|/g, '-')} | **\`${cl.clusterClassification}\`** | ${(cl.matchedRegisteredAgentPattern || cl.zipOrJurisdiction).replace(/\|/g, '-')} | ${cl.entityCount} | ${cl.entitiesAtAddress.slice(0, 6).join(', ').replace(/\|/g, '-')} | ${cl.sources.join(', ')} |`
+        )
+        .join('\n')
+    : '| N/A | `PHYSICAL_OPERATIONAL_HQ` | Zero multi-entity addresses clustered in this run | 0 | None | N/A |'
+}
+
+---
+
+## 2. MUNICIPAL ZONING, STATE PUC POWER/WATER & DATA-CENTER INFRASTRUCTURE PERMITS
+| Category | Jurisdiction | Permit Title | Snippet | Source |
+|----------|--------------|--------------|---------|--------|
+${
+  v29X && v29X.infrastructurePermitsAndPuc.length > 0
+    ? v29X.infrastructurePermitsAndPuc
+        .map(
+          (p) =>
+            `| \`${p.sourceCategory}\` | ${p.jurisdiction.replace(/\|/g, '-')} | **${p.title.replace(/\|/g, '-')}** | ${p.snippet.replace(/\|/g, '-')} | [Record](${p.url}) |`
+        )
+        .join('\n')
+    : '| N/A | N/A | Zero municipal zoning, state PUC power/water, or industrial data-center permit records matched | N/A | N/A |'
+}
+`,
+  };
+
+  const v29Y = liveIntel?.adTechTosSurveillance;
+  const v29YAdsTotal = (v29Y?.adsTxtDirectCount ?? 0) + (v29Y?.adsTxtResellerCount ?? 0);
+  const file51AdTechTosDiffMd = {
+    filename: '51_ADTECH_SUPPLY_CHAIN_DARK_PATTERNS_AND_TOS_DIFF.md',
+    description: 'v29.0 Squad Y (Y1–Y10): Ad-Tech Pipelines (ads.txt/app-ads.txt/sellers.json), Wayback ToS/Privacy Coercive Clause Diff, ToS;DR v4 & EU DSA/GDPR Audit',
+    type: 'markdown' as const,
+    content: `# 51. AD-TECH SUPPLY CHAIN, DARK PATTERNS & TOS/PRIVACY DIFF AUDIT (SQUAD Y · v29.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Primary Domain:** \`${v29Y?.primaryDomain || liveIntel?.officialWebsite || 'N/A'}\`  
+**Generated At:** \`${timestampIso}\`  
+**\`/ads.txt\` & \`/app-ads.txt\`:** ${v29YAdsTotal > 0 ? `PRESENT (${v29YAdsTotal} lines · ${v29Y?.adsTxtDirectCount ?? 0} DIRECT / ${v29Y?.adsTxtResellerCount ?? 0} RESELLER)` : 'Not Published'} · **\`/sellers.json\`:** ${(v29Y?.sellersJsonSellersCount ?? 0) > 0 ? `PRESENT (${v29Y?.sellersJsonSellersCount} sellers)` : 'Not Published'}  
+**ToS;DR v4 Rating:** ${v29Y?.tosdrSummary ? `**Grade ${v29Y.tosdrSummary.ratingGrade}** (${v29Y.tosdrSummary.serviceName}) — [ToS;DR](${v29Y.tosdrSummary.serviceUrl})` : 'Not indexed on ToS;DR v4'}  
+**EU DSA / GDPR Notices:** ${v29Y?.euDsaGdprNotices.length ?? 0}  
+**Forensic Verdict:** **${v29Y?.summaryVerdict || 'NO_LIVE_ADTECH_TOS_SURVEILLANCE_TELEMETRY'}**
+
+---
+
+## 1. AD-TECH SUPPLY CHAIN (\`/ads.txt\`, \`/app-ads.txt\` & \`/sellers.json\`)
+| Ad Exchange Domain | Seller / Publisher ID | Relationship | Source File | Cert Authority ID |
+|--------------------|-----------------------|--------------|-------------|-------------------|
+${
+  v29Y && v29Y.adsTxtExchanges.length > 0
+    ? v29Y.adsTxtExchanges
+        .slice(0, 20)
+        .map(
+          (a) =>
+            `| \`${a.exchangeDomain}\` | \`${a.publisherAccountId}\` | **${a.relationship}** | \`${a.sourceFile}\` | \`${a.certAuthorityId || 'N/A'}\` |`
+        )
+        .join('\n')
+    : '| N/A | Zero `ads.txt` / `app-ads.txt` programmatic brokerage lines published | N/A | N/A | N/A |'
+}
+
+${
+  v29Y && v29Y.sellersJsonSample.length > 0
+    ? `\n### \`/sellers.json\` Monetization Nodes (${v29Y.sellersJsonSellersCount} total)\n${v29Y.sellersJsonSample.slice(0, 12).map((s) => `- **${s.name}** (\`${s.sellerId}\` · ${s.sellerType}) — \`${s.domain}\``).join('\n')}\n`
+    : ''
+}
+
+---
+
+## 2. WAYBACK \`/terms\` & \`/privacy\` COERCIVE CLAUSE DIFF (EARLIEST VS. LATEST)
+| Clause Category | Policy Path | Earliest Snapshot | Latest Snapshot | Change Status | Excerpt |
+|-----------------|-------------|-------------------|-----------------|---------------|---------|
+${
+  v29Y && v29Y.policyWaybackClauseDiffs.length > 0
+    ? v29Y.policyWaybackClauseDiffs
+        .map(
+          (d) =>
+            `| **\`${d.clauseCategory}\`** | \`${d.policyPath}\` | ${d.earliestSnapshotTimestamp} | ${d.latestSnapshotTimestamp} | **\`${d.status}\`** | ${d.excerpt.replace(/\|/g, '-').slice(0, 110)} |`
+        )
+        .join('\n')
+    : '| N/A | `/terms`, `/privacy` | N/A | N/A | Zero Wayback legal policy clause diffs computed | N/A |'
+}
+
+---
+
+## 3. EU DSA / GDPR REGULATORY ENFORCEMENT INDEX HITS
+${
+  v29Y && v29Y.euDsaGdprNotices.length > 0
+    ? v29Y.euDsaGdprNotices.map((h) => `- **[${h.regulator}] ${h.title}** — ${h.snippet} ([Source](${h.url}))`).join('\n')
+    : '- Zero EU DSA / GDPR enforcement records matched in public index query.'
+}
+`,
+  };
+
+  const v29Z = liveIntel?.stackToPowerCapstone;
+  const file52SovereignCapstoneMd = {
+    filename: '52_SOVEREIGN_STACK_TO_POWER_CAPSTONE.md',
+    description: 'v29.0 Squad Z (Z1–Z10): End-to-End Stack-to-Power Capstone Synthesis (Bare-Metal/IXP -> JS/Trackers -> Breaches -> Shell Clusters -> Lobbying/Courts) & T1-vs-T2 Active Cover-Up Detector',
+    type: 'markdown' as const,
+    content: `# 52. SOVEREIGN CAPSTONE: FULL STACK-TO-POWER SYNTHESIS & ACTIVE COVER-UP DETECTOR (SQUAD Z · v29.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Cover-Up Baseline Mode (T1 vs. T2):** \`${v29Z?.coverUpBaselineStatus || 'INITIAL_BASELINE_CAPTURED'}\`  
+**Stack-to-Power Cross-Layer Links Synthesized:** ${v29Z?.stackToPowerChain.length ?? 0}  
+**Active Cover-Up / Tampering Alerts:** **${v29Z?.activeCoverUpAlerts.length ?? 0}**  
+**Forensic Verdict:** **${v29Z?.summaryVerdict || 'NO_LIVE_STACK_TO_POWER_CAPSTONE_TELEMETRY'}**
+
+---
+
+## 1. END-TO-END STACK-TO-POWER ARCHITECTURE CHAIN
+\`Physical Bare-Metal/IXP (Squad V) -> Client JS/Mobile Trackers (Squads U/Y) -> Breaches & Cyber Exposure (Squads G/W) -> Shell-Address Clusters (Squads Q/X) -> Lobbying, PACs & Federal Courts (Squads P/R)\`
+
+| # | Architecture Layer | Squad(s) | Verified Signals | Key Forensic Findings |
+|---|--------------------|----------|------------------|-----------------------|
+${
+  v29Z && v29Z.stackToPowerChain.length > 0
+    ? v29Z.stackToPowerChain
+        .map(
+          (l) =>
+            `| ${l.layerOrder} | **${l.layerTitle}** (\`${l.layerCode}\`) | \`${l.squads.join(', ')}\` | ${l.verifiedSignalCount} | ${l.keyFindings.join(' · ').replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| 1 | Baseline | `U–Z` | 0 | No live Stack-to-Power telemetry captured in catalog baseline mode |'
+}
+
+---
+
+## 2. LONGITUDINAL T1 vs. T2 ACTIVE COVER-UP & WHITEWASH DETECTOR
+| Alert Type | Severity | Prior Baseline (T1) | Current Observation (T2) | Forensic Assessment |
+|------------|----------|---------------------|--------------------------|---------------------|
+${
+  v29Z && v29Z.activeCoverUpAlerts.length > 0
+    ? v29Z.activeCoverUpAlerts
+        .map(
+          (a) =>
+            `| **\`${a.alertType}\`** | **${a.severity}** | ${a.beforeValue.replace(/\|/g, '-')} | ${a.afterValue.replace(/\|/g, '-')} | ${a.summary.replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| NONE | LOW | Baseline | Stable | Zero active cover-up anomalies (deleted GitHub repos, sudden Wikipedia whitewashes, TLS cert rotations, or scrubbed policy pages) detected across T1 vs. T2. |'
+}
+
+---
+
+## 3. EXECUTIVE TECH ARCHITECTURE & ATTACK-SURFACE METRICS SUMMARY
+${
+  v29Z
+    ? `- **JS Endpoints:** ${v29Z.executiveSnapshotMetrics.jsEndpointsCount} · **Mobile Trackers:** ${v29Z.executiveSnapshotMetrics.mobileTrackersCount} · **IXP & Colo Nodes:** ${v29Z.executiveSnapshotMetrics.ixpAndColoCount} · **Cloud Providers:** ${v29Z.executiveSnapshotMetrics.cloudProviders.join(', ') || 'None'} · **Ad-Tech Resellers:** ${v29Z.executiveSnapshotMetrics.adTechResellersCount} · **Max Breach Delay:** ${v29Z.executiveSnapshotMetrics.maxBreachDelayDays ?? 'N/A'}d · **Mail-Drop/Offshore Shell Clusters:** ${v29Z.executiveSnapshotMetrics.mailDropShellClustersCount} · **Cover-Up Alerts:** ${v29Z.executiveSnapshotMetrics.activeCoverUpAlertsCount}`
+    : '- No live v29.0 Tech Architecture snapshot available.'
+}
+`,
+  };
+
+  // ===========================================================================
+  // v30.0 GLOBAL "FOLLOW THE MONEY", BANKING, OFFSHORE FLOWS & NEW-ENDEAVOR ARTIFACTS (53–56)
+  // ===========================================================================
+  const v30Bank = liveIntel?.globalBankingFlows;
+  const file53GlobalBankingMd = {
+    filename: '53_GLOBAL_BANKING_OFFSHORE_ACCOUNTS_AND_CAPITAL_FLOWS.md',
+    description: 'v30.0 Squads F & I: SEC Form D/ADV Cap-Table Backers, Credit Agreements, UK Companies House Secured Charges, Named Banks/Payment Rails, Offshore Jurisdictions & USASpending Prime-to-Sub Capital Flows',
+    type: 'markdown' as const,
+    content: `# 53. GLOBAL BANKING, OFFSHORE ACCOUNTS & CAPITAL FLOWS (SQUADS F & I · v30.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Total Form D Private Offering Disclosed:** $${Math.round(v30Bank?.totalFormDOfferingUsd ?? 0).toLocaleString('en-US')} (${v30Bank?.formDCapTableOfferings.length ?? 0} filing(s))  
+**Total Federal Prime/Sub-Award Flows:** $${Math.round(v30Bank?.totalProcurementFlowUsd ?? 0).toLocaleString('en-US')} (${v30Bank?.procurementPrimeToSubFlows.length ?? 0} flow(s))  
+**Named Domestic & Overseas Banks / Payment Rails:** **${v30Bank?.namedBanksAndPaymentRails.length ?? 0}**  
+**Forensic Verdict:** **${v30Bank?.summaryVerdict || 'NO_LIVE_GLOBAL_BANKING_FLOWS_TELEMETRY'}**
+
+---
+
+## 1. PRIVATE CAPITAL INFLOWS — SEC FORM D & FORM ADV INSTITUTIONAL BACKERS
+### SEC Form D Offerings (${v30Bank?.formDCapTableOfferings.length ?? 0})
+| Filing Date | Issuer | Offering USD | Sold USD | Exemptions | Related Persons / Principals | Filing |
+|-------------|--------|--------------|----------|------------|------------------------------|--------|
+${
+  v30Bank && v30Bank.formDCapTableOfferings.length > 0
+    ? v30Bank.formDCapTableOfferings
+        .map(
+          (f) =>
+            `| ${f.filingDate} | ${f.issuerName.replace(/\|/g, '-')} | ${f.totalOfferingUsd !== null ? `$${Math.round(f.totalOfferingUsd).toLocaleString('en-US')}` : 'N/A'} | ${f.totalAmountSoldUsd !== null ? `$${Math.round(f.totalAmountSoldUsd).toLocaleString('en-US')}` : 'N/A'} | ${f.exemptionTypes.join(', ') || 'N/A'} | ${f.relatedPersons.slice(0, 5).join(', ').replace(/\|/g, '-') || 'None listed'} | [EDGAR](${f.filingUrl}) |`
+        )
+        .join('\n')
+    : '| — | None | $0 | $0 | — | Zero live SEC Form D filings matched target in EDGAR EFTS. | — |'
+}
+
+### SEC Form ADV Institutional Advisers & Offshore Feeder Funds (${v30Bank?.formAdvInstitutionalBackers.length ?? 0})
+${
+  v30Bank && v30Bank.formAdvInstitutionalBackers.length > 0
+    ? v30Bank.formAdvInstitutionalBackers
+        .map(
+          (a, i) =>
+            `${i + 1}. **${a.adviserName}** (CRD/CIK \`${a.crdOrCik}\`, ${a.filingDate}) — ${a.estimatedAumNote}${a.offshoreJurisdictions.length > 0 ? ` · Offshore Jurisdictions: ${a.offshoreJurisdictions.join(', ')}` : ''} ([Filing](${a.sourceUrl}))`
+        )
+        .join('\n')
+    : '- Zero SEC Form ADV institutional adviser linkages matched.'
+}
+
+---
+
+## 2. SYNDICATED CREDIT FACILITIES, SECURED LENDERS & UK COMPANIES HOUSE CHARGES (${v30Bank?.creditFacilitiesAndCharges.length ?? 0})
+| Source | Entity | Lender / Secured Chargee | Role | Date | Jurisdiction | Status | Note |
+|--------|--------|--------------------------|------|------|--------------|--------|------|
+${
+  v30Bank && v30Bank.creditFacilitiesAndCharges.length > 0
+    ? v30Bank.creditFacilitiesAndCharges
+        .map(
+          (c) =>
+            `| \`${c.source}\` | ${c.entityName.replace(/\|/g, '-')} | **${c.lenderOrChargee.replace(/\|/g, '-')}** | \`${c.facilityRole}\` | ${c.dateIso} | ${c.jurisdiction} | ${c.status} | ${c.amountOrSecurityNote.replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| — | — | None | — | — | — | — | Zero SEC credit agreements or UK Companies House secured charges retrieved. |'
+}
+
+---
+
+## 3. NAMED DOMESTIC & OVERSEAS BANKS, CUSTODIANS & PAYMENT RAILS (${v30Bank?.namedBanksAndPaymentRails.length ?? 0})
+| Institution | Role | Jurisdiction | Corroborating Public Record | Source |
+|-------------|------|--------------|-----------------------------|--------|
+${
+  v30Bank && v30Bank.namedBanksAndPaymentRails.length > 0
+    ? v30Bank.namedBanksAndPaymentRails
+        .map(
+          (b) =>
+            `| **${b.institutionName.replace(/\|/g, '-')}** | \`${b.role}\` | ${b.jurisdiction} | ${b.sourceEvidence.replace(/\|/g, '-')} | [Record](${b.sourceUrl}) |`
+        )
+        .join('\n')
+    : '| None | — | — | Zero named banking custodians, correspondent banks, or regulated payment processors extracted from public filings. | — |'
+}
+
+---
+
+## 4. OFFSHORE BANKING & FIDUCIARY JURISDICTIONS REFERENCED (${v30Bank?.offshoreBankingJurisdictions.length ?? 0})
+${
+  v30Bank && v30Bank.offshoreBankingJurisdictions.length > 0
+    ? v30Bank.offshoreBankingJurisdictions
+        .map(
+          (o, i) =>
+            `${i + 1}. **${o.jurisdiction}** (${o.mentionCount} verified mention(s)) · Sources: ${o.sources.join(', ')} — _"${o.contextExcerpt}"_`
+        )
+        .join('\n')
+    : '- Zero offshore banking or fiduciary jurisdiction references detected in sampled filings.'
+}
+
+---
+
+## 5. PUBLIC PROCUREMENT PRIME-TO-SUBCONTRACTOR CASH FLOWS (USASPENDING · ${v30Bank?.procurementPrimeToSubFlows.length ?? 0})
+| Action Date | Agency | Prime Recipient | Sub-Recipient | Type | Amount USD | Description |
+|-------------|--------|-----------------|---------------|------|------------|-------------|
+${
+  v30Bank && v30Bank.procurementPrimeToSubFlows.length > 0
+    ? v30Bank.procurementPrimeToSubFlows
+        .map(
+          (p) =>
+            `| ${p.actionDate} | ${p.awardingAgency.replace(/\|/g, '-')} | ${p.primeRecipient.replace(/\|/g, '-')} | ${p.subRecipient.replace(/\|/g, '-')} | \`${p.awardType}\` | $${Math.round(p.amountUsd).toLocaleString('en-US')} | ${p.description.replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| — | — | — | — | — | $0 | Zero USASpending prime-to-subcontractor awards matched. |'
+}
+`,
+  };
+
+  const v30Legal = liveIntel?.primaryLegalEnforcement;
+  const file54PrimaryLegalEnforcementMd = {
+    filename: '54_PRIMARY_LEGAL_FILINGS_AND_GLOBAL_ENFORCEMENT.md',
+    description: 'v30.0 Squad P: CourtListener RECAP Free-PDF/Plaintext Complaint & Exhibit Miner, Phase-4 Pivot Enqueues & Global Regulatory Enforcement Feeds (SEC, CFTC, DOJ, FinCEN, UK FCA)',
+    type: 'markdown' as const,
+    content: `# 54. PRIMARY LEGAL FILINGS (RECAP) & GLOBAL REGULATORY ENFORCEMENT (SQUAD P · v30.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Primary RECAP Filings / Opinions Mined:** **${v30Legal?.recapDocumentsMined.length ?? 0}**  
+**Global Regulatory Enforcement Hits:** **${v30Legal?.globalEnforcementHits.length ?? 0}** (Feeds Queried: ${v30Legal?.feedsQueried.join(', ') || 'None'})  
+**Discovered Entities Auto-Enqueued to Phase-4 Pivot Queue:** **${v30Legal?.pivotsEnqueuedToPhase4.length ?? 0}**  
+**Forensic Verdict:** **${v30Legal?.summaryVerdict || 'NO_LIVE_RECAP_OR_GLOBAL_ENFORCEMENT_TELEMETRY'}**
+
+---
+
+## 1. COURTLISTENER RECAP PRIMARY DOCUMENT & EXHIBIT EXTRACTION (${v30Legal?.recapDocumentsMined.length ?? 0})
+${
+  v30Legal && v30Legal.recapDocumentsMined.length > 0
+    ? v30Legal.recapDocumentsMined
+        .map(
+          (doc, i) => [
+            `### ${i + 1}. ${doc.docketTitle} (${doc.court} · ${doc.filingDate})`,
+            `- **Source Type:** \`${doc.documentSource}\` (${doc.textSampleChars.toLocaleString('en-US')} chars parsed) · [Docket](${doc.docketUrl})`,
+            `- **Co-Defendants / Counterparties:** ${doc.extractedCoDefendants.join(', ') || 'None extracted'}`,
+            `- **Banks & Wire Intermediaries:** ${doc.extractedBanksAndWireIntermediaries.join(', ') || 'None extracted'}`,
+            `- **Dollar Damages / Disgorgement Figures:** ${doc.extractedDollarDamages.join(', ') || 'None extracted'}`,
+            `- **Blockchain Wallets Cited:** ${doc.extractedWalletAddresses.length > 0 ? doc.extractedWalletAddresses.map((w) => `\`${w.chain}:${w.address}\``).join(', ') : 'None extracted'}`,
+            `- **Shell / Offshore Entities Mentioned:** ${doc.extractedShellOrOffshoreEntities.join(', ') || 'None extracted'}`,
+          ].join('\n')
+        )
+        .join('\n\n')
+    : '- Zero free RECAP PDF/plaintext complaints or opinions matched target entity.'
+}
+
+---
+
+## 2. GLOBAL REGULATORY ENFORCEMENT FEEDS (SEC LITIGATION · CFTC · DOJ · FINCEN · UK FCA) (${v30Legal?.globalEnforcementHits.length ?? 0})
+| Agency | Published | Enforcement Title | Summary | Source |
+|--------|-----------|-------------------|---------|--------|
+${
+  v30Legal && v30Legal.globalEnforcementHits.length > 0
+    ? v30Legal.globalEnforcementHits
+        .map(
+          (h) =>
+            `| \`${h.agency}\` | ${h.publishedDateIso.slice(0, 10)} | **${h.title.replace(/\|/g, '-')}** | ${h.summary.replace(/\|/g, '-')} | [Release](${h.url}) |`
+        )
+        .join('\n')
+    : '| — | — | None | Zero entity-disambiguated hits across SEC Litigation, CFTC, DOJ, FinCEN, and UK FCA feeds. | — |'
+}
+
+---
+
+## 3. ENTITIES AUTOMATICALLY ENQUEUED INTO PHASE-4 BOUNDED PIVOT QUEUE (${v30Legal?.pivotsEnqueuedToPhase4.length ?? 0})
+${
+  v30Legal && v30Legal.pivotsEnqueuedToPhase4.length > 0
+    ? v30Legal.pivotsEnqueuedToPhase4
+        .map((p, i) => `${i + 1}. \`${p.category}\` — **${p.entityName}** (from *${p.sourceDocket}*)`)
+        .join('\n')
+    : '- Zero newly discovered banks, co-defendants, shells, or wallets enqueued from primary filings.'
+}
+`,
+  };
+
+  const v30Phoenix = liveIntel?.phoenixNewEndeavors;
+  const file55PhoenixNewEndeavorsMd = {
+    filename: '55_PHOENIX_COMPANIES_SERIAL_DIRECTORS_AND_NEW_ENDEAVORS.md',
+    description: 'v30.0 Squads Q & X: Multi-Hop Officer/PSC Outward Pivoting, Deterministic Phoenix Company Detector (<= 12m), Recent Incorporations (<= 18m), Fresh Domains/TLS SANs & GitHub Commit-Email DNA',
+    type: 'markdown' as const,
+    content: `# 55. PHOENIX COMPANIES, SERIAL DIRECTORS & NEW-ENDEAVOR RADAR (SQUADS Q & X · v30.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Principals Pivoted Outward:** **${v30Phoenix?.principalsPivoted.length ?? 0}** (${v30Phoenix?.principalsPivoted.join(', ') || 'None'})  
+**Affiliated External Entities Discovered:** **${v30Phoenix?.affiliatedEntities.length ?? 0}**  
+**Phoenix Company Alerts (<= 12 Months):** **${v30Phoenix?.phoenixCompanyAlerts.length ?? 0}**  
+**New-Endeavor Radar Hits (<= 18 Months / Fresh Infra / Commit DNA):** **${v30Phoenix?.newEndeavorRadar.length ?? 0}**  
+**Forensic Verdict:** **${v30Phoenix?.summaryVerdict || 'NO_LIVE_PHOENIX_OR_NEW_ENDEAVOR_TELEMETRY'}**
+
+---
+
+## 1. DETERMINISTIC PHOENIX COMPANY ALERTS (${v30Phoenix?.phoenixCompanyAlerts.length ?? 0})
+| Severity | Dissolved Entity (Date) | Successor Entity (Inc. Date) | Gap (Days) | Overlapping Directors | Shared Address / Sector | Rationale |
+|----------|-------------------------|------------------------------|------------|-----------------------|-------------------------|-----------|
+${
+  v30Phoenix && v30Phoenix.phoenixCompanyAlerts.length > 0
+    ? v30Phoenix.phoenixCompanyAlerts
+        .map(
+          (a) =>
+            `| **${a.severity}** | ${a.dissolvedEntityName.replace(/\|/g, '-')} (${a.dissolvedDateIso}) | **${a.successorEntityName.replace(/\|/g, '-')}** (${a.incorporatedDateIso}) | ${a.gapDays}d | ${a.overlappingDirectors.join(', ').replace(/\|/g, '-')} | ${a.overlappingAddressOrSector.replace(/\|/g, '-')} | ${a.rationale.replace(/\|/g, '-')} |`
+        )
+        .join('\n')
+    : '| NONE | — | — | — | — | — | Zero Phoenix company patterns (dissolved entity followed by <= 12m successor sharing directors/address) detected. |'
+}
+
+---
+
+## 2. MULTI-HOP OFFICER / PSC / FORM D / ICIJ OUTWARD ENTITY PIVOTS (${v30Phoenix?.affiliatedEntities.length ?? 0})
+| Principal | Role | Affiliated Entity | Status | Inc. Date | Jurisdiction | Registry | 18m Fresh? |
+|-----------|------|-------------------|--------|-----------|--------------|----------|------------|
+${
+  v30Phoenix && v30Phoenix.affiliatedEntities.length > 0
+    ? v30Phoenix.affiliatedEntities
+        .map(
+          (e) =>
+            `| ${e.principalName.replace(/\|/g, '-')} | ${e.principalRole.replace(/\|/g, '-')} | [${e.affiliatedEntityName.replace(/\|/g, '-')}](${e.sourceUrl}) | ${e.entityStatus} | ${e.incorporationDateIso || 'N/A'} | ${e.jurisdiction} | \`${e.sourceRegistry}\` | ${e.isRecentIncorporation18m ? '**YES**' : 'NO'} |`
+        )
+        .join('\n')
+    : '| — | — | None | — | — | — | — | NO |'
+}
+
+---
+
+## 3. NEW-ENDEAVOR RADAR (RECENT INCORPORATIONS, FRESH TLS SANS, TRADEMARKS & GITHUB COMMIT-EMAIL DNA) (${v30Phoenix?.newEndeavorRadar.length ?? 0})
+${
+  v30Phoenix && v30Phoenix.newEndeavorRadar.length > 0
+    ? v30Phoenix.newEndeavorRadar
+        .map(
+          (h, i) =>
+            `${i + 1}. \`${h.signalType}\` — **${h.label}** (${h.detectedDateIso}) · Linked Principal/DNA: \`${h.linkedPrincipalOrDna}\` — ${h.detail} ([Evidence](${h.url}))`
+        )
+        .join('\n')
+    : '- Zero fresh spin-offs, recent incorporations (<= 18m), external commit-email domains, or new-endeavor TLS SAN signals surfaced.'
+}
+
+${
+  v30Phoenix && v30Phoenix.githubCommitEmailDna.length > 0
+    ? [
+        `### GitHub Public Commit-Email Domain DNA (${v30Phoenix.githubCommitEmailDna.length})`,
+        ...v30Phoenix.githubCommitEmailDna.map(
+          (g) => `- **${g.authorName}** -> external domain \`${g.emailDomain}\` (Repos: ${g.reposObserved.join(', ')}) ([Profile](${g.profileUrl}))`
+        ),
+      ].join('\n')
+    : ''
+}
+`,
+  };
+
+  const v30Mem = liveIntel?.crossCaseMemory;
+  const crossTargetList = v30Mem?.crossTargetCollisions ?? v30Mem?.collisions ?? [];
+  const sameTargetList = v30Mem?.sameTargetPriorRuns ?? [];
+  const file56CrossCaseCollisionsMd = {
+    filename: '56_CROSS_CASE_ENTITY_COLLISIONS.md',
+    description: 'v30.0 / v31.0 Squad Z: Indexed SQLite WAL Global Entity Memory — Partitioned Cross-Target Collisions vs. Same-Target Prior Runs',
+    type: 'markdown' as const,
+    content: `# 56. CROSS-CASE ENTITY COLLISIONS & GLOBAL ENTITY MEMORY (SQUAD Z · v31.0)
+
+**Target Entity:** ${matchedEntity.legalName} (\`${matchedEntity.name}\`)  
+**Generated At:** \`${timestampIso}\`  
+**Entity Fingerprints Indexed & Checked:** **${v30Mem?.fingerprintsCheckedCount ?? 0}**  
+**Distinct Prior Target Investigations Matched:** **${v30Mem?.priorInvestigationsMatched ?? 0}**  
+**CROSS_TARGET_COLLISIONS (Risk-Elevating Alerts):** **${crossTargetList.length}**  
+**SAME_TARGET_PRIOR_RUNS (Longitudinal Baseline Overlaps):** **${sameTargetList.length}**  
+**Forensic Verdict:** **${v30Mem?.summaryVerdict || 'NO_PRIOR_CROSS_CASE_COLLISIONS'}**
+
+---
+
+## 1. CROSS_TARGET_COLLISIONS (${crossTargetList.length} — Distinct Target Entities · Risk-Elevating)
+| Severity | Fingerprint Type | Matched Entity / Bank / Director / Wallet | Prior Distinct Target | Prior Case ID | Prior Recorded | Current Module -> Prior Module |
+|----------|------------------|-------------------------------------------|-----------------------|---------------|----------------|--------------------------------|
+${
+  crossTargetList.length > 0
+    ? crossTargetList
+        .map(
+          (c) =>
+            `| **${c.severity}** | \`${c.fingerprintType}\` | **${c.matchedLabel.replace(/\|/g, '-')}** | ${c.priorTargetEntity.replace(/\|/g, '-')} | \`${c.priorInvestigationId}\` | ${c.priorRecordedAtIso.slice(0, 10)} | \`${c.currentSourceModule}\` <-> \`${c.priorSourceModule}\` |`
+        )
+        .join('\n')
+    : '| NONE | — | — | — | — | — | Zero overlapping directors, banks, offshore intermediaries, shell addresses, or wallets matched across distinct prior target investigations. |'
+}
+
+---
+
+## 2. SAME_TARGET_PRIOR_RUNS (${sameTargetList.length} — Longitudinal Snapshots of Same Target · Non-Alerting)
+| Scope | Fingerprint Type | Matched Entity / Bank / Director / Wallet | Prior Run Target | Prior Case ID | Prior Recorded | Current Module -> Prior Module |
+|-------|------------------|-------------------------------------------|------------------|---------------|----------------|--------------------------------|
+${
+  sameTargetList.length > 0
+    ? sameTargetList
+        .map(
+          (c) =>
+            `| \`SAME_TARGET_PRIOR_RUN\` | \`${c.fingerprintType}\` | **${c.matchedLabel.replace(/\|/g, '-')}** | ${c.priorTargetEntity.replace(/\|/g, '-')} | \`${c.priorInvestigationId}\` | ${c.priorRecordedAtIso.slice(0, 10)} | \`${c.currentSourceModule}\` <-> \`${c.priorSourceModule}\` |`
+        )
+        .join('\n')
+    : '| NONE | — | — | — | — | — | No prior SQLite WAL runs of this same target entity were matched. |'
+}
+
+---
+
+## 3. METHODOLOGY & PERSISTENCE GUARANTEE
+- All canonical entities, legal d/b/a names, officers/PSCs, named banks, offshore intermediaries, shell addresses, and blockchain wallet addresses discovered during each run are normalized and indexed into the local SQLite WAL \`global_entity_memory\` table using 100% parameterized \`?\` statements.
+- v31.0 Fix 3 strictly partitions matches by normalized \`target_entity\` into **\`CROSS_TARGET_COLLISIONS\`** (promoted as risk alerts in \`00_EXEC_SUMMARY.md\`) vs. **\`SAME_TARGET_PRIOR_RUNS\`** (longitudinal continuity records that never inflate cross-case collusion risk).
+`,
+  };
+
+  // v31.0 Squads P & Z: 57_SOVEREIGN_GLOBAL_LEGAL_COUNSEL_BRIEF.md
+  const legalPayloadEntry = rawPayloadDossierEntries.find(
+    (e) => e.filename === 'evidence/raw_payloads/global_legal_counsel_payload.json'
+  );
+  const legalPayloadSha256 = legalPayloadEntry
+    ? sha256Hex(legalPayloadEntry.content)
+    : sha256Hex(JSON.stringify(resolvedGlobalLegalCounsel));
+  const btcAnchorMeta = liveIntel?.blockchainAnchor;
+  const rfc3161TsaStatusLabel =
+    btcAnchorMeta?.rfc3161Status === 'ANCHORED_RFC3161'
+      ? `ANCHORED (${btcAnchorMeta.tsaProvider || 'FreeTSA / RFC 3161'} · MERKLE_ROOT.tsr)`
+      : 'GENERATED_ON_SEAL (MERKLE_ROOT.tsr + MERKLE_ROOT.tsr.status.json emitted during dossier seal)';
+  const bitcoinAnchorStatusLabel =
+    btcAnchorMeta?.bitcoinBlockHeight && btcAnchorMeta?.bitcoinBlockHash
+      ? `ANCHORED to Bitcoin Mainnet Height #${btcAnchorMeta.bitcoinBlockHeight} (Block ${btcAnchorMeta.bitcoinBlockHash.slice(0, 20)}...)`
+      : 'OFFLINE_OR_PENDING (Bitcoin Mainnet chain-tip queried via Mempool.space / Blockstream during live capture)';
+
+  const file57GlobalLegalCounselMd = {
+    filename: '57_SOVEREIGN_GLOBAL_LEGAL_COUNSEL_BRIEF.md',
+    description:
+      'v31.0 Squads P & Z: Sovereign Global Legal Counsel Brief — Element-by-Element Statutory Exposure Matrix, Precedent/Venue/1782 Analysis, Corporate Veil Assessment, Opposing-Counsel MTD Simulation, FRE 901/902(13)-(14) Admissibility, SOL Clocks & Actionable Referral/FOIA Work Product',
+    type: 'markdown' as const,
+    content: renderGlobalLegalCounselBriefMarkdown({
+      legalName: matchedEntity.legalName,
+      entityName: matchedEntity.name,
+      investigationId,
+      timestampIso,
+      counsel: resolvedGlobalLegalCounsel,
+      admissibility: {
+        fre901AuthenticationBasis: `Every public-record claim is tied to source URLs in 08_SOURCE_INDEX.csv, raw API payloads in evidence/raw_payloads/ (payload SHA-256: ${legalPayloadSha256.slice(0, 16)}...), and deterministic SHA-256 digests verifiable via node verify_dossier.mjs.`,
+        fre902_13_ElectronicRecordsBasis: `Automated deterministic ingestion pipeline (Sovereign Grid v31.0) emits immutable raw JSON/HTML/RSS evidence payloads, Merkle inclusion proofs (39 proofs in LEDGER_ENTRY.json), and RFC 8032 Ed25519 signature over the Binary Merkle Root; ready for accompanying Rule 902(13) qualified-person declaration.`,
+        fre902_14_CertifiedCopyHashBasis: `Every file in the dossier pack is hashed via FIPS 180-4 SHA-256 in SHA256SUMS and bound into the sorted Binary Merkle Tree root in LEDGER_ENTRY.json; offline hash verification confirms bit-for-bit integrity under FRE 902(14).`,
+        sha256ManifestFile: 'SHA256SUMS',
+        merkleRootHex: `Sealed in LEDGER_ENTRY.json -> merkle_root (Global Legal Payload SHA-256: ${legalPayloadSha256})`,
+        ed25519PublicKeyFile: 'PUBLIC_KEY.pem',
+        rfc3161TsaStatus: rfc3161TsaStatusLabel,
+        bitcoinAnchorStatus: bitcoinAnchorStatusLabel,
+        chainOfCustodyGaps: [
+          'FRE 902(13) & 902(14) require a signed written certification (28 U.S.C. § 1746 declaration) from the investigator/custodian who operated the capture environment and verified SHA-256 digests.',
+          'Hearsay exceptions (FRE 803(8) Public Records, FRE 801(d)(2) Opposing Party Statements for official SEC/website statements, FRE 803(6) Business Records via subpoena) must be pleaded separately from authentication.',
+          'Non-public internal intent (scienter), bank wire originals, and unredacted incident timelines require Rule 45 / agency subpoenas or FOIA/FOI production (templates provided in Section 6B).',
+        ],
+      },
+    }),
   };
 
   // v26.0 Pillar 1D: OCCRP FollowTheMoney (.ftm.json) Interoperable Graph Export
@@ -4079,7 +5790,7 @@ ${
   <div class="container">
     <header>
       <div>
-        <div class="meta">SOVEREIGN TECH HYPER-INVESTIGATIONS GRID v26.0 · APEX SINGULARITY · EXECUTIVE FORENSIC BRIEF</div>
+        <div class="meta">SOVEREIGN TECH HYPER-INVESTIGATIONS GRID v29.0 · 260-AGENT FULL-ALPHABET ARCHITECTURE (SQUADS A–Z) · EXECUTIVE FORENSIC BRIEF</div>
         <h1>${escHtml(matchedEntity.legalName)}</h1>
         <div class="meta">Investigation ID: ${escHtml(investigationId)} · Synthesized: ${escHtml(timestampIso)} · Mode: ${liveIntel ? '100% LIVE ZERO-KEY OSINT' : 'CATALOG BASELINE'} · zkTLS: ${escHtml(zktlsBundle.zktlsProvenanceStatus)}</div>
       </div>
@@ -4117,12 +5828,109 @@ ${
     <table>
       <tbody>
         <tr><th>Jurisdiction / HQ</th><td>${escHtml(liveIntel?.headquarters || matchedEntity.hqCity || matchedEntity.country || 'Global')} (${escHtml(liveIntel?.country || matchedEntity.country || 'Global')})</td><th>GLEIF LEI / Ticker</th><td class="mono">${escHtml(liveIntel?.leiCode || 'N/A')} · ${escHtml(liveIntel?.stockTickerOrRegistryId || 'N/A')}</td></tr>
-        <tr><th>Industry / Scale</th><td>${escHtml(liveIntel?.industry || matchedEntity.category)} (${escHtml(liveIntel?.businessScale || 'Enterprise')})</td><th>Official Website</th><td class="mono">${escHtml(liveIntel?.officialWebsite || 'N/A')}</td></tr>
+        <tr><th>Industry / Scale</th><td>${escHtml(normalizedIndustry || matchedEntity.category)} (${escHtml(liveIntel?.businessScale || 'Enterprise')})</td><th>Official Website</th><td class="mono">${escHtml(liveIntel?.officialWebsite || 'N/A')}</td></tr>
         <tr><th>TLS X.509 Certificate</th><td>${tlsCert ? `${escHtml(tlsCert.protocol)} · ${escHtml(tlsCert.issuerCn || tlsCert.issuerOrg)} (${tlsCert.daysUntilExpiry}d left, ${tlsCert.sanDomains.length} SANs)` : 'Not probed'}</td><th>zkTLS Web Provenance</th><td class="mono">${escHtml(zktlsBundle.zktlsProvenanceStatus)} (${zktlsBundle.verifiedProofsCount}/${zktlsBundle.attemptedFetchesCount})</td></tr>
       </tbody>
     </table>
 
-    <h2>2. Survived Adversarial Red-Team Findings (Phase-5 ACH Steelman Audit)</h2>
+    <h2>2. Political Influence &amp; Partisan Split (OpenFEC · US Senate LDA · ProPublica 990)</h2>
+    ${(() => {
+      const polHtml = liveIntel?.politicalInfluence;
+      const pacs = polHtml?.openFecSummary?.committees || [];
+      const pacSummary =
+        pacs.length > 0
+          ? pacs.map((c) => `${c.committeeId} (${c.name})`).join(', ')
+          : 'None matched on OpenFEC';
+      const pacDisb = Math.round(polHtml?.openFecSummary?.totalPacDisbursementsUsd || 0);
+      const ps = polHtml?.openFecSummary?.partisanSplit || {
+        demUsd: 0,
+        repUsd: 0,
+        indOtherUsd: 0,
+        totalUsd: 0,
+        demPct: 0,
+        repPct: 0,
+        indOtherPct: 0,
+        topRecipientCommittees: [],
+      };
+      const nps = polHtml?.affiliatedNonprofits || [];
+      const npAssets = Math.round(nps.reduce((s, n) => s + (n.totalAssetsUsd || 0), 0));
+      const revHtml = polHtml?.revolvingDoorSummary;
+      const schedE = polHtml?.openFecSummary?.scheduleEIndependentExpenditures || [];
+      const top5Rows =
+        ps.topRecipientCommittees.length > 0
+          ? `<table><thead><tr><th>#</th><th>Top Recipient Committee / Lawmaker</th><th>Party</th><th class="num">Filings</th><th class="num">Total USD</th></tr></thead><tbody>${ps.topRecipientCommittees
+              .slice(0, 5)
+              .map(
+                (tc, idx) =>
+                  `<tr><td class="num">${idx + 1}</td><td><strong>${escHtml(tc.committeeName)}</strong></td><td class="mono">${escHtml(tc.party)}</td><td class="num">${tc.count}</td><td class="num">$${Math.round(tc.totalAmountUsd).toLocaleString('en-US')}</td></tr>`
+              )
+              .join('')}</tbody></table>`
+          : '';
+      return `<table><tbody>
+        <tr><th>Corporate PAC ID(s) &amp; Disbursements</th><td>${escHtml(pacSummary)} · <strong>$${pacDisb.toLocaleString('en-US')}</strong></td><th>Affiliated 501(c)(3)/(c)(4)</th><td>${nps.length} vehicle(s) · Assets: <strong>$${npAssets.toLocaleString('en-US')}</strong></td></tr>
+        <tr><th>Executive Schedule A Partisan Split</th><td><strong>DEM:</strong> $${Math.round(ps.demUsd).toLocaleString('en-US')} (${ps.demPct}%) · <strong>REP:</strong> $${Math.round(ps.repUsd).toLocaleString('en-US')} (${ps.repPct}%) · <strong>IND/OTHER:</strong> $${Math.round(ps.indOtherUsd).toLocaleString('en-US')} (${ps.indOtherPct}%)</td><th>Senate LDA Revolving Door &amp; Super PACs</th><td>${revHtml?.totalFormerGovLobbyists ?? 0} former federal official(s) · ${schedE.length} Schedule E Super PAC exp.</td></tr>
+      </tbody></table>${top5Rows}`;
+    })()}
+
+    <h2>2B. Tech Architecture &amp; Attack-Surface Snapshot (Squads U–Z · v29.0)</h2>
+    ${(() => {
+      const uHtml = liveIntel?.clientTechArchitecture;
+      const vHtml = liveIntel?.cloudIxpCompute;
+      const wHtml = liveIntel?.breachVelocitySurface;
+      const xHtml = liveIntel?.shellAddressClustering;
+      const yHtml = liveIntel?.adTechTosSurveillance;
+      const zHtml = liveIntel?.stackToPowerCapstone;
+      const cloudStr =
+        vHtml && vHtml.cloudCdnChains.length > 0
+          ? Array.from(new Set(vHtml.cloudCdnChains.map((c) => c.provider))).join(', ')
+          : 'Unclassified';
+      const trackerTotal = uHtml?.exodusPrivacyReports.reduce((s, t) => s + t.trackersCount, 0) ?? 0;
+      const shellCount = xHtml ? xHtml.mailDropClusterCount + xHtml.offshoreSuiteCount : 0;
+      const coverUpAlerts = zHtml?.activeCoverUpAlerts || [];
+      const exposedCrit =
+        wHtml?.passiveExposureChecks.filter((p) => p.classification === 'EXPOSED_CRITICAL').length ?? 0;
+      const adsTotal = (yHtml?.adsTxtDirectCount ?? 0) + (yHtml?.adsTxtResellerCount ?? 0);
+      return `<table><tbody>
+        <tr><th>Client JS &amp; Mobile Trackers (Squad U)</th><td>${uHtml?.jsBundlesInspected.length ?? 0} JS bundles · ${uHtml?.discoveredApiRoutes.length ?? 0} API routes · ${uHtml?.fingerprintingSignatures.length ?? 0} FP sigs · ${trackerTotal} Exodus trackers</td><th>Cloud, IXP &amp; AI Compute (Squad V)</th><td>${escHtml(cloudStr)} · ${vHtml?.peeringDbNetworks.length ?? 0} PeeringDB ASNs · ${vHtml?.huggingFaceModels.length ?? 0} HF / ${vHtml?.dockerHubRepos.length ?? 0} Docker</td></tr>
+        <tr><th>Breach Velocity &amp; Exposure (Squad W)</th><td>${wHtml?.stateAgBreaches.length ?? 0} State AG breaches (Max Delay ${wHtml?.maxNotificationDelayDays ?? 0}d) · <span class="mono">${escHtml(wHtml?.cleanExposureBenignControl ? 'BENIGN_CONTROL' : `${exposedCrit} EXPOSED`)}</span></td><th>Shell Clusters &amp; Permits (Squad X)</th><td>${shellCount} mail-drop/offshore clusters (${xHtml?.mailDropClusterCount ?? 0} DE/agent · ${xHtml?.offshoreSuiteCount ?? 0} offshore) · ${xHtml?.infrastructurePermitsAndPuc.length ?? 0} permits</td></tr>
+        <tr><th>Ad-Tech &amp; ToS Erosion (Squad Y)</th><td>${adsTotal} ads.txt (${yHtml?.adsTxtResellerCount ?? 0} resellers) · ${yHtml?.sellersJsonSellersCount ?? 0} sellers.json · ToS;DR: <strong>${escHtml(yHtml?.tosdrSummary?.ratingGrade || 'N/A')}</strong></td><th>Stack-to-Power &amp; Cover-Up (Squad Z)</th><td>${zHtml?.stackToPowerChain.length ?? 0} stack layers · <strong>${coverUpAlerts.length} T1/T2 cover-up alert(s)</strong>${coverUpAlerts.length > 0 ? ` (${escHtml(coverUpAlerts.map((a) => a.alertType).join(', '))})` : ''}</td></tr>
+      </tbody></table>`;
+    })()}
+    ${(() => {
+      const ocHtml = liveIntel?.darkPoolCrypto?.onChainForensics;
+      if (!ocHtml) return '';
+      const hasOnChainHits =
+        Boolean(ocHtml.evmIntelligence || ocHtml.solanaIntelligence || ocHtml.bitcoinIntelligence) ||
+        ocHtml.dexScreenerMarket.pairsFound > 0 ||
+        ocHtml.defiLlamaIntel.matchedHacks.length > 0 ||
+        ocHtml.defiLlamaIntel.matchedTreasuries.length > 0 ||
+        !ocHtml.cleanOnChainBenignControl;
+      if (!hasOnChainHits) return '';
+      const stolen = Math.round(ocHtml.defiLlamaIntel.matchedHacks.reduce((s, h) => s + h.amountStolenUsd, 0));
+      const ofacLabel = ocHtml.ofacSanctionsScreening.targetDirectMatch
+        ? 'OFAC DIRECT MATCH'
+        : ocHtml.ofacSanctionsScreening.taintedCounterparties.length > 0
+        ? `${ocHtml.ofacSanctionsScreening.taintedCounterparties.length} TAINTED COUNTERPARTIES`
+        : 'BENIGN_CONTROL (CLEAN)';
+      return `<h2>2C. On-Chain &amp; Smart Contract Risk Summary (Squad O)</h2>
+      <table><tbody>
+        <tr><th>Target Type &amp; OFAC SDN</th><td><span class="mono">${escHtml(ocHtml.targetClassification)}</span> · <strong>${escHtml(ofacLabel)}</strong></td><th>DEX &amp; DeFiLlama</th><td>${ocHtml.dexScreenerMarket.pairsFound} DEX pairs · ${ocHtml.defiLlamaIntel.matchedHacks.length} hacks ($${stolen.toLocaleString('en-US')}) · ${ocHtml.defiLlamaIntel.matchedTreasuries.length} treasuries</td></tr>
+        <tr><th>Active On-Chain Risk Flags</th><td colspan="3">${ocHtml.riskFlags.length > 0 ? escHtml(ocHtml.riskFlags.join(' · ')) : 'NONE (BENIGN_CONTROL)'}</td></tr>
+      </tbody></table>`;
+    })()}
+    ${(() => {
+      const glc = resolvedGlobalLegalCounsel;
+      const strongN = glc.statutoryExposureMatrix.filter((r) => r.evidentiaryStrength === 'STRONG').length;
+      const modN = glc.statutoryExposureMatrix.filter((r) => r.evidentiaryStrength === 'MODERATE').length;
+      return `<h2>2D. Global Legal Exposure &amp; Jurisdiction Verdict (Squads P &amp; Z · v31.0)</h2>
+      <table><tbody>
+        <tr><th>Legal Exposure Tier</th><td><span class="badge tier-${glc.overallLegalExposureTier === 'CRITICAL_MULTI_JURISDICTION_EXPOSURE' ? 'CRITICAL' : glc.overallLegalExposureTier === 'ELEVATED_ENFORCEMENT_EXPOSURE' ? 'ELEVATED' : 'LOW'}">${escHtml(glc.overallLegalExposureTier)}</span></td><th>Active Jurisdictions</th><td>${escHtml(glc.detectedJurisdictions.join(', ') || 'Baseline Global')}</td></tr>
+        <tr><th>Statutory Exposure Matrix</th><td>${glc.statutoryExposureMatrix.length} track(s) (<strong>${strongN} STRONG</strong> · ${modN} MODERATE) · Veil: <span class="mono">${escHtml(glc.corporateVeilAssessment.overallVeilIntegrity)}</span></td><th>Live Authorities &amp; Work Product</th><td>${glc.ecfrRegulations.length} eCFR · ${glc.controllingPrecedents.length} Precedents · ${glc.ukLegislationHits.length + glc.ukCaseLawHits.length} UK · ${glc.eurLexHits.length} EU · ${glc.regulatoryReferrals.length} Referrals · ${glc.targetedFoiaTemplates.length} FOIA/FOI</td></tr>
+        <tr><th>FRE 901/902(13)–(14) &amp; Disclaimer</th><td colspan="3">Full prosecutorial synthesis &amp; cryptographic self-authentication matrix sealed in <span class="mono">57_SOVEREIGN_GLOBAL_LEGAL_COUNSEL_BRIEF.md</span>. <em>Automated OSINT legal-research synthesis; not formal legal advice.</em></td></tr>
+      </tbody></table>`;
+    })()}
+
+    <h2>3. Survived Adversarial Red-Team Findings (Phase-5 ACH Steelman Audit)</h2>
     <p>${escHtml(achReport.executiveVerdict)}</p>
     ${
       achReport.findings.length > 0
@@ -4130,13 +5938,13 @@ ${
             .slice(0, 8)
             .map(
               (f) =>
-                `<tr><td class="mono">${escHtml(f.findingId)}</td><td><span class="badge tier-${f.verdict === 'SURVIVED_RED_TEAM' ? 'CRITICAL' : f.verdict === 'WEAKENED_BY_STEELMAN' ? 'ELEVATED' : 'LOW'}">${escHtml(f.verdict)}</span></td><td class="mono">${escHtml(f.sourceAgentOrSignal)}</td><td>${escHtml(f.h1AdverseHypothesis.slice(0, 120))}</td><td class="num">${f.diagnosticityAvg}</td><td class="num">${f.negativeLikelihoodRatio}x</td></tr>`
+                `<tr><td class="mono">${escHtml(f.findingId)}</td><td><span class="badge tier-${f.verdict === 'SURVIVED_RED_TEAM' ? 'CRITICAL' : f.verdict === 'WEAKENED_BY_STEELMAN' ? 'ELEVATED' : 'LOW'}">${escHtml(f.verdict)}</span></td><td class="mono">${escHtml(f.sourceAgentOrSignal)}</td><td>${escHtml(truncateAtWordBoundary(f.h1AdverseHypothesis, 120))}</td><td class="num">${f.diagnosticityAvg}</td><td class="num">${f.negativeLikelihoodRatio.toFixed(4)}x</td></tr>`
             )
             .join('')}</tbody></table>`
         : '<p>Zero elevated adverse findings required Phase-5 ACH falsification.</p>'
     }
 
-    <h2>3. Sequential Bayesian Likelihood Evidence Breakdown</h2>
+    <h2>4. Sequential Bayesian Likelihood Evidence Breakdown</h2>
     ${
       bayesianPosterior.evidenceContributions.length > 0
         ? `<table><thead><tr><th>Signal</th><th>Category</th><th class="num">LR</th><th class="num">Log-Odds Δ</th><th>Observed Telemetry</th></tr></thead><tbody>${bayesianPosterior.evidenceContributions
@@ -4148,7 +5956,7 @@ ${
         : '<p>No adverse Bayesian likelihood multipliers exceeded baseline prior thresholds.</p>'
     }
 
-    <h2>4. Multi-Hop Cross-Stream Causal Chains &amp; Top Graph PageRank Chokepoints</h2>
+    <h2>5. Multi-Hop Cross-Stream Causal Chains &amp; Top Graph PageRank Chokepoints</h2>
     <table>
       <thead><tr><th>#</th><th>Entity / Node</th><th>Type</th><th class="num">PageRank</th><th class="num">Contagion Risk</th><th class="num">Degree</th></tr></thead>
       <tbody>
@@ -4163,7 +5971,7 @@ ${
     </table>
 
     <footer>
-      <strong>Cryptographic Chain of Custody (v26.0):</strong> This HTML brief, \`38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md\`, \`evidence/followthemoney_graph.ftm.json\`, and \`evidence/zktls_proofs/\` are sealed inside the Binary Merkle Tree (\`SHA256SUMS\`, \`LEDGER_ENTRY.json\`, RFC 8032 Ed25519 \`PUBLIC_KEY.pem\`, and RFC 3161 TSA receipt). Verify offline via <span class="mono">node verify_dossier.mjs</span> or diff longitudinal runs via <span class="mono">node diff_dossiers.mjs</span>.
+      <strong>Cryptographic Chain of Custody (v29.0):</strong> This HTML brief, \`38_ADVERSARIAL_RED_TEAM_ACH_AUDIT.md\`, \`40_POLITICAL_AFFILIATION_LOBBYING_AND_DARK_MONEY.md\`, \`42\`–\`46\` v28.0 Deep-State artifacts, \`47\`–\`52\` v29.0 Full-Alphabet Tech-to-Power artifacts (Squads U–Z), \`evidence/followthemoney_graph.ftm.json\`, and \`evidence/zktls_proofs/\` are sealed inside the Binary Merkle Tree (\`SHA256SUMS\`, \`LEDGER_ENTRY.json\`, RFC 8032 Ed25519 \`PUBLIC_KEY.pem\`, and RFC 3161 TSA receipt). Verify offline via <span class="mono">node verify_dossier.mjs</span> or diff longitudinal runs via <span class="mono">node diff_dossiers.mjs</span>.
     </footer>
   </div>
 </body>
@@ -4221,6 +6029,23 @@ ${
     file39ProxyKinshipMd,
     file40PoliticalInfluenceMd,
     file41ShadowInfraSubawardMd,
+    file42MunicipalFoiaMd,
+    fileMuckRockPayloadJson,
+    file43LaborWarfareMd,
+    file44FccPrototypesMd,
+    file45GlobalBlacklistsMd,
+    file46AviationTrustsMd,
+    file47ClientTechStackMd,
+    file48CloudIxpComputeMd,
+    file49BreachVelocityMd,
+    file50ShellAddressClusteringMd,
+    file51AdTechTosDiffMd,
+    file52SovereignCapstoneMd,
+    file53GlobalBankingMd,
+    file54PrimaryLegalEnforcementMd,
+    file55PhoenixNewEndeavorsMd,
+    file56CrossCaseCollisionsMd,
+    file57GlobalLegalCounselMd,
     fileAchMatrixJson,
     fileFollowTheMoneyNdjson,
     fileZkTlsManifest,
@@ -4321,7 +6146,7 @@ ${
       investigation_id: investigationId,
       target_entity: matchedEntity.name,
       timestamp: timestampIso,
-      generator_system: 'Sovereign Tech Hyper-Investigations Grid v27.0 (200-Agent · Deep Proxy, Kinship & Political-Influence Architecture)',
+      generator_system: 'Sovereign Tech Hyper-Investigations Grid v31.0 (260-Agent · 26-Squad Full-Alphabet Global Legal Counsel & Follow-the-Money Sovereign Architecture A–Z)',
       signing_scheme: 'fips_180_4_sha256_merkle_tree_ed25519_ipfs_cidv1_zktls',
       zktls_provenance_status: zktlsBundle.zktlsProvenanceStatus,
       phase5_ach_red_team: {
@@ -4411,6 +6236,230 @@ ${
         },
       ];
 
+  // v30.0 Follow-the-Money 4-Column Sankey Data (Column 0 Inflows -> Column 1 Entities -> Column 2 Banks/Rails -> Column 3 Outflows/Endeavors)
+  const ftmSankeyNodes: FollowTheMoneySankeyNode[] = [];
+  const ftmSankeyLinks: FollowTheMoneySankeyLink[] = [];
+  const addedSankeyIds = new Set<string>();
+  const addSankeyNode = (node: FollowTheMoneySankeyNode) => {
+    if (addedSankeyIds.has(node.id)) return;
+    addedSankeyIds.add(node.id);
+    ftmSankeyNodes.push(node);
+  };
+
+  const sankeyRootEntityId = 'entity:root';
+  addSankeyNode({
+    id: sankeyRootEntityId,
+    label: matchedEntity.legalName || matchedEntity.name,
+    column: 1,
+    category: 'OPERATING_ENTITY',
+    valueLabel: liveIntel?.canonicalLei ? `LEI ${liveIntel.canonicalLei}` : 'Canonical Target',
+    url: liveIntel?.officialWebsite && /^https?:\/\//i.test(liveIntel.officialWebsite) ? liveIntel.officialWebsite : undefined,
+  });
+
+  // Column 0: Inflows (Form D offerings, Form ADV institutional backers, Federal prime contracts)
+  for (const [idx, fd] of (v30Bank?.formDCapTableOfferings || []).slice(0, 4).entries()) {
+    const id = `inflow:formd:${idx}`;
+    addSankeyNode({
+      id,
+      label: `Form D: ${fd.issuerName}`,
+      column: 0,
+      category: 'INFLOW',
+      valueLabel: fd.totalOfferingUsd ? `$${Math.round(fd.totalOfferingUsd).toLocaleString('en-US')}` : fd.filingDate,
+      url: fd.filingUrl,
+    });
+    ftmSankeyLinks.push({
+      sourceId: id,
+      targetId: sankeyRootEntityId,
+      weight: Math.max(1, Math.min(10, Math.round(Math.log10(Math.max(10_000, fd.totalOfferingUsd || 100_000))))),
+      label: 'Private Offering Capital',
+    });
+  }
+  for (const [idx, adv] of (v30Bank?.formAdvInstitutionalBackers || []).slice(0, 3).entries()) {
+    const id = `inflow:adv:${idx}`;
+    addSankeyNode({
+      id,
+      label: `ADV Backer: ${adv.adviserName}`,
+      column: 0,
+      category: 'INFLOW',
+      valueLabel: adv.estimatedAumNote,
+      url: adv.sourceUrl,
+    });
+    ftmSankeyLinks.push({
+      sourceId: id,
+      targetId: sankeyRootEntityId,
+      weight: 3,
+      label: 'Institutional Capital / Advisory',
+    });
+  }
+  for (const [idx, proc] of (v30Bank?.procurementPrimeToSubFlows || []).slice(0, 3).entries()) {
+    const id = `inflow:proc:${idx}`;
+    addSankeyNode({
+      id,
+      label: proc.awardingAgency || 'Federal Awarding Agency',
+      column: 0,
+      category: 'INFLOW',
+      valueLabel: proc.amountUsd > 0 ? `$${Math.round(proc.amountUsd).toLocaleString('en-US')}` : proc.awardType,
+      url: proc.url,
+    });
+    ftmSankeyLinks.push({
+      sourceId: id,
+      targetId: sankeyRootEntityId,
+      weight: Math.max(1, Math.min(10, Math.round(Math.log10(Math.max(10_000, proc.amountUsd || 100_000))))),
+      label: proc.awardType,
+    });
+  }
+
+  // Column 1: Additional Operating / Legal Entities (d/b/a + top subsidiaries)
+  const secondaryEntityIds: string[] = [sankeyRootEntityId];
+  for (const [idx, dba] of (liveIntel?.legalDbaPivots?.pivotsExecuted || []).slice(0, 2).entries()) {
+    const id = `entity:dba:${idx}`;
+    addSankeyNode({
+      id,
+      label: dba.legalEntityName,
+      column: 1,
+      category: 'OPERATING_ENTITY',
+      valueLabel: dba.jurisdictionHint || 'Legal / d/b/a Entity',
+    });
+    secondaryEntityIds.push(id);
+  }
+
+  // Column 2: Banks, Credit Lenders, Custodians, Payment Rails & On-Chain Off-Ramps
+  const bankNodeIds: string[] = [];
+  for (const [idx, bank] of (v30Bank?.namedBanksAndPaymentRails || []).slice(0, 5).entries()) {
+    const id = `bank:rail:${idx}`;
+    addSankeyNode({
+      id,
+      label: bank.institutionName,
+      column: 2,
+      category: 'BANK_OR_RAIL',
+      valueLabel: `${bank.role} (${bank.jurisdiction})`,
+      url: bank.sourceUrl,
+    });
+    bankNodeIds.push(id);
+    ftmSankeyLinks.push({
+      sourceId: sankeyRootEntityId,
+      targetId: id,
+      weight: 4,
+      label: bank.role,
+    });
+  }
+  for (const [idx, fac] of (v30Bank?.creditFacilitiesAndCharges || []).slice(0, 3).entries()) {
+    const id = `bank:credit:${idx}`;
+    addSankeyNode({
+      id,
+      label: fac.lenderOrChargee,
+      column: 2,
+      category: 'BANK_OR_RAIL',
+      valueLabel: `${fac.facilityRole} (${fac.jurisdiction})`,
+      url: fac.sourceUrl,
+    });
+    bankNodeIds.push(id);
+    ftmSankeyLinks.push({
+      sourceId: sankeyRootEntityId,
+      targetId: id,
+      weight: 3,
+      label: fac.facilityRole,
+    });
+  }
+  for (const [idx, flow] of (liveIntel?.darkPoolCrypto?.onChainForensics?.multi_hop_treasury_flows || []).slice(0, 4).entries()) {
+    const id = `bank:onchain:${idx}`;
+    addSankeyNode({
+      id,
+      label: flow.destinationLabel,
+      column: 2,
+      category: 'BANK_OR_RAIL',
+      valueLabel: `${flow.amountNative} ${flow.assetSymbol} (H${flow.hopDepth})`,
+      url: flow.explorerUrl,
+    });
+    bankNodeIds.push(id);
+    ftmSankeyLinks.push({
+      sourceId: sankeyRootEntityId,
+      targetId: id,
+      weight: 4,
+      label: flow.destinationCategory,
+    });
+  }
+
+  // Column 3: Outflows, Offshore Jurisdictions, Phoenix / New Endeavors & Cross-Case Collisions
+  const bridgeOriginId = bankNodeIds[0] || secondaryEntityIds[0];
+  for (const [idx, off] of (v30Bank?.offshoreBankingJurisdictions || []).slice(0, 3).entries()) {
+    const id = `outflow:offshore:${idx}`;
+    addSankeyNode({
+      id,
+      label: `Offshore: ${off.jurisdiction}`,
+      column: 3,
+      category: 'OUTFLOW_OR_ENDEAVOR',
+      valueLabel: `${off.mentionCount} verified filing mention(s)`,
+    });
+    ftmSankeyLinks.push({
+      sourceId: bridgeOriginId,
+      targetId: id,
+      weight: Math.max(2, Math.min(8, off.mentionCount + 1)),
+      label: 'Offshore Banking / Fiduciary Link',
+    });
+  }
+  for (const [idx, phx] of (v30Phoenix?.phoenixCompanyAlerts || []).slice(0, 3).entries()) {
+    const id = `outflow:phoenix:${idx}`;
+    addSankeyNode({
+      id,
+      label: `Phoenix: ${phx.successorEntityName}`,
+      column: 3,
+      category: 'OUTFLOW_OR_ENDEAVOR',
+      valueLabel: `${phx.severity} · Δ${phx.gapDays}d`,
+    });
+    ftmSankeyLinks.push({
+      sourceId: bridgeOriginId,
+      targetId: id,
+      weight: 5,
+      label: 'Phoenix Successor Entity',
+    });
+  }
+  for (const [idx, nev] of (v30Phoenix?.newEndeavorRadar || []).slice(0, 3).entries()) {
+    const id = `outflow:endeavor:${idx}`;
+    addSankeyNode({
+      id,
+      label: `New Endeavor: ${nev.label}`,
+      column: 3,
+      category: 'OUTFLOW_OR_ENDEAVOR',
+      valueLabel: nev.signalType,
+      url: nev.url,
+    });
+    ftmSankeyLinks.push({
+      sourceId: bridgeOriginId,
+      targetId: id,
+      weight: 3,
+      label: nev.signalType,
+    });
+  }
+  for (const [idx, col] of (v30Mem?.collisions || []).slice(0, 3).entries()) {
+    const id = `outflow:collision:${idx}`;
+    addSankeyNode({
+      id,
+      label: `Cross-Case: ${col.priorTargetEntity}`,
+      column: 3,
+      category: 'OUTFLOW_OR_ENDEAVOR',
+      valueLabel: `${col.fingerprintType}: ${col.matchedLabel}`,
+    });
+    ftmSankeyLinks.push({
+      sourceId: bridgeOriginId,
+      targetId: id,
+      weight: 5,
+      label: 'SQLite WAL Cross-Case Collision',
+    });
+  }
+
+  const followTheMoneySankey: FollowTheMoneySankeyData = {
+    entityName: matchedEntity.name,
+    nodes: ftmSankeyNodes,
+    links: ftmSankeyLinks,
+    summaryLines: [
+      `Form D Offerings: $${Math.round(v30Bank?.totalFormDOfferingUsd ?? 0).toLocaleString('en-US')} · Federal Procurement: $${Math.round(v30Bank?.totalProcurementFlowUsd ?? 0).toLocaleString('en-US')}`,
+      `Named Banks/Rails: ${v30Bank?.namedBanksAndPaymentRails.length ?? 0} · Credit/UK Charges: ${v30Bank?.creditFacilitiesAndCharges.length ?? 0} · Offshore Jurisdictions: ${v30Bank?.offshoreBankingJurisdictions.length ?? 0}`,
+      `Multi-Hop Crypto Flows: ${liveIntel?.darkPoolCrypto?.onChainForensics?.multi_hop_treasury_flows?.length ?? 0} · Sync Cash-Out Alerts: ${liveIntel?.darkPoolCrypto?.onChainForensics?.synchronized_cashout_alerts?.length ?? 0}`,
+      `Phoenix Alerts: ${v30Phoenix?.phoenixCompanyAlerts.length ?? 0} · New-Endeavor Hits: ${v30Phoenix?.newEndeavorRadar.length ?? 0} · Cross-Case Collisions: ${v30Mem?.collisions.length ?? 0}`,
+    ],
+  };
+
   const workbenchPayload: WorkbenchPayload = {
     meta: {
       investigationId,
@@ -4437,13 +6486,17 @@ ${
     topCentralNodes: propertyGraph.topCentralNodes,
     timelineRows,
     contradictions: tribunal.arbitrationEntries,
+    followTheMoneySankey,
   };
 
   const fileWorkbenchDataJs = {
     filename: 'workbench_data.js',
     description: 'Zero-CORS Offline Workbench Data Bundle (Loaded by index.html under file:// protocol)',
     type: 'text' as const,
-    content: `window.__DOSSIER_WORKBENCH__ = ${JSON.stringify(workbenchPayload).replace(/<\/script>/gi, '<\\/script>')};\n`
+    content: `window.__DOSSIER_WORKBENCH__ = ${JSON.stringify(workbenchPayload)
+      .replace(/<\/script>/gi, '<\\/script>')
+      .replace(/\u2028/g, '\\u2028')
+      .replace(/\u2029/g, '\\u2029')};\n`
   };
 
   const fileStandaloneHtml = {

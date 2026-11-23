@@ -982,4 +982,243 @@ export function sanitizeTargetQuery(rawInput: string): SanitizedTargetQueryResul
   };
 }
 
+export interface CanonicalHqPrecedenceInput {
+  query: string;
+  coreName?: string;
+  isLocalBusiness?: boolean;
+  isUkPrimary?: boolean;
+  sec?: {
+    cik?: string;
+    legalName?: string;
+    businessAddress?: string;
+    stateOfIncorporation?: string;
+    isPublicEquityIssuer?: boolean;
+  } | null;
+  gleif?: {
+    primaryLei?: string;
+    legalName?: string;
+    address?: string;
+    city?: string;
+    country?: string;
+    jurisdiction?: string;
+  } | null;
+  gleifMatchesHomeCountry?: boolean;
+  ukCompaniesHouse?: {
+    name?: string;
+    registeredAddress?: string;
+  } | null;
+  fdicBank?: {
+    name?: string;
+  } | null;
+  nonprofit?: {
+    name?: string;
+    city?: string;
+    state?: string;
+  } | null;
+  isTrueNonprofit?: boolean;
+  wikidata?: {
+    label?: string;
+    officialName?: string;
+    headquarters?: string;
+    country?: string;
+  } | null;
+  wikiTitle?: string | null;
+  yahooShortname?: string | null;
+  ddgInfoboxHq?: string | null;
+  siteSchemaAddress?: string | null;
+  osmAddress?: string | null;
+  osmName?: string | null;
+  osmOperator?: string | null;
+  osmCountry?: string | null;
+  formattedLocationHint?: string | null;
+  hasUsEpaFacilities?: boolean;
+  requestedGeography?: string | null;
+}
+
+export interface CanonicalHqPrecedenceResult {
+  displayName: string;
+  legalName: string;
+  headquarters: string;
+  country: string;
+  hqResolutionSource:
+    | 'SEC_EDGAR'
+    | 'GLEIF_LEI'
+    | 'UK_COMPANIES_HOUSE'
+    | 'WIKIDATA'
+    | 'DDG_INFOBOX'
+    | 'SCHEMA_ORG'
+    | 'IRS_NONPROFIT'
+    | 'OSM_NOMINATIM'
+    | 'LOCATION_HINT'
+    | 'UNRESOLVED';
+}
+
+const ISO_TO_COUNTRY_NAME: Record<string, string> = {
+  US: 'United States',
+  GB: 'United Kingdom',
+  UK: 'United Kingdom',
+  CA: 'Canada',
+  DE: 'Germany',
+  FR: 'France',
+  JP: 'Japan',
+  CN: 'China',
+  KR: 'South Korea',
+  TW: 'Taiwan',
+  NL: 'Netherlands',
+  CH: 'Switzerland',
+  IE: 'Ireland',
+  IL: 'Israel',
+  SE: 'Sweden',
+  AU: 'Australia',
+  SG: 'Singapore',
+  IN: 'India',
+};
+
+function expandCountryCode(raw?: string | null): string {
+  const trimmed = String(raw || '').trim();
+  if (!trimmed) return '';
+  const upper = trimmed.toUpperCase();
+  if (ISO_TO_COUNTRY_NAME[upper]) return ISO_TO_COUNTRY_NAME[upper];
+  return trimmed;
+}
+
+/**
+ * v27.1 / v28.0 Entity Headquarters & Display Name Precedence Fix:
+ * Enforces strict authoritative precedence for corporate entities:
+ *   1. SEC EDGAR (CIK legal name & business address -> United States parent)
+ *   2. GLEIF LEI (legalName & headquartersAddress)
+ *   3. UK Companies House (when UK primary) / Wikidata / OSM fallback
+ * Guarantees US parent corporations (e.g., Motorola Solutions, Inc. in Chicago, IL)
+ * are never overwritten by foreign branch Wikidata/OSM records.
+ */
+export function resolveCanonicalHqAndDisplayName(
+  input: CanonicalHqPrecedenceInput
+): CanonicalHqPrecedenceResult {
+  const secCik = String(input.sec?.cik || '').trim();
+  const secLegalName = String(input.sec?.legalName || '').trim();
+  const secBusinessAddress = String(input.sec?.businessAddress || '').trim();
+  const hasAuthoritativeSec = Boolean(secCik && secLegalName);
+
+  const gleifLegalNameRaw = String(input.gleif?.legalName || '').trim();
+  const gleifIsForeignEtfNoise = /taiwan|korea|australia|canada|etf|2x/i.test(gleifLegalNameRaw);
+  const gleifCanLead =
+    Boolean(input.gleif?.primaryLei && gleifLegalNameRaw) &&
+    !gleifIsForeignEtfNoise &&
+    (input.gleifMatchesHomeCountry !== false || !hasAuthoritativeSec);
+
+  const gleifAddr =
+    gleifCanLead && input.gleif
+      ? [input.gleif.address, input.gleif.city, expandCountryCode(input.gleif.country)]
+          .map((p) => String(p || '').trim())
+          .filter(Boolean)
+          .join(', ')
+      : '';
+
+  const wdFullHq = input.wikidata?.headquarters
+    ? [input.wikidata.headquarters, input.wikidata.country]
+        .map((p) => String(p || '').trim())
+        .filter(Boolean)
+        .join(', ')
+    : '';
+
+  // 1. Legal Name: SEC EDGAR -> FDIC/UK -> GLEIF LEI -> Wikidata -> Nonprofit/OSM fallback
+  const legalName =
+    (hasAuthoritativeSec ? secLegalName : '') ||
+    String(input.fdicBank?.name || '').trim() ||
+    (input.isUkPrimary && input.ukCompaniesHouse?.name ? input.ukCompaniesHouse.name.trim() : '') ||
+    (gleifCanLead ? gleifLegalNameRaw : '') ||
+    String(input.wikidata?.officialName || '').trim() ||
+    (input.isTrueNonprofit && input.nonprofit?.name ? input.nonprofit.name.trim() : '') ||
+    String(input.wikidata?.label || '').trim() ||
+    String(input.osmOperator || '').trim() ||
+    String(input.coreName || input.query || '').trim();
+
+  // 2. Display Name: SEC EDGAR (if CIK verified) -> GLEIF LEI -> Wikidata/Wikipedia -> UK/Yahoo/OSM fallback
+  const displayName =
+    (hasAuthoritativeSec ? secLegalName : '') ||
+    (gleifCanLead ? gleifLegalNameRaw : '') ||
+    String(input.wikidata?.label || '').trim() ||
+    String(input.wikiTitle || '').trim() ||
+    (input.isUkPrimary && input.ukCompaniesHouse?.name ? input.ukCompaniesHouse.name.trim() : '') ||
+    String(input.yahooShortname || '').trim() ||
+    String(input.osmName || '').trim() ||
+    String(input.coreName || input.query || '').trim();
+
+  // 3. Headquarters Address: Local small business uses OSM first; corporations use strict SEC -> GLEIF -> UK -> Wikidata/OSM
+  let headquarters = 'Not publicly disclosed';
+  let hqResolutionSource: CanonicalHqPrecedenceResult['hqResolutionSource'] = 'UNRESOLVED';
+
+  if (input.isLocalBusiness) {
+    if (input.osmAddress) {
+      headquarters = input.osmAddress;
+      hqResolutionSource = 'OSM_NOMINATIM';
+    } else if (input.siteSchemaAddress) {
+      headquarters = input.siteSchemaAddress;
+      hqResolutionSource = 'SCHEMA_ORG';
+    } else if (input.formattedLocationHint) {
+      headquarters = input.formattedLocationHint;
+      hqResolutionSource = 'LOCATION_HINT';
+    }
+  } else if (secBusinessAddress) {
+    headquarters = secBusinessAddress;
+    hqResolutionSource = 'SEC_EDGAR';
+  } else if (gleifAddr) {
+    headquarters = gleifAddr;
+    hqResolutionSource = 'GLEIF_LEI';
+  } else if (input.isUkPrimary && input.ukCompaniesHouse?.registeredAddress) {
+    headquarters = input.ukCompaniesHouse.registeredAddress.trim();
+    hqResolutionSource = 'UK_COMPANIES_HOUSE';
+  } else if (wdFullHq) {
+    headquarters = wdFullHq;
+    hqResolutionSource = 'WIKIDATA';
+  } else if (input.ddgInfoboxHq) {
+    headquarters = input.ddgInfoboxHq.trim();
+    hqResolutionSource = 'DDG_INFOBOX';
+  } else if (input.siteSchemaAddress) {
+    headquarters = input.siteSchemaAddress.trim();
+    hqResolutionSource = 'SCHEMA_ORG';
+  } else if (input.isTrueNonprofit && input.nonprofit?.city && input.nonprofit?.state) {
+    headquarters = `${input.nonprofit.city}, ${input.nonprofit.state}`;
+    hqResolutionSource = 'IRS_NONPROFIT';
+  } else if (input.osmAddress) {
+    headquarters = input.osmAddress.trim();
+    hqResolutionSource = 'OSM_NOMINATIM';
+  } else if (input.formattedLocationHint) {
+    headquarters = input.formattedLocationHint.trim();
+    hqResolutionSource = 'LOCATION_HINT';
+  } else if (input.wikidata?.country) {
+    headquarters = input.wikidata.country.trim();
+    hqResolutionSource = 'WIKIDATA';
+  }
+
+  // 4. Country: SEC EDGAR (US CIK issuer with US address/state) -> GLEIF LEI -> UK -> Wikidata -> OSM
+  const secCountryIsUs =
+    Boolean(hasAuthoritativeSec) &&
+    (!input.sec?.stateOfIncorporation ||
+      /^[A-Z]{2}$/.test(input.sec.stateOfIncorporation.trim()) ||
+      /united states|usa|\b[A-Z]{2}\s+\d{5}/i.test(secBusinessAddress) ||
+      !gleifAddr);
+
+  const country = input.isLocalBusiness
+    ? String(input.osmCountry || 'Global').trim() || 'Global'
+    : (secCountryIsUs ? 'United States' : '') ||
+      (gleifCanLead && input.gleif?.country ? expandCountryCode(input.gleif.country) : '') ||
+      (input.isUkPrimary ? 'United Kingdom' : '') ||
+      String(input.wikidata?.country || '').trim() ||
+      String(input.osmCountry || '').trim() ||
+      (input.isTrueNonprofit || input.fdicBank || input.hasUsEpaFacilities ? 'United States' : '') ||
+      (input.requestedGeography && !/^global$/i.test(input.requestedGeography)
+        ? input.requestedGeography.trim()
+        : 'Global');
+
+  return {
+    displayName,
+    legalName,
+    headquarters,
+    country,
+    hqResolutionSource,
+  };
+}
+
+
 

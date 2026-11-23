@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
+import { toSafeExternalUrl } from '../utils/safeUrl';
 import { ExternalLink, Layers, Maximize2, RotateCcw, Search, Zap } from 'lucide-react';
 
 export interface ApexVaultGraphNode {
@@ -609,7 +610,7 @@ export const WebGpuVaultGraph: React.FC<WebGpuVaultGraphProps> = ({
           <div className="flex items-center gap-2 shrink-0">
             {selectedNode.url && (
               <a
-                href={selectedNode.url}
+                href={toSafeExternalUrl(selectedNode.url)}
                 target="_blank"
                 rel="noopener noreferrer"
                 className="px-3 py-1.5 rounded bg-slate-900 border border-slate-700 hover:border-amber-500/50 text-slate-200 hover:text-amber-300 flex items-center gap-1.5 whitespace-nowrap"

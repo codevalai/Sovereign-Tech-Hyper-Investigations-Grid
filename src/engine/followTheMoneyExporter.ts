@@ -700,6 +700,604 @@ export function buildFollowTheMoneyNdjson(params: {
     }
   }
 
+  // 6e. v27.1 Squad Q Institutional 13F Ownership & BOARD_INTERLOCK Nodes
+  const pkV271 = live?.proxyKinship;
+  if (pkV271) {
+    for (const holder of (pkV271.institutional13fHolders || []).slice(0, 12)) {
+      const hId = ftmId('co', `13f:${holder.holderName}`);
+      upsert({
+        id: hId,
+        schema: 'Company',
+        caption: holder.holderName,
+        properties: {
+          name: [holder.holderName],
+          classification: [`Institutional 13F/13G Holder (${holder.formType || '13F-HR'})`],
+          sourceUrl: cleanArr([holder.sourceUrl]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('own', `${hId}->${rootId}:13f`),
+        schema: 'Ownership',
+        caption: `${holder.holderName} institutional stake in ${params.legalName}`,
+        properties: {
+          owner: [hId],
+          asset: [rootId],
+          percentage: cleanArr([holder.sharesOrValue]),
+          role: ['Institutional 13F/13G Beneficial Owner'],
+          date: cleanArr([holder.filingDate]),
+          sourceUrl: cleanArr([holder.sourceUrl]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+    for (const il of (pkV271.boardInterlocks || []).slice(0, 15)) {
+      const pId = ftmId('per', `interlock:${il.personName}`);
+      upsert({
+        id: pId,
+        schema: 'Person',
+        caption: il.personName,
+        properties: {
+          name: [il.personName],
+          classification: ['BOARD_INTERLOCK'],
+          notes: [`Cross-entity interlock across: ${il.organizations.join(', ')}`],
+        },
+        datasets: [datasetTag],
+      });
+      for (const orgName of il.organizations.slice(0, 6)) {
+        const oId = orgName.toLowerCase() === (params.legalName || params.entityName).toLowerCase()
+          ? rootId
+          : ftmId('co', orgName);
+        if (oId !== rootId) {
+          upsert({
+            id: oId,
+            schema: 'Company',
+            caption: orgName,
+            properties: { name: [orgName], classification: ['Interlocked Organization'] },
+            datasets: [datasetTag],
+          });
+        }
+        upsert({
+          id: ftmId('dir', `interlock:${pId}->${oId}`),
+          schema: 'Directorship',
+          caption: `${il.personName} [BOARD_INTERLOCK] @ ${orgName}`,
+          properties: {
+            director: [pId],
+            organization: [oId],
+            role: ['BOARD_INTERLOCK'],
+            classification: ['BOARD_INTERLOCK'],
+            notes: [il.sources.join('; ')],
+          },
+          datasets: [datasetTag],
+        });
+      }
+    }
+  }
+
+  // 6f. v27.1 Squad R OpenFEC Schedule E Super PAC Independent Expenditures
+  if (pol?.openFecSummary?.scheduleEIndependentExpenditures?.length) {
+    for (const se of pol.openFecSummary.scheduleEIndependentExpenditures.slice(0, 10)) {
+      const pacId = ftmId('le', `fec-ie:${se.committeeId || se.committeeName}`);
+      const candId = ftmId('per', `fec-cand:${se.candidateName}`);
+      upsert({
+        id: pacId,
+        schema: 'LegalEntity',
+        caption: se.committeeName,
+        properties: {
+          name: [se.committeeName],
+          registrationNumber: cleanArr([se.committeeId]),
+          classification: ['OpenFEC Schedule E Super PAC'],
+          sourceUrl: cleanArr([se.url]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: candId,
+        schema: 'Person',
+        caption: se.candidateName,
+        properties: {
+          name: [se.candidateName],
+          classification: [`Federal Candidate (${se.candidateParty})`],
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('pay', `fec-se:${se.committeeId}:${se.candidateName}:${se.expenditureDate}`),
+        schema: 'Payment',
+        caption: `${se.committeeName} [${se.supportOppose}] ${se.candidateName} ($${Math.round(se.amountUsd).toLocaleString()})`,
+        properties: {
+          payer: [pacId],
+          beneficiary: [candId],
+          amount: [String(Math.round(se.amountUsd))],
+          currency: ['USD'],
+          date: cleanArr([se.expenditureDate]),
+          purpose: [`OpenFEC Schedule E (${se.supportOppose}): ${se.purpose}`],
+          sourceUrl: cleanArr([se.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
+  // 6g. v28.0 Deep-State 5-Pillar Entities & Links (MuckRock FOIA, Labor OLMS/WARN, FCC, Blacklists/ICIJ, FAA Trusts)
+  const foiaV28 = live?.municipalFoia;
+  if (foiaV28?.releases?.length) {
+    for (const rel of foiaV28.releases.slice(0, 10)) {
+      const agId = ftmId('le', `muckrock-ag:${rel.agencyName}`);
+      upsert({
+        id: agId,
+        schema: 'LegalEntity',
+        caption: rel.agencyName,
+        properties: {
+          name: [rel.agencyName],
+          classification: [`Municipal FOIA Agency (${rel.category})`],
+          notes: [rel.title],
+          sourceUrl: cleanArr([rel.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
+  const labV28 = live?.laborWarfare;
+  if (labV28?.olmsPersuaderFilings?.length) {
+    for (const ol of labV28.olmsPersuaderFilings.slice(0, 8)) {
+      const cId = ftmId('co', `olms:${ol.consultantFirm}`);
+      upsert({
+        id: cId,
+        schema: 'Company',
+        caption: ol.consultantFirm,
+        properties: {
+          name: [ol.consultantFirm],
+          classification: [`DOL OLMS ${ol.formType} Union Persuader Consultant`],
+          sourceUrl: cleanArr([ol.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
+  const fccV28 = live?.fccSpectrum;
+  if (fccV28) {
+    for (const eq of fccV28.fccEquipmentAuthorizations.slice(0, 8)) {
+      const fId = ftmId('le', `fcc:${eq.fccId}`);
+      upsert({
+        id: fId,
+        schema: 'LegalEntity',
+        caption: `FCC ID ${eq.fccId} (${eq.prototypeRiskTag})`,
+        properties: {
+          name: [eq.productDescription],
+          registrationNumber: [eq.fccId],
+          classification: [`FCC Equipment Authorization (${eq.prototypeRiskTag})`],
+          sourceUrl: cleanArr([eq.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
+  const gboV28 = live?.globalBlacklistsOffshore;
+  if (gboV28 && !gboV28.cleanScreeningBenignControl) {
+    for (const wb of gboV28.worldBankDebarments.slice(0, 6)) {
+      upsert({
+        id: ftmId('sanc', `wb:${wb.firmName}`),
+        schema: 'Sanction',
+        caption: `World Bank Debarment: ${wb.firmName}`,
+        properties: {
+          entity: [rootId],
+          authority: ['World Bank Group Sanctions Board'],
+          program: [wb.grounds],
+          startDate: cleanArr([wb.fromDate]),
+          endDate: cleanArr([wb.toDate]),
+          sourceUrl: cleanArr([wb.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+    for (const sam of gboV28.samGovExclusions.slice(0, 6)) {
+      upsert({
+        id: ftmId('sanc', `sam:${sam.entityName}`),
+        schema: 'Sanction',
+        caption: `SAM.gov Exclusion: ${sam.entityName}`,
+        properties: {
+          entity: [rootId],
+          authority: [sam.excludingAgency],
+          program: [sam.exclusionType],
+          startDate: cleanArr([sam.activeDate]),
+          sourceUrl: cleanArr([sam.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+    for (const ic of gboV28.icijOffshoreLeaksHits.slice(0, 8)) {
+      const offId = ftmId('co', `icij:${ic.nodeName}`);
+      upsert({
+        id: offId,
+        schema: 'Company',
+        caption: ic.nodeName,
+        properties: {
+          name: [ic.nodeName],
+          jurisdiction: cleanArr([ic.jurisdiction]),
+          classification: [`ICIJ Offshore Leaks (${ic.dataset})`],
+          sourceUrl: cleanArr([ic.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
+  const avV28 = live?.aviationShadowTrusts;
+  if (avV28?.aircraftRecords?.length) {
+    for (const ac of avV28.aircraftRecords.slice(0, 8)) {
+      const acId = ftmId('le', `faa:${ac.nNumber}`);
+      upsert({
+        id: acId,
+        schema: 'LegalEntity',
+        caption: `FAA ${ac.nNumber} (${ac.aircraftModel})`,
+        properties: {
+          name: [`${ac.nNumber} — ${ac.aircraftModel}`],
+          registrationNumber: [ac.nNumber],
+          classification: [ac.isShadowTrust ? `FAA Aviation Shadow-Trust (${ac.trusteeInstitution})` : 'FAA Corporate Aircraft'],
+          address: cleanArr([ac.cityStateZip]),
+          sourceUrl: cleanArr([ac.sourceUrl]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('own', `${rootId}->${acId}:faa`),
+        schema: 'Ownership',
+        caption: `${params.legalName} <-> FAA ${ac.nNumber}`,
+        properties: {
+          owner: [rootId],
+          asset: [acId],
+          role: [ac.isShadowTrust ? `Suspected Owner-Trust Beneficial Operator (${ac.trusteeInstitution})` : 'FAA Registered Operator'],
+          sourceUrl: cleanArr([ac.sourceUrl]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
+  // 6G. UK Companies House Authenticated Subsidiaries, Directors & PSC / UBO Chains
+  const ukUbo = live?.proxyKinship?.ukCompaniesHouseUbo;
+  if (ukUbo?.companies?.length) {
+    for (const ukCo of ukUbo.companies.slice(0, 5)) {
+      const ukCoId = ftmId('co', `ukch:${ukCo.companyNumber}:${ukCo.title}`);
+      upsert({
+        id: ukCoId,
+        schema: 'Company',
+        caption: ukCo.title,
+        properties: {
+          name: [ukCo.title],
+          registrationNumber: [ukCo.companyNumber],
+          jurisdiction: ['GB'],
+          status: cleanArr([ukCo.companyStatus]),
+          address: cleanArr([ukCo.addressSnippet]),
+          sourceUrl: cleanArr([ukCo.url]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('own', `${rootId}->${ukCoId}:ukch`),
+        schema: 'Ownership',
+        caption: `${params.legalName} <-> UK Entity ${ukCo.title}`,
+        properties: {
+          owner: [rootId],
+          asset: [ukCoId],
+          role: ['UK Companies House Matched Subsidiary / Affiliate'],
+          sourceUrl: cleanArr([ukCo.url]),
+        },
+        datasets: [datasetTag],
+      });
+      for (const off of ukCo.officers.slice(0, 8)) {
+        const offId = ftmId('per', off.name);
+        upsert({
+          id: offId,
+          schema: 'Person',
+          caption: off.name,
+          properties: {
+            name: [off.name],
+            nationality: cleanArr([off.nationality]),
+            country: cleanArr([off.countryOfResidence]),
+            position: cleanArr([off.officerRole]),
+            sourceUrl: cleanArr([ukCo.url]),
+          },
+          datasets: [datasetTag],
+        });
+        upsert({
+          id: ftmId('dir', `${offId}->${ukCoId}:${off.officerRole}`),
+          schema: 'Directorship',
+          caption: `${off.name} -> ${ukCo.title} (${off.officerRole})`,
+          properties: {
+            director: [offId],
+            organization: [ukCoId],
+            role: [off.officerRole],
+            startDate: cleanArr([off.appointedOn !== 'N/A' ? off.appointedOn : undefined]),
+            sourceUrl: cleanArr([ukCo.url]),
+          },
+          datasets: [datasetTag],
+        });
+      }
+      for (const psc of ukCo.personsWithSignificantControl.slice(0, 8)) {
+        const isCorpPsc = /corporate-entity|legal-person/i.test(psc.kind);
+        const pscId = ftmId(isCorpPsc ? 'co' : 'per', `psc:${psc.name}`);
+        upsert({
+          id: pscId,
+          schema: isCorpPsc ? 'Company' : 'Person',
+          caption: psc.name,
+          properties: {
+            name: [psc.name],
+            country: cleanArr([psc.countryOfResidence]),
+            nationality: cleanArr([psc.nationality]),
+            classification: ['UK_PSC_UBO'],
+            sourceUrl: cleanArr([ukCo.url]),
+          },
+          datasets: [datasetTag],
+        });
+        upsert({
+          id: ftmId('own', `${pscId}->${ukCoId}:psc`),
+          schema: 'Ownership',
+          caption: `PSC/UBO ${psc.name} controls ${ukCo.title}`,
+          properties: {
+            owner: [pscId],
+            asset: [ukCoId],
+            role: [
+              psc.naturesOfControl.length > 0
+                ? `UK PSC/UBO (${psc.naturesOfControl.slice(0, 3).join('; ')})`
+                : `UK PSC/UBO (${psc.kind})`,
+            ],
+            startDate: cleanArr([psc.notifiedOn !== 'N/A' ? psc.notifiedOn : undefined]),
+            sourceUrl: cleanArr([ukCo.url]),
+          },
+          datasets: [datasetTag],
+        });
+      }
+    }
+  }
+
+  // 6H. v29.0 Full-Alphabet Stack-to-Power Architecture Links (Squads U–Z: IXP/Colo, Shell Clusters, State AG Breaches & Cover-Up Alerts)
+  const cloudV29 = live?.cloudIxpCompute;
+  if (cloudV29?.peeringDbNetworks?.length) {
+    for (const net of cloudV29.peeringDbNetworks.slice(0, 4)) {
+      const netId = ftmId('le', `peeringdb:${net.asn}`);
+      upsert({
+        id: netId,
+        schema: 'LegalEntity',
+        caption: `PeeringDB ${net.asn} (${net.networkName})`,
+        properties: {
+          name: [`${net.asn} — ${net.networkName}`],
+          classification: ['Bare-Metal ASN / IXP Backbone (Squad V)'],
+          notes: cleanArr([`IXPs: ${net.ixps.slice(0, 4).join(', ') || net.ixpCount}`, `Colos: ${net.facilities.slice(0, 4).join(', ') || net.facilityCount}`]),
+          sourceUrl: cleanArr([net.url]),
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+  const shellV29 = live?.shellAddressClustering;
+  if (shellV29?.clusteredAddresses?.length) {
+    for (const cl of shellV29.clusteredAddresses.filter((c) => c.clusterClassification !== 'PHYSICAL_OPERATIONAL_HQ').slice(0, 6)) {
+      const shAddrId = ftmId('le', `shelladdr:${cl.normalizedAddress}`);
+      upsert({
+        id: shAddrId,
+        schema: 'LegalEntity',
+        caption: `${cl.clusterClassification}: ${cl.normalizedAddress.slice(0, 60)}`,
+        properties: {
+          name: [cl.normalizedAddress],
+          address: [cl.normalizedAddress],
+          classification: [cl.clusterClassification, 'Squad X Shell-Address Cluster'],
+          notes: cleanArr([`Entities clustered (${cl.entityCount}): ${cl.entitiesAtAddress.slice(0, 6).join(', ')}`]),
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('own', `${rootId}->${shAddrId}:shelladdr`),
+        schema: 'Ownership',
+        caption: `${params.legalName} <-> Shell Address Cluster`,
+        properties: {
+          owner: [rootId],
+          asset: [shAddrId],
+          role: [cl.matchedRegisteredAgentPattern || cl.clusterClassification],
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+  const capV29 = live?.stackToPowerCapstone;
+  if (capV29?.stackToPowerChain?.length) {
+    const capId = ftmId('le', `stack_to_power:${params.legalName}`);
+    upsert({
+      id: capId,
+      schema: 'LegalEntity',
+      caption: `Stack-to-Power Capstone: ${params.legalName}`,
+      properties: {
+        name: [`${params.legalName} — v29.0 Stack-to-Power Architecture Map`],
+        classification: ['Sovereign Stack-to-Power Capstone (Squad Z)'],
+        notes: cleanArr([
+          capV29.summaryVerdict,
+          ...capV29.activeCoverUpAlerts.map((a) => `ACTIVE_COVERUP [${a.alertType}]: ${a.summary}`),
+        ]),
+      },
+      datasets: [datasetTag],
+    });
+  }
+
+  // 6I. Squad O Multi-Chain Crypto, Smart Contract & AML Forensics (Wallets, ENS, Counterparties, OFAC & DeFiLlama)
+  const ocFtm = live?.darkPoolCrypto?.onChainForensics;
+  if (ocFtm) {
+    let primaryWalletFtmId: string | null = null;
+    if (ocFtm.evmIntelligence) {
+      const evm = ocFtm.evmIntelligence;
+      primaryWalletFtmId = ftmId('wallet', `eth:${evm.address.toLowerCase()}`);
+      upsert({
+        id: primaryWalletFtmId,
+        schema: 'LegalEntity',
+        caption: evm.ensName ? `${evm.ensName} (${evm.address.slice(0, 12)}...)` : `EVM ${evm.isContract ? 'Contract' : 'Wallet'} ${evm.address}`,
+        properties: {
+          name: cleanArr([evm.contractName || evm.ensName || evm.address, evm.ensName || undefined]),
+          address: [evm.address],
+          classification: [
+            evm.isContract ? 'EVM Smart Contract (Squad O)' : 'EVM Wallet (Squad O)',
+            evm.contractVerified ? 'VERIFIED_CONTRACT' : 'UNVERIFIED_OR_EOA',
+          ],
+          notes: cleanArr([
+            evm.ethBalanceEth !== null ? `ETH Balance: ${evm.ethBalanceEth}` : undefined,
+            evm.proxyImplementation ? `Proxy Implementation: ${evm.proxyImplementation}` : undefined,
+            evm.privilegedAdminBackdoors.length > 0 ? `Admin Backdoors: ${evm.privilegedAdminBackdoors.join(', ')}` : undefined,
+          ]),
+          sourceUrl: [evm.explorerUrl],
+        },
+        datasets: [datasetTag],
+      });
+      upsert({
+        id: ftmId('own', `${rootId}->${primaryWalletFtmId}:evm`),
+        schema: 'Ownership',
+        caption: `${params.legalName} <-> EVM ${evm.address.slice(0, 12)}`,
+        properties: {
+          owner: [rootId],
+          asset: [primaryWalletFtmId],
+          role: [evm.isContract ? 'Target Smart Contract' : 'Target EVM Wallet'],
+          sourceUrl: [evm.explorerUrl],
+        },
+        datasets: [datasetTag],
+      });
+      for (const cp of evm.topCounterparties.slice(0, 10)) {
+        const cpId = ftmId('wallet', `eth:${cp.address.toLowerCase()}`);
+        upsert({
+          id: cpId,
+          schema: 'LegalEntity',
+          caption: `EVM Counterparty ${cp.address}`,
+          properties: {
+            name: [cp.address],
+            address: [cp.address],
+            classification: ['EVM Counterparty Wallet (Squad O)'],
+            sourceUrl: [`https://etherscan.io/address/${cp.address}`],
+          },
+          datasets: [datasetTag],
+        });
+        upsert({
+          id: ftmId('pay', `${primaryWalletFtmId}->${cpId}`),
+          schema: 'Payment',
+          caption: `EVM Flow (${cp.direction}, ${cp.txCount} txs, ${cp.totalValueEth} ETH)`,
+          properties: {
+            payer: [cp.direction === 'IN' ? cpId : primaryWalletFtmId],
+            beneficiary: [cp.direction === 'IN' ? primaryWalletFtmId : cpId],
+            purpose: [`${cp.txCount} on-chain transfer(s) (${cp.direction})`],
+            amount: [String(cp.totalValueEth)],
+            currency: ['ETH'],
+          },
+          datasets: [datasetTag],
+        });
+      }
+    }
+    if (ocFtm.solanaIntelligence) {
+      const sol = ocFtm.solanaIntelligence;
+      const solId = ftmId('wallet', `sol:${sol.address}`);
+      primaryWalletFtmId = primaryWalletFtmId || solId;
+      upsert({
+        id: solId,
+        schema: 'LegalEntity',
+        caption: `Solana ${sol.accountType || 'Account'} ${sol.address}`,
+        properties: {
+          name: [sol.address],
+          address: [sol.address],
+          classification: ['Solana Account / SPL Mint (Squad O)'],
+          notes: cleanArr([
+            sol.solBalance !== null ? `SOL Balance: ${sol.solBalance}` : undefined,
+            sol.isMintable ? `Mint Authority Active: ${sol.mintAuthority}` : 'Mint Authority Revoked',
+            sol.isFreezable ? `Freeze Authority Active: ${sol.freezeAuthority}` : 'Freeze Authority Revoked',
+            sol.top10HolderPct !== null ? `Top-10 Whale Concentration: ${sol.top10HolderPct}%` : undefined,
+          ]),
+          sourceUrl: [sol.explorerUrl],
+        },
+        datasets: [datasetTag],
+      });
+      for (const cpAddr of sol.recentCounterparties.slice(0, 6)) {
+        const cpId = ftmId('wallet', `sol:${cpAddr}`);
+        upsert({
+          id: cpId,
+          schema: 'LegalEntity',
+          caption: `Solana Holder/Counterparty ${cpAddr}`,
+          properties: {
+            name: [cpAddr],
+            address: [cpAddr],
+            classification: ['Solana Counterparty / Whale Holder (Squad O)'],
+          },
+          datasets: [datasetTag],
+        });
+        upsert({
+          id: ftmId('own', `${cpId}->${solId}:spl`),
+          schema: 'Ownership',
+          caption: `Solana Holder ${cpAddr.slice(0, 10)} -> ${sol.address.slice(0, 10)}`,
+          properties: { owner: [cpId], asset: [solId], role: ['SPL Token Holder'] },
+          datasets: [datasetTag],
+        });
+      }
+    }
+    if (ocFtm.bitcoinIntelligence) {
+      const btc = ocFtm.bitcoinIntelligence;
+      const btcId = ftmId('wallet', `btc:${btc.address}`);
+      upsert({
+        id: btcId,
+        schema: 'LegalEntity',
+        caption: `Bitcoin Address ${btc.address} (${btc.balanceBtc} BTC)`,
+        properties: {
+          name: [btc.address],
+          address: [btc.address],
+          classification: ['Bitcoin UTXO Wallet (Squad O)'],
+          notes: [`Balance: ${btc.balanceBtc} BTC · Txs: ${btc.utxoTxCount}`],
+          sourceUrl: [btc.explorerUrl],
+        },
+        datasets: [datasetTag],
+      });
+      for (const cpAddr of btc.topCounterparties.slice(0, 6)) {
+        const cpId = ftmId('wallet', `btc:${cpAddr}`);
+        upsert({
+          id: cpId,
+          schema: 'LegalEntity',
+          caption: `Bitcoin Counterparty ${cpAddr}`,
+          properties: { name: [cpAddr], address: [cpAddr], classification: ['Bitcoin UTXO Counterparty'] },
+          datasets: [datasetTag],
+        });
+        upsert({
+          id: ftmId('pay', `${btcId}->${cpId}:btc`),
+          schema: 'Payment',
+          caption: `BTC UTXO Link ${btc.address.slice(0, 10)} <-> ${cpAddr.slice(0, 10)}`,
+          properties: { payer: [btcId], beneficiary: [cpId], currency: ['BTC'] },
+          datasets: [datasetTag],
+        });
+      }
+    }
+    for (const taint of ocFtm.ofacSanctionsScreening.taintedCounterparties.slice(0, 10)) {
+      upsert({
+        id: ftmId('sanc', `ofac_crypto:${taint.address}:${taint.listCurrency}`),
+        schema: 'Sanction',
+        caption: `OFAC SDN Digital Currency Match (${taint.listCurrency} · ${taint.relation})`,
+        properties: {
+          entity: [primaryWalletFtmId || rootId],
+          authority: ['US Treasury OFAC SDN Digital Currency List'],
+          program: [`OFAC_${taint.listCurrency}`],
+          reason: [`${taint.relation} address ${taint.address} matched live OFAC SDN ${taint.listCurrency} list`],
+        },
+        datasets: [datasetTag],
+      });
+    }
+    for (const hack of ocFtm.defiLlamaIntel.matchedHacks.slice(0, 4)) {
+      upsert({
+        id: ftmId('le', `defillama_hack:${hack.name}:${hack.dateIso || 'na'}`),
+        schema: 'LegalEntity',
+        caption: `DeFiLlama Exploit: ${hack.name} ($${Math.round(hack.amountStolenUsd).toLocaleString('en-US')})`,
+        properties: {
+          name: [hack.name],
+          classification: ['DeFiLlama Confirmed Exploit (Squad O)', hack.classification],
+          notes: [`Technique: ${hack.technique} · Amount Stolen: $${Math.round(hack.amountStolenUsd).toLocaleString('en-US')}`],
+          sourceUrl: [hack.url],
+        },
+        datasets: [datasetTag],
+      });
+    }
+  }
+
   // 7. Remaining Property Graph Counterparties / Legal Entities (for complete Aleph/Gephi parity)
   for (const node of params.graphNodes.slice(0, 80)) {
     if (!node.label || node.label.toLowerCase() === (params.legalName || params.entityName).toLowerCase()) continue;

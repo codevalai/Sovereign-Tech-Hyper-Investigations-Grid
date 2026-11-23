@@ -51,7 +51,7 @@ jobs:
               cat /tmp/health.json
               grep -q '"status":"ok"' /tmp/health.json
               grep -q '"agents":200' /tmp/health.json
-              grep -q '"version":"27.0"' /tmp/health.json
+              grep -q '"version":"28.0"' /tmp/health.json
               exit 0
             fi
             sleep 0.5

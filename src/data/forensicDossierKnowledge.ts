@@ -1261,6 +1261,24 @@ ${uboLines}
           └──► Primary Market Position: ${liveIntel.primaryMarketMechanism}
 \`\`\`
 
+${liveIntel.legalDbaPivots && liveIntel.legalDbaPivots.pivotsExecuted.length > 0 ? `### 1B. PHASE-4 RECURSIVE d/b/a & OPERATING LEGAL-ENTITY PIVOTS (${liveIntel.legalDbaPivots.pivotsExecuted.length})
+> **Summary:** ${liveIntel.legalDbaPivots.summaryVerdict}
+
+| Operating Legal Entity | Brand Alias / Link | Jurisdiction Hint | Registry ID / Status | Incorporation | Directors / Officers | PSCs / UBOs | Registered Address |
+|------------------------|--------------------|-------------------|----------------------|---------------|----------------------|-------------|--------------------|
+${liveIntel.legalDbaPivots.pivotsExecuted
+  .map((p) => {
+    const regId = [
+      p.ukCompaniesHouseNumber ? `UK CH #${p.ukCompaniesHouseNumber} (${p.ukCompanyStatus || 'active'})` : '',
+      p.gleifLei ? `LEI ${p.gleifLei} (${p.gleifStatus || 'N/A'})` : '',
+      p.secFilingsMatchedCount > 0 ? `SEC EFTS: ${p.secFilingsMatchedCount}` : '',
+    ]
+      .filter(Boolean)
+      .join(' · ') || 'No secondary registry ID matched';
+    return `| **${p.legalEntityName.replace(/\|/g, '-')}** | \`${p.connectorPhrase}\` ${p.brandAlias.replace(/\|/g, '-')} (\`${p.sourceProvenance}\`) | ${p.jurisdictionHint} | ${regId} | ${p.incorporationDate || 'N/A'} | ${p.directors.slice(0, 4).join('; ').replace(/\|/g, '-') || 'Not disclosed'} | ${p.pscsAndUbos.slice(0, 4).join('; ').replace(/\|/g, '-') || 'Not disclosed'} | ${(p.registeredAddress || 'Not disclosed').replace(/\|/g, '-')} |`;
+  })
+  .join('\n')}
+` : ''}
 ---
 
 ## 2. REAL-WORLD SUPPLY-CHAIN & OPERATIONAL DEPENDENCY MATRIX

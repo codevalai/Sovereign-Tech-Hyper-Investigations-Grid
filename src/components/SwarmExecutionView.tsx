@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { toSafeExternalUrl } from '../utils/safeUrl';
 import {
   Bot,
   Terminal,
@@ -199,7 +200,7 @@ export const SwarmExecutionView: React.FC<SwarmExecutionViewProps> = ({
                     <td className="py-1.5 px-3 text-slate-200 font-semibold whitespace-nowrap">
                       {probe.url ? (
                         <a
-                          href={probe.url}
+                          href={toSafeExternalUrl(probe.url)}
                           target="_blank"
                           rel="noopener noreferrer"
                           className="hover:text-amber-300 inline-flex items-center gap-1"

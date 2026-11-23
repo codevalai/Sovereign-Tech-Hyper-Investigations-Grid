@@ -18,6 +18,10 @@ import {
   isSpvOrFundIssuerName,
   isValidSenateLdaRecord,
 } from '../engine/entityDisambiguation.ts';
+import {
+  buildCanonicalIdentityAnchor,
+  EntityDisambiguationGate,
+} from '../engine/entityDisambiguationGate.ts';
 
 // =============================================================================
 // 1. REAL FIPS 180-4 SHA-256 & BINARY MERKLE TREE
@@ -560,6 +564,31 @@ export function buildForensicPropertyGraph(
   const edges: PropertyGraphEdge[] = [];
   const edgeKeys = new Set<string>();
 
+  // Patch 1: Graph Contamination Firewall — block any quarantined or colliding entity nodes
+  const graphGate = liveIntel
+    ? new EntityDisambiguationGate(
+        liveIntel.canonicalIdentityAnchor ||
+          buildCanonicalIdentityAnchor({
+            canonicalName: liveIntel.entityName,
+            legalName: liveIntel.legalName,
+            exactDomain: liveIntel.cyberTelemetry?.primaryDomain || liveIntel.officialWebsite,
+            knownAliases: liveIntel.dbaNames,
+            industry: liveIntel.industry,
+            wikipediaSummary: liveIntel.executiveSummary,
+          })
+      )
+    : null;
+  const quarantinedLabels = new Set(
+    (liveIntel?.quarantinedEntityCollisions || [])
+      .map((q) => q.title.trim().toLowerCase())
+      .filter((t) => t.length >= 4)
+  );
+  const quarantinedUrls = new Set(
+    (liveIntel?.quarantinedEntityCollisions || [])
+      .map((q) => String(q.url || '').trim().toLowerCase())
+      .filter(Boolean)
+  );
+
   const upsertNode = (
     id: string,
     label: string,
@@ -568,6 +597,19 @@ export function buildForensicPropertyGraph(
     metadata: Record<string, string | number | boolean> = {}
   ) => {
     if (!id || !label) return;
+    if (layer !== 'core' && !id.startsWith('entity:')) {
+      const lowerLabel = label.trim().toLowerCase();
+      const metaUrl = String(metadata.url || metadata.sourceUrl || '').trim().toLowerCase();
+      if (
+        (metaUrl && quarantinedUrls.has(metaUrl)) ||
+        Array.from(quarantinedLabels).some((q) => lowerLabel.includes(q) || q.includes(lowerLabel))
+      ) {
+        return;
+      }
+      if (graphGate && !graphGate.isNodeAllowedInGraph(label, metadata)) {
+        return;
+      }
+    }
     if (!nodeMap.has(id)) {
       nodeMap.set(id, { id, label, nodeType, layer, metadata });
     }
@@ -970,6 +1012,52 @@ export function buildForensicPropertyGraph(
       });
       addEdge(rootId, mid, 'CRYPTOGRAPHIC_MEMPOOL_ANCHOR', 'derivatives_crypto', 0.94);
     }
+    const oc = dp.onChainForensics;
+    if (oc) {
+      if (oc.ofacSanctionsScreening.targetDirectMatch || oc.ofacSanctionsScreening.taintedCounterparties.length > 0) {
+        const ofacId = 'crypto:ofac:taint';
+        upsertNode(
+          ofacId,
+          `OFAC SDN Crypto Taint (${oc.ofacSanctionsScreening.taintedCounterparties.length} hit(s))`,
+          'Contract/Docket',
+          'derivatives_crypto',
+          { targetDirectMatch: oc.ofacSanctionsScreening.targetDirectMatch }
+        );
+        addEdge(rootId, ofacId, 'OFAC_DIGITAL_CURRENCY_TAINT', 'derivatives_crypto', 0.98);
+      }
+      if (oc.evmIntelligence?.ensName) {
+        const ensId = `crypto:ens:${oc.evmIntelligence.ensName}`;
+        upsertNode(ensId, `ENS Identity: ${oc.evmIntelligence.ensName}`, 'ASN/IP_Block', 'derivatives_crypto', {
+          evmAddress: oc.evmIntelligence.address,
+        });
+        addEdge(rootId, ensId, 'RESOLVES_TO_ENS', 'derivatives_crypto', 0.92, oc.evmIntelligence.explorerUrl);
+      }
+      for (const hack of oc.defiLlamaIntel.matchedHacks.slice(0, 3)) {
+        const hid = `crypto:hack:${hack.name.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24)}`;
+        upsertNode(
+          hid,
+          `DeFiLlama Exploit: ${hack.name} ($${Math.round(hack.amountStolenUsd).toLocaleString('en-US')})`,
+          'Contract/Docket',
+          'derivatives_crypto',
+          { technique: hack.technique, amountStolenUsd: hack.amountStolenUsd }
+        );
+        addEdge(rootId, hid, 'CONFIRMED_PROTOCOL_EXPLOIT', 'derivatives_crypto', 0.95, hack.url);
+      }
+      if (oc.cleanOnChainBenignControl && oc.ofacSanctionsScreening.cleanBenignControl) {
+        const cleanCryptoId = 'crypto:clean:benign_control';
+        upsertNode(
+          cleanCryptoId,
+          'Clean On-Chain OFAC & Smart-Contract Audit (BENIGN_CONTROL)',
+          'Contract/Docket',
+          'derivatives_crypto',
+          {
+            controlClassification: 'BENIGN_CONTROL',
+            indexedOfacAddresses: oc.ofacSanctionsScreening.totalSanctionedAddressesIndexed,
+          }
+        );
+        addEdge(rootId, cleanCryptoId, 'VERIFIED_CLEAN_ONCHAIN_AML', 'derivatives_crypto', 0.9);
+      }
+    }
   }
 
   // Squad P: Judicial SLAPP, CourtListener Dockets & Judge Forum Concentration
@@ -987,6 +1075,298 @@ export function buildForensicPropertyGraph(
         upsertNode(jid, `Judge: ${cd.judgeAssigned}`, 'Person', 'judicial_slapp', { court: cd.court });
         addEdge(cid, jid, 'ASSIGNED_PRESIDING_JUDGE', 'judicial_slapp', 0.88);
       }
+    });
+  }
+
+  // v27.1 / v28.0 Squad Q Board Interlocks & Squad R Revolving Door
+  for (const il of (liveIntel?.proxyKinship?.boardInterlocks || []).slice(0, 6)) {
+    const pid = `person:interlock:${il.personName.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24)}`;
+    upsertNode(pid, `BOARD_INTERLOCK: ${il.personName}`, 'Person', 'ownership', {
+      classification: 'BOARD_INTERLOCK',
+      organizations: il.organizations.join(' | '),
+    });
+    addEdge(rootId, pid, 'BOARD_INTERLOCK', 'ownership', 0.91);
+  }
+  for (const rev of (liveIntel?.politicalInfluence?.revolvingDoorSummary?.revolvingDoorRoster || []).slice(0, 6)) {
+    const rid = `person:lda_rev:${rev.lobbyistName.toLowerCase().replace(/[^a-z0-9]/g, '_').slice(0, 24)}`;
+    upsertNode(rid, `Revolving-Door Lobbyist: ${rev.lobbyistName} (${rev.coveredPosition.slice(0, 42)})`, 'Person', 'revolving_door', {
+      coveredPosition: rev.coveredPosition,
+      registrant: rev.registrantName,
+    });
+    addEdge(rootId, rid, 'RETAINS_FORMER_GOV_LOBBYIST', 'revolving_door', 0.92, rev.url);
+  }
+
+  // v28.0 Pillar 1: Municipal FOIA (MuckRock API v2)
+  const foia = liveIntel?.municipalFoia;
+  if (foia && foia.releases.length > 0) {
+    foia.releases.slice(0, 4).forEach((rel, idx) => {
+      const fid = `foia:muckrock:${idx}`;
+      upsertNode(fid, `Municipal FOIA [${rel.category}]: ${rel.agencyName} — ${rel.title.slice(0, 44)}`, 'Contract/Docket', 'revolving_door', {
+        requestId: rel.requestId,
+        jurisdiction: rel.jurisdiction,
+        category: rel.category,
+      });
+      addEdge(rootId, fid, 'MUNICIPAL_FOIA_RELEASE', 'revolving_door', 0.88, rel.url);
+    });
+  }
+
+  // v28.0 Pillar 2: Labor Warfare (DOL OLMS Persuaders & WARN Act Layoffs)
+  const lab = liveIntel?.laborWarfare;
+  if (lab) {
+    lab.olmsPersuaderFilings.slice(0, 3).forEach((ol, idx) => {
+      const oid = `labor:olms:${idx}`;
+      upsertNode(oid, `DOL OLMS ${ol.formType}: ${ol.consultantFirm.slice(0, 48)}`, 'Contract/Docket', 'accounting_insider', {
+        formType: ol.formType,
+        year: ol.filingYear,
+      });
+      addEdge(rootId, oid, 'RETAINED_UNION_PERSUADER', 'accounting_insider', 0.9, ol.url);
+    });
+    lab.warnActLayoffs.slice(0, 3).forEach((wn, idx) => {
+      const wid = `labor:warn:${idx}`;
+      upsertNode(wid, `WARN Layoff (${wn.noticeDate}): ${wn.noticeTitle.slice(0, 44)}`, 'Contract/Docket', 'accounting_insider', {
+        state: wn.stateOrJurisdiction,
+        employees: wn.estimatedEmployees ?? 'N/A',
+      });
+      addEdge(rootId, wid, 'WARN_MASS_LAYOFF_NOTICE', 'accounting_insider', 0.87, wn.sourceUrl);
+    });
+  }
+
+  // v28.0 Pillar 3: Secret Hardware & Spectrum Prototypes (FCC ID & ULS)
+  const fcc = liveIntel?.fccSpectrum;
+  if (fcc) {
+    fcc.fccEquipmentAuthorizations.slice(0, 3).forEach((eq, idx) => {
+      const eid = `fcc:id:${idx}`;
+      upsertNode(eid, `FCC ID ${eq.fccId} [${eq.prototypeRiskTag}]: ${eq.productDescription.slice(0, 38)}`, 'ASN/IP_Block', 'cyber', {
+        frequencyBand: eq.frequencyBand,
+        riskTag: eq.prototypeRiskTag,
+      });
+      addEdge(rootId, eid, 'FCC_RF_PROTOTYPE_GRANT', 'cyber', 0.88, eq.url);
+    });
+    fcc.ulsExperimentalLicenses.slice(0, 2).forEach((ul, idx) => {
+      const uid = `fcc:uls:${idx}`;
+      upsertNode(uid, `FCC ULS ${ul.callSign} (${ul.serviceCode})`, 'ASN/IP_Block', 'cyber', {
+        status: ul.status,
+      });
+      addEdge(rootId, uid, 'FCC_EXPERIMENTAL_SPECTRUM', 'cyber', 0.85, ul.url);
+    });
+  }
+
+  // v28.0 Optional Authenticated Threat Intel: VirusTotal & AlienVault OTX (0 pulses -> BENIGN_CONTROL)
+  const vtIntel = liveIntel?.cyberTelemetry?.virusTotalIntel;
+  if (vtIntel && (vtIntel.maliciousCount > 0 || vtIntel.suspiciousCount > 0)) {
+    upsertNode(
+      'cyber:virustotal',
+      `VirusTotal Alert (${vtIntel.domain}: ${vtIntel.maliciousCount} Malicious, ${vtIntel.suspiciousCount} Suspicious)`,
+      'ASN/IP_Block',
+      'cyber',
+      {
+        maliciousCount: vtIntel.maliciousCount,
+        suspiciousCount: vtIntel.suspiciousCount,
+        reputationScore: vtIntel.reputationScore,
+      }
+    );
+    addEdge(rootId, 'cyber:virustotal', 'VIRUSTOTAL_DOMAIN_ALERT', 'cyber', vtIntel.maliciousCount > 0 ? 0.94 : 0.82, vtIntel.url);
+  }
+  const otxIntel = liveIntel?.cyberTelemetry?.otxThreatIntel;
+  if (otxIntel) {
+    if (otxIntel.cleanBenignControl || otxIntel.pulseCount === 0) {
+      upsertNode(
+        'cyber:otx:clean',
+        `Clean AlienVault OTX Threat Screening (${otxIntel.domain}: 0 Pulses · BENIGN_CONTROL)`,
+        'ASN/IP_Block',
+        'cyber',
+        { controlClassification: 'BENIGN_CONTROL', pulseCount: 0 }
+      );
+      addEdge(rootId, 'cyber:otx:clean', 'OTX_CLEAN_CONTROL', 'cyber', 0.4, otxIntel.url);
+    } else {
+      upsertNode(
+        'cyber:otx:pulses',
+        `AlienVault OTX Threat Pulses (${otxIntel.domain}: ${otxIntel.pulseCount} Pulses)`,
+        'ASN/IP_Block',
+        'cyber',
+        { pulseCount: otxIntel.pulseCount, malwareFamilies: otxIntel.malwareFamilies.join(', ') }
+      );
+      addEdge(rootId, 'cyber:otx:pulses', 'OTX_THREAT_PULSE_HIT', 'cyber', 0.91, otxIntel.url);
+    }
+  }
+
+  // v28.0 Pillar 4: Global Corruption Blacklists & ICIJ Offshore Leaks (Clean -> BENIGN_CONTROL)
+  const gbo = liveIntel?.globalBlacklistsOffshore;
+  if (gbo) {
+    if (gbo.cleanScreeningBenignControl) {
+      upsertNode(
+        'blacklist:global:clean',
+        `Clean Global Blacklist & ICIJ Screening (0 hits / ${gbo.screenedEntityNames.length + gbo.screenedExecutiveNames.length} screened)`,
+        'Contract/Docket',
+        'sanctions_trade',
+        { controlClassification: 'BENIGN_CONTROL', screenedCount: gbo.screenedEntityNames.length + gbo.screenedExecutiveNames.length }
+      );
+      addEdge(rootId, 'blacklist:global:clean', 'GLOBAL_BLACKLIST_CLEAN_CONTROL', 'sanctions_trade', 0.4);
+    } else {
+      gbo.worldBankDebarments.slice(0, 3).forEach((wb, idx) => {
+        const id = `blacklist:wb:${idx}`;
+        upsertNode(id, `World Bank Debarment: ${wb.firmName} (${wb.country})`, 'Contract/Docket', 'sanctions_trade', {
+          grounds: wb.grounds,
+        });
+        addEdge(rootId, id, 'WORLD_BANK_DEBARRED_MATCH', 'sanctions_trade', 0.96, wb.url);
+      });
+      gbo.samGovExclusions.slice(0, 3).forEach((sam, idx) => {
+        const id = `blacklist:sam:${idx}`;
+        upsertNode(id, `SAM.gov Exclusion: ${sam.entityName.slice(0, 44)}`, 'Contract/Docket', 'sanctions_trade', {
+          exclusionType: sam.exclusionType,
+        });
+        addEdge(rootId, id, 'SAM_GOV_EXCLUSION_MATCH', 'sanctions_trade', 0.95, sam.url);
+      });
+      gbo.icijOffshoreLeaksHits.slice(0, 3).forEach((ic, idx) => {
+        const id = `blacklist:icij:${idx}`;
+        upsertNode(id, `ICIJ Offshore (${ic.dataset}): ${ic.nodeName.slice(0, 42)}`, 'Entity', 'sanctions_trade', {
+          jurisdiction: ic.jurisdiction,
+          matchBasis: ic.matchBasis,
+        });
+        addEdge(rootId, id, 'ICIJ_OFFSHORE_LEAKS_MATCH', 'sanctions_trade', 0.9, ic.url);
+      });
+    }
+  }
+
+  // v28.0 Pillar 5: FAA Aviation Shadow-Trusts
+  const av = liveIntel?.aviationShadowTrusts;
+  if (av && av.aircraftRecords.length > 0) {
+    av.aircraftRecords.slice(0, 4).forEach((ac, idx) => {
+      const aid = `faa:aircraft:${idx}`;
+      upsertNode(
+        aid,
+        `FAA Tail ${ac.nNumber} (${ac.isShadowTrust ? `Shadow Trust: ${ac.trusteeInstitution}` : ac.aircraftModel})`,
+        'Entity',
+        'ownership',
+        {
+          isShadowTrust: ac.isShadowTrust,
+          zipMatchesHq: ac.zipMatchesHq,
+          cityStateZip: ac.cityStateZip,
+        }
+      );
+      addEdge(rootId, aid, ac.isShadowTrust ? 'AVIATION_SHADOW_TRUST_ASSET' : 'CORPORATE_AIRCRAFT_ASSET', 'ownership', ac.isShadowTrust ? 0.9 : 0.78, ac.sourceUrl);
+    });
+  }
+
+  // v29.0 Squad U: Client Tech Architecture, JS Bundles & Mobile Trackers
+  const ct29 = liveIntel?.clientTechArchitecture;
+  if (ct29) {
+    if (ct29.exodusPrivacyReports.some((r) => r.trackersCount > 0)) {
+      const totalTrk = ct29.exodusPrivacyReports.reduce((s, r) => s + r.trackersCount, 0);
+      const uId = 'v29:mobile:trackers';
+      upsertNode(uId, `Mobile Surveillance Trackers (${totalTrk} via Exodus Privacy)`, 'Swarm_Cluster', 'cyber', {
+        trackersCount: totalTrk,
+        androidApps: ct29.mobileAppIds.androidPackages.length,
+      });
+      addEdge(rootId, uId, 'EMBEDS_MOBILE_TRACKERS', 'cyber', totalTrk >= 5 ? 0.88 : 0.72, ct29.exodusPrivacyReports[0]?.reportUrl);
+    }
+    if (ct29.stagingOrInternalHosts.length > 0) {
+      const stId = 'v29:js:staging';
+      upsertNode(stId, `Leaked Staging/Internal Hosts (${ct29.stagingOrInternalHosts.slice(0, 2).join(', ')})`, 'ASN/IP_Block', 'cyber', {
+        count: ct29.stagingOrInternalHosts.length,
+      });
+      addEdge(rootId, stId, 'EXPOSES_INTERNAL_JS_HOST', 'cyber', 0.82);
+    }
+  }
+
+  // v29.0 Squad V: Cloud, IXP Colocation & AI Compute Backbone
+  const ci29 = liveIntel?.cloudIxpCompute;
+  if (ci29) {
+    ci29.peeringDbNetworks.slice(0, 3).forEach((net, idx) => {
+      const vid = `v29:peeringdb:${idx}`;
+      upsertNode(vid, `PeeringDB ${net.asn} (${net.ixpCount} IXPs · ${net.facilityCount} Colos)`, 'ASN/IP_Block', 'cyber', {
+        ixpCount: net.ixpCount,
+        facilityCount: net.facilityCount,
+      });
+      addEdge(rootId, vid, 'PEERS_AT_BARE_METAL_IXP', 'cyber', 0.76, net.url);
+    });
+  }
+
+  // v29.0 Squad W: Breach Velocity & Passive Surface Exposure (Clean -> BENIGN_CONTROL)
+  const bw29 = liveIntel?.breachVelocitySurface;
+  if (bw29) {
+    if (bw29.stateAgBreaches.length > 0) {
+      const bid = 'v29:breach:state_ag';
+      upsertNode(
+        bid,
+        `State AG Breach Disclosures (${bw29.stateAgBreaches.length} · Max Delay ${bw29.maxNotificationDelayDays ?? 'N/A'}d)`,
+        'Contract/Docket',
+        'adversarial',
+        {
+          breachCount: bw29.stateAgBreaches.length,
+          maxDelayDays: bw29.maxNotificationDelayDays ?? 0,
+        }
+      );
+      addEdge(rootId, bid, 'STATE_AG_BREACH_DISCLOSURE', 'adversarial', 0.92, bw29.stateAgBreaches[0]?.url);
+    }
+    const exposedCrit = bw29.passiveExposureChecks.filter((c) => c.classification === 'EXPOSED_CRITICAL');
+    if (exposedCrit.length > 0) {
+      const exId = 'v29:surface:exposed';
+      upsertNode(exId, `Exposed Metadata Surface (${exposedCrit.map((e) => e.path).join(', ')})`, 'ASN/IP_Block', 'cyber', {
+        exposedCount: exposedCrit.length,
+      });
+      addEdge(rootId, exId, 'EXPOSED_PASSIVE_METADATA', 'cyber', 0.96, exposedCrit[0]?.url);
+    } else if (bw29.cleanExposureBenignControl && bw29.passiveExposureChecks.length > 0) {
+      const clId = 'v29:surface:clean';
+      upsertNode(clId, `Clean Passive Exposure Check (/.git & /.env Clean · BENIGN_CONTROL)`, 'ASN/IP_Block', 'cyber', {
+        controlClassification: 'BENIGN_CONTROL',
+      });
+      addEdge(rootId, clId, 'VERIFIED_PASSIVE_HYGIENE_CONTROL', 'cyber', 0.25);
+    }
+  }
+
+  // v29.0 Squad X: Shell-Address Clustering
+  const sx29 = liveIntel?.shellAddressClustering;
+  if (sx29) {
+    sx29.clusteredAddresses
+      .filter((c) => c.clusterClassification !== 'PHYSICAL_OPERATIONAL_HQ')
+      .slice(0, 4)
+      .forEach((cl, idx) => {
+        const xid = `v29:shelladdr:${idx}`;
+        upsertNode(
+          xid,
+          `${cl.clusterClassification === 'MAIL_DROP_REGISTERED_AGENT_SHELL' ? 'Mail-Drop Shell Hub' : 'Offshore Fiduciary Suite'}: ${cl.normalizedAddress.slice(0, 52)} (${cl.entityCount})`,
+          'Subsidiary',
+          'ownership',
+          {
+            entityCount: cl.entityCount,
+            classification: cl.clusterClassification,
+          }
+        );
+        addEdge(rootId, xid, cl.clusterClassification, 'ownership', 0.88);
+      });
+  }
+
+  // v29.0 Squad Y: Ad-Tech Pipelines & Policy Clause Insertions
+  const ay29 = liveIntel?.adTechTosSurveillance;
+  if (ay29) {
+    const inserted = ay29.policyWaybackClauseDiffs.filter((d) => d.status === 'INSERTED_IN_LATEST');
+    if (inserted.length > 0 || ay29.adsTxtResellerCount >= 10) {
+      const yid = 'v29:adtech:tos';
+      upsertNode(
+        yid,
+        `Ad-Tech & ToS Surveillance (${ay29.adsTxtResellerCount} resellers · ${inserted.length} inserted clause(s))`,
+        'Public_Claim',
+        'adversarial',
+        {
+          resellers: ay29.adsTxtResellerCount,
+          insertedClauses: inserted.length,
+        }
+      );
+      addEdge(rootId, yid, 'MONETIZES_SURVEILLANCE_PIPELINE', 'adversarial', 0.84, ay29.tosdrSummary?.serviceUrl);
+    }
+  }
+
+  // v29.0 Squad Z: Active Cover-Up / Scrubbing Alerts
+  const cap29 = liveIntel?.stackToPowerCapstone;
+  if (cap29 && cap29.activeCoverUpAlerts.length > 0) {
+    cap29.activeCoverUpAlerts.slice(0, 3).forEach((al, idx) => {
+      const zid = `v29:coverup:${idx}`;
+      upsertNode(zid, `Active Cover-Up Alert [${al.alertType}]: ${al.summary.slice(0, 60)}`, 'Public_Claim', 'adversarial', {
+        severity: al.severity,
+        alertType: al.alertType,
+      });
+      addEdge(rootId, zid, 'POST_INVESTIGATION_SCRUBBING_SIGNAL', 'adversarial', 0.95);
     });
   }
 
@@ -1731,7 +2111,7 @@ export function computeBftCorroborationSummary(
 }
 
 // =============================================================================
-// 7. DETERMINISTIC 20-SQUAD CLAIM CITATION & RFC 6901 JSON POINTER GENERATOR
+// 7. DETERMINISTIC 26-SQUAD CLAIM CITATION & RFC 6901 JSON POINTER GENERATOR
 // =============================================================================
 const SQUAD_TO_EVIDENCE_PATH: Record<SquadId, string> = {
   squadA: 'evidence/press_releases/corporate_charter_release.txt',
@@ -1754,6 +2134,12 @@ const SQUAD_TO_EVIDENCE_PATH: Record<SquadId, string> = {
   squadR: 'evidence/political_influence_ledger.json',
   squadS: 'evidence/raw_payloads/shadow_infra_subaward_payload.json',
   squadT: 'evidence/ach_red_team_matrix.json',
+  squadU: 'evidence/raw_payloads/client_tech_architecture_payload.json',
+  squadV: 'evidence/raw_payloads/cloud_ixp_compute_payload.json',
+  squadW: 'evidence/raw_payloads/breach_velocity_payload.json',
+  squadX: 'evidence/raw_payloads/shell_address_clustering_payload.json',
+  squadY: 'evidence/raw_payloads/adtech_tos_surveillance_payload.json',
+  squadZ: 'evidence/raw_payloads/stack_to_power_capstone_payload.json',
 };
 
 const SQUAD_TO_JSON_POINTER: Partial<Record<SquadId, string>> = {
@@ -1773,6 +2159,12 @@ const SQUAD_TO_JSON_POINTER: Partial<Record<SquadId, string>> = {
   squadR: '/summaryVerdict',
   squadS: '/summaryVerdict',
   squadT: '/postRedTeamPosterior',
+  squadU: '/summaryVerdict',
+  squadV: '/summaryVerdict',
+  squadW: '/summaryVerdict',
+  squadX: '/summaryVerdict',
+  squadY: '/summaryVerdict',
+  squadZ: '/summaryVerdict',
 };
 
 const SQUAD_TRUTH_TIER: Record<SquadId, 1 | 2 | 3 | 4> = {
@@ -1796,6 +2188,12 @@ const SQUAD_TRUTH_TIER: Record<SquadId, 1 | 2 | 3 | 4> = {
   squadR: 1,
   squadS: 2,
   squadT: 1,
+  squadU: 2,
+  squadV: 2,
+  squadW: 1,
+  squadX: 1,
+  squadY: 2,
+  squadZ: 1,
 };
 
 export function buildClaimCitationsForAgent(
@@ -2080,6 +2478,232 @@ export function computeBayesianFraudRiskPosterior(
         );
       }
     }
+
+    // 13. v28.0 Deep-State 5-Pillar Sequential Log-Odds Updates
+    if (liveIntel.municipalFoia && liveIntel.municipalFoia.surveillanceOrContractHits > 0) {
+      applyEvidence(
+        'v28_municipal_foia',
+        'MuckRock Municipal FOIA Surveillance / Contract Releases',
+        'MUNICIPAL_FOIA',
+        `${liveIntel.municipalFoia.surveillanceOrContractHits} surveillance/contract/audit FOIA release(s) across ${liveIntel.municipalFoia.agenciesHit.length} agencies`,
+        Math.min(2.1, 1.2 + liveIntel.municipalFoia.surveillanceOrContractHits * 0.12)
+      );
+    }
+    if (liveIntel.laborWarfare) {
+      const olmsCnt = liveIntel.laborWarfare.olmsPersuaderFilings.length;
+      const corrCnt = liveIntel.laborWarfare.layoffInsiderCorrelations.length;
+      if (olmsCnt > 0 || corrCnt > 0) {
+        applyEvidence(
+          'v28_labor_warfare',
+          'DOL OLMS Union Persuader & Layoff/Insider-Sale Correlation',
+          'LABOR_WARFARE',
+          `${olmsCnt} OLMS LM-10/20/21 filing(s), ${corrCnt} WARN-vs-Form 4 correlation(s)`,
+          Math.min(2.5, 1.25 + olmsCnt * 0.2 + corrCnt * 0.3)
+        );
+      }
+    }
+    if (liveIntel.fccSpectrum) {
+      const highFcc = liveIntel.fccSpectrum.fccEquipmentAuthorizations.filter(
+        (e) => e.prototypeRiskTag !== 'STANDARD_RF'
+      ).length;
+      if (highFcc > 0 || liveIntel.fccSpectrum.ulsExperimentalLicenses.length > 0) {
+        applyEvidence(
+          'v28_fcc_prototypes',
+          'FCC Surveillance/Experimental RF Prototypes & ULS Spectrum Grants',
+          'FCC_SPECTRUM',
+          `${highFcc} high-risk RF prototype(s), ${liveIntel.fccSpectrum.ulsExperimentalLicenses.length} ULS license(s)`,
+          Math.min(1.9, 1.15 + highFcc * 0.18)
+        );
+      }
+    }
+    if (liveIntel.globalBlacklistsOffshore) {
+      const gbo = liveIntel.globalBlacklistsOffshore;
+      if (gbo.totalVerifiedHits > 0) {
+        applyEvidence(
+          'v28_global_blacklists_hit',
+          'World Bank Debarment / SAM.gov Exclusion / ICIJ Offshore Leaks Match',
+          'GLOBAL_BLACKLIST_OFFSHORE',
+          `${gbo.worldBankDebarments.length} WB, ${gbo.samGovExclusions.length} SAM.gov, ${gbo.icijOffshoreLeaksHits.length} ICIJ`,
+          Math.min(3.8, 1.8 + gbo.worldBankDebarments.length * 0.6 + gbo.samGovExclusions.length * 0.55 + gbo.icijOffshoreLeaksHits.length * 0.3)
+        );
+      } else if (gbo.cleanScreeningBenignControl) {
+        applyEvidence(
+          'v28_global_blacklists_clean',
+          'Clean Global Blacklist & ICIJ Offshore Screening (BENIGN_CONTROL)',
+          'GLOBAL_BLACKLIST_OFFSHORE',
+          `0 hits across ${gbo.screenedEntityNames.length + gbo.screenedExecutiveNames.length} screened target/executive names`,
+          0.94
+        );
+      }
+    }
+    if (liveIntel.aviationShadowTrusts) {
+      const shadowPlanes = liveIntel.aviationShadowTrusts.aircraftRecords.filter((a) => a.isShadowTrust).length;
+      const maCorrs = liveIntel.aviationShadowTrusts.maWindowCorrelations.length;
+      if (shadowPlanes > 0 || maCorrs > 0) {
+        applyEvidence(
+          'v28_aviation_shadow_trust',
+          'FAA Corporate Aviation Owner-Trust & SEC 8-K M&A Window Signal',
+          'AVIATION_SHADOW_TRUST',
+          `${shadowPlanes} shadow-trust tail(s), ${maCorrs} 8-K M&A correlation window(s)`,
+          Math.min(2.0, 1.18 + shadowPlanes * 0.2 + maCorrs * 0.15)
+        );
+      }
+    }
+
+    // 14. v29.0 Full-Alphabet Squads U–Z Sequential Log-Odds Updates
+    if (liveIntel.clientTechArchitecture) {
+      const ct = liveIntel.clientTechArchitecture;
+      const trackerTotal = ct.exodusPrivacyReports.reduce((s, r) => s + r.trackersCount, 0);
+      if (ct.stagingOrInternalHosts.length > 0 || trackerTotal >= 5 || ct.fingerprintingSignatures.length >= 2) {
+        applyEvidence(
+          'v29_client_tech_trackers',
+          'Squad U Client JS Leaks, Browser Fingerprinting & Exodus Mobile Trackers',
+          'CLIENT_TECH_TRACKERS',
+          `${ct.stagingOrInternalHosts.length} staging host(s), ${ct.fingerprintingSignatures.length} fingerprinting API(s), ${trackerTotal} mobile tracker(s)`,
+          Math.min(2.2, 1.15 + ct.stagingOrInternalHosts.length * 0.18 + (trackerTotal >= 5 ? 0.3 : 0))
+        );
+      }
+    }
+    if (liveIntel.breachVelocitySurface) {
+      const bv = liveIntel.breachVelocitySurface;
+      const exposedCrit = bv.passiveExposureChecks.filter((c) => c.classification === 'EXPOSED_CRITICAL').length;
+      if (bv.stateAgBreaches.length > 0 || exposedCrit > 0) {
+        const delayFactor = bv.maxNotificationDelayDays && bv.maxNotificationDelayDays >= 60 ? 0.45 : 0.15;
+        applyEvidence(
+          'v29_breach_velocity',
+          'Squad W State AG Breach Delay Velocity & Passive Metadata Exposure',
+          'BREACH_VELOCITY',
+          `${bv.stateAgBreaches.length} State AG breach(es) (max delay ${bv.maxNotificationDelayDays ?? 'N/A'}d), ${exposedCrit} critical exposed path(s)`,
+          Math.min(3.4, 1.35 + bv.stateAgBreaches.length * 0.25 + exposedCrit * 0.85 + delayFactor)
+        );
+      } else if (bv.cleanExposureBenignControl && bv.passiveExposureChecks.length > 0) {
+        applyEvidence(
+          'v29_breach_surface_clean',
+          'Squad W Clean Passive Exposure & 0 State AG Breaches (BENIGN_CONTROL)',
+          'BREACH_VELOCITY',
+          `0 State AG breaches and 0 critical /.git or /.env exposures`,
+          0.93
+        );
+      }
+    }
+    if (liveIntel.shellAddressClustering) {
+      const sx = liveIntel.shellAddressClustering;
+      const totalShell = sx.mailDropClusterCount + sx.offshoreSuiteCount;
+      if (totalShell > 0) {
+        applyEvidence(
+          'v29_shell_address_clusters',
+          'Squad X Registered-Agent Mail-Drop & Offshore Fiduciary Shell Clusters',
+          'SHELL_ADDRESS_CLUSTERING',
+          `${sx.mailDropClusterCount} mail-drop shell hub(s), ${sx.offshoreSuiteCount} offshore fiduciary suite(s)`,
+          Math.min(2.4, 1.2 + sx.mailDropClusterCount * 0.28 + sx.offshoreSuiteCount * 0.22)
+        );
+      }
+    }
+    if (liveIntel.adTechTosSurveillance) {
+      const ay = liveIntel.adTechTosSurveillance;
+      const inserted = ay.policyWaybackClauseDiffs.filter((d) => d.status === 'INSERTED_IN_LATEST').length;
+      const badTosdr = ay.tosdrSummary && /^[DE]/i.test(ay.tosdrSummary.ratingGrade);
+      if (inserted > 0 || badTosdr || ay.euDsaGdprNotices.length > 0) {
+        applyEvidence(
+          'v29_adtech_tos_erosion',
+          'Squad Y Programmatic Ad-Tech, Wayback ToS Clause Insertions & ToS;DR/DSA',
+          'ADTECH_TOS_SURVEILLANCE',
+          `${ay.adsTxtResellerCount} ad-tech resellers, ${inserted} newly inserted hostile clause(s), ToS;DR=${ay.tosdrSummary?.ratingGrade || 'N/A'}`,
+          Math.min(2.3, 1.18 + inserted * 0.25 + (badTosdr ? 0.28 : 0) + ay.euDsaGdprNotices.length * 0.15)
+        );
+      }
+    }
+    if (liveIntel.stackToPowerCapstone && liveIntel.stackToPowerCapstone.activeCoverUpAlerts.length > 0) {
+      const alerts = liveIntel.stackToPowerCapstone.activeCoverUpAlerts;
+      applyEvidence(
+        'v29_active_coverup_scrubbing',
+        'Squad Z T1->T2 Active Cover-Up / Post-Investigation Scrubbing Alerts',
+        'ACTIVE_COVERUP_SCRUBBING',
+        `${alerts.length} cover-up/scrubbing alert(s): ${alerts.map((a) => a.alertType).join(', ')}`,
+        Math.min(3.2, 1.55 + alerts.length * 0.4)
+      );
+    }
+
+    // 15. Squad O Multi-Chain Crypto, Smart Contract & AML Forensics Updates
+    const ocBayes = liveIntel.darkPoolCrypto?.onChainForensics;
+    if (ocBayes) {
+      const ofacDirect = ocBayes.ofacSanctionsScreening.targetDirectMatch;
+      const ofacCp = ocBayes.ofacSanctionsScreening.taintedCounterparties.filter((t) => t.relation === 'COUNTERPARTY').length;
+      if (ofacDirect || ofacCp > 0) {
+        applyEvidence(
+          'squad_o_ofac_crypto_taint',
+          'Squad O US Treasury OFAC SDN Digital Currency Sanctions Taint',
+          'ONCHAIN_AML_CRYPTO',
+          ofacDirect ? 'Direct target address on OFAC SDN list' : `${ofacCp} OFAC-sanctioned counterparty wallet(s)`,
+          ofacDirect ? 5.5 : Math.min(3.6, 2.0 + ofacCp * 0.4)
+        );
+      }
+      const goPlusMalicious =
+        Boolean(ocBayes.goPlusAudit.evmAddressSecurity?.isMalicious) ||
+        Boolean(ocBayes.goPlusAudit.evmTokenSecurity?.isHoneypot);
+      const rugDanger = ocBayes.rugCheckAudit?.riskLevel === 'DANGER';
+      if (goPlusMalicious || rugDanger) {
+        applyEvidence(
+          'squad_o_goplus_rugcheck_aml',
+          'Squad O GoPlus Malicious/Honeypot & RugCheck High-Risk Audit',
+          'ONCHAIN_AML_CRYPTO',
+          [
+            ...(ocBayes.goPlusAudit.evmAddressSecurity?.flaggedRisks || []),
+            ...(ocBayes.goPlusAudit.evmTokenSecurity?.flaggedRisks || []),
+            rugDanger ? `RugCheck DANGER (score=${ocBayes.rugCheckAudit?.score ?? 'N/A'})` : '',
+          ]
+            .filter(Boolean)
+            .slice(0, 5)
+            .join(', '),
+          Math.min(4.2, 2.1 + (goPlusMalicious ? 0.9 : 0) + (rugDanger ? 0.8 : 0))
+        );
+      }
+      const unverifiedBackdoors = (ocBayes.evmIntelligence?.unverifiedSelectorsDecoded || []).filter(
+        (s) => s.isPrivilegedBackdoor
+      );
+      if (unverifiedBackdoors.length > 0) {
+        applyEvidence(
+          'squad_o_unverified_backdoor_selectors',
+          'Squad O Unverified EVM Bytecode Privileged Backdoor Selectors (OpenChain 4byte)',
+          'ONCHAIN_AML_CRYPTO',
+          `${unverifiedBackdoors.length} privileged selector(s): ${unverifiedBackdoors.slice(0, 4).map((s) => s.signature).join(', ')}`,
+          Math.min(2.8, 1.5 + unverifiedBackdoors.length * 0.3)
+        );
+      }
+      const whalePct =
+        ocBayes.solanaIntelligence?.top10HolderPct ??
+        ocBayes.goPlusAudit.solanaTokenSecurity?.top10HolderPct ??
+        ocBayes.goPlusAudit.evmTokenSecurity?.top10HolderPct ??
+        null;
+      if (whalePct !== null && whalePct > 40) {
+        applyEvidence(
+          'squad_o_whale_concentration',
+          'Squad O On-Chain Whale Concentration (>40% Top-10 Holders)',
+          'ONCHAIN_AML_CRYPTO',
+          `Top-10 holders control ${whalePct}% of token supply`,
+          Math.min(2.4, 1.35 + ((whalePct - 40) / 60) * 0.9)
+        );
+      }
+      if (ocBayes.defiLlamaIntel.matchedHacks.length > 0) {
+        const stolenTotal = ocBayes.defiLlamaIntel.matchedHacks.reduce((s, h) => s + h.amountStolenUsd, 0);
+        applyEvidence(
+          'squad_o_defillama_hacks',
+          'Squad O DeFiLlama Confirmed Protocol Exploit / Hack Matches',
+          'ONCHAIN_AML_CRYPTO',
+          `${ocBayes.defiLlamaIntel.matchedHacks.length} confirmed exploit(s) totaling $${Math.round(stolenTotal).toLocaleString('en-US')}`,
+          Math.min(3.5, 1.8 + ocBayes.defiLlamaIntel.matchedHacks.length * 0.45)
+        );
+      }
+      if (ocBayes.cleanOnChainBenignControl) {
+        applyEvidence(
+          'squad_o_clean_onchain_benign_control',
+          'Squad O Clean On-Chain OFAC & Smart-Contract Audit (BENIGN_CONTROL)',
+          'ONCHAIN_AML_CRYPTO',
+          '0 OFAC hits, 0 GoPlus/RugCheck high-risk flags, 0 backdoor selectors, 0 hack matches',
+          0.92
+        );
+      }
+    }
   }
 
   const posteriorOdds = Math.exp(logOdds);
@@ -2129,7 +2753,7 @@ export function isBenignControlNode(node: PropertyGraphNode): boolean {
     return true;
   }
   if (
-    /\b(?:Clean\s+OFAC\/BIS|0\s+CISA\s+KEV|Valid\s+TLS|Active\s+GLEIF\s+LEI|GLEIF\s+LEI:\s*ACTIVE|LOW_RISK|ALIGNED|CLEAN\s+STANDING)\b/i.test(
+    /\b(?:Clean\s+OFAC\/BIS|Clean\s+Global\s+Blacklist|Clean\s+World\s+Bank|Clean\s+SAM\.gov|Clean\s+ICIJ|Zero\s+Global\s+Blacklist|Clean\s+AlienVault\s+OTX|Clean\s+Passive\s+Exposure|0\s+CISA\s+KEV|Valid\s+TLS|Active\s+GLEIF\s+LEI|GLEIF\s+LEI:\s*ACTIVE|LOW_RISK|ALIGNED|CLEAN\s+STANDING)\b/i.test(
       label
     )
   ) {

@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from 'react';
+import { toSafeExternalUrl } from '../utils/safeUrl';
 import {
   Activity,
   ArrowRight,
@@ -766,7 +767,7 @@ export const CustodyVaultAndComparatorTab: React.FC<CustodyVaultAndComparatorTab
                 >
                   <div className="min-w-0">
                     <a
-                      href={mut.studyUrl}
+                      href={toSafeExternalUrl(mut.studyUrl)}
                       target="_blank"
                       rel="noopener noreferrer"
                       className="text-rose-300 hover:underline font-semibold"

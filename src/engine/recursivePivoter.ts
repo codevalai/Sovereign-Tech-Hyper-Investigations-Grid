@@ -1,10 +1,11 @@
-export type PivotEntityType = 'DOMAIN' | 'IP' | 'ASN' | 'PACKAGE';
+export type PivotEntityType = 'DOMAIN' | 'IP' | 'ASN' | 'PACKAGE' | 'LEGAL_ENTITY';
 
 export interface PivotTask {
   value: string;
   type: PivotEntityType;
   depth: number;
   discoveredFrom: string;
+  sourceProvenance?: string;
 }
 
 export interface PivotEvent {

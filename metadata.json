@@ -1,6 +1,6 @@
 {
   "name": "Sovereign Tech Hyper-Investigations Grid",
-  "description": "Planetary-grade forensic OSINT grid with 160-agent / 16-squad recursive swarm, live zero-key sovereign registries, Bayesian risk scoring, STIX 2.1 export, and Ed25519 + Merkle sealed dossier generator.",
+  "description": "Planetary-grade v31.0 forensic OSINT & Global Legal Counsel grid with 260-agent / 26-squad (A-Z) recursive swarm, live eCFR/CourtListener/UK/EUR-Lex legal synthesis, global Follow-the-Money banking/offshore tracing, multi-hop crypto AML, RECAP enforcement mining, Phoenix company radar, cross-target entity memory, Bayesian risk scoring, and Ed25519 + Merkle sealed dossiers.",
   "requestFramePermissions": [],
   "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
 }

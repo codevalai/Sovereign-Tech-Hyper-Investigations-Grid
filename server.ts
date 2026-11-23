@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 import { runLiveOsintInvestigation } from './server/osintEngine.ts';
 import { fetchLiveLeaderboardMarketSync, runLightweightDeltaReprobe } from './server/deepLiveProbes.ts';
 import { liveDaemon } from './server/liveIngestionDaemon.ts';
+import { getActiveConnectorsStatus, isValidPublicDomain } from './server/authenticatedConnectors.ts';
 import { ingestPlanetaryRegistriesLive } from './server/planetaryRegistryEngine.ts';
 import { computeIpfsCidV1FromSha256Hex } from './server/adversarialShield.ts';
 import { runBoundedContagionSpider } from './server/contagionSpider.ts';
@@ -40,20 +41,21 @@ async function startServer() {
       status: 'ok',
       service: 'sovereign-live-osint-grid',
       requiresApiKey: false,
-      agents: 200,
-      squads: 20,
-      version: '27.0',
+      agents: 260,
+      squads: 26,
+      version: '31.0',
+      activeConnectors: getActiveConnectorsStatus(),
       daemon: liveDaemon.getCustodyStatus(),
       sources: [
         'Wikidata Knowledge Graph',
         'Wikipedia Full-Text Section Parser',
         'GLEIF Global LEI & Parent/Child Tree',
-        'SEC EDGAR Tickers, Submissions, DEF 14A Item 404, Exhibit 21.1, Form 4/8-K/D/13F/NPORT & 2-Year XBRL Forensics',
+        'SEC EDGAR Tickers, Submissions, DEF 14A Item 404, Exhibit 21.1, 13F/Interlocks, Form 4/8-K/D/NPORT & 2-Year XBRL Forensics',
         'OFAC Consolidated Sanctions / OpenSanctions Entity & PEP Screening',
         'CFPB Consumer Complaint Database (Enforcement & Arbitration Signals)',
-        'US Senate LDA API v1 (LD-1/LD-2/LD-203 Lobbying & Contributions)',
+        'US Senate LDA API v1 (LD-1/LD-2/LD-203, Revolving-Door Covered Positions, Bills & Agency Overlaps)',
         'DOJ FARA API v1 (Active Registrants & Foreign Principals)',
-        'OpenFEC API v1 (Corporate PACs & Executive Political Contributions)',
+        'OpenFEC API v1 (Corporate PACs, Executive Schedule A Partisan Split & Schedule E Super PACs)',
         'ProPublica Nonprofit Explorer API v2 (501(c)(3)/(c)(4) Affiliated Foundations)',
         'Federal Register Executive & Regulatory Notices',
         'USASpending.gov Prime Federal Awards & Sub-Award Pass-Through Registry',
@@ -87,6 +89,23 @@ async function startServer() {
         'Multi-Hop Temporal Causal Chain Graph + Bayesian Risk Posterior + PageRank Contagion',
         'OASIS STIX 2.1 Cyber Threat Intelligence Bundle & Printable Court Brief Export',
         'SQLite WAL 24/7 Live Ingestion Daemon + Cross-Vault Global Search + Autonomous Watchlist',
+        'MuckRock API v2 Completed Municipal & State FOIA Releases (ALPR, Police Audits & Local Contracts)',
+        'DOL OLMS Union Persuader Disclosures (LM-10/LM-20/LM-21), WARN Act Mass Layoffs & H-1B LCA Audit',
+        'FCC Equipment Authorization (FCC ID) Hardware Prototypes & FCC ULS Experimental Spectrum Licenses',
+        'World Bank Debarred Firms, SAM.gov Exclusions & ICIJ Offshore Leaks (Panama/Paradise/Pandora Papers)',
+        'FAA Aircraft Registry & Corporate Aviation Shadow-Trust Unmasking (Bank of Utah, TVPX, Wilmington Trust)',
+        'First-Party JS Bundle Dissection, Well-Known API/Mobile Schemas & Exodus Privacy Mobile Trackers (Squad U)',
+        'PeeringDB ASN/IXP Colocation, Cloud/CDN CNAMEs, Hugging Face Hub & Docker Hub Compute Backbone (Squad V)',
+        'WA/CA/TX State AG Data Breach Velocity & Passive /.git + /.env Exposure Verifier (Squad W)',
+        'Registered-Agent Mail-Drop & Offshore Fiduciary Shell-Address Clustering + Municipal/PUC Permits (Squad X)',
+        'Programmatic Ad-Tech (ads.txt/app-ads.txt/sellers.json), Wayback ToS/Privacy Clause Diff & ToS;DR v4 (Squad Y)',
+        'Sovereign Stack-to-Power Capstone Synthesis & T1-vs-T2 Active Cover-Up Detector (Squad Z)',
+        'Multi-Chain Crypto, Smart Contract & AML Forensics: OFAC SDN Digital Currency, GoPlus Security, RugCheck, Sourcify v2, OpenChain 4byte, DexScreener, DeFiLlama Hacks/Treasuries, Mempool.space BTC UTXO, ENS, Etherscan V2 & Alchemy/PublicNode RPC + Multi-Hop Treasury & Cash-Out Synchronizer (Squad O)',
+        'Global Banking, Offshore Accounts & Capital Flows: SEC Form D XML, Form ADV, Credit Agreements, UK Companies House Secured Charges & USASpending Prime-to-Sub Flows (Squads F & I · v30.0)',
+        'CourtListener RECAP Free-PDF/Plaintext Complaint & Exhibit Miner + Global Regulatory Enforcement Feeds (SEC, CFTC, DOJ, FinCEN, UK FCA, FTC, CFPB, EC Competition) (Squad P · v31.0)',
+        'Phoenix Company Detector, Multi-Hop Officer/PSC Outward Pivoting & New-Endeavor Radar (UK CH, Form D, ICIJ, TLS SANs, GitHub Commit-Email DNA) (Squads Q & X · v30.0)',
+        'Indexed SQLite WAL Global Entity Memory & Cross-Target vs. Same-Target Collision Engine (Squad Z · v31.0)',
+        'Sovereign Global Legal Counsel Engine: eCFR Public API, CourtListener REST v4 Opinions, UK Legislation & National Archives Find Case Law, EUR-Lex/CELLAR, FRE 901/902(13)-(14) Admissibility & Actionable Regulatory/FOIA Synthesis (Squads P & Z · v31.0)',
       ],
     });
   });
@@ -446,16 +465,29 @@ async function startServer() {
 
   app.post('/api/watchlist', (req, res) => {
     const body = (req.body || {}) as { entityName?: string; primaryDomain?: string; notes?: string };
-    const entityName = String(body.entityName || '').trim();
+    const entityName = String(body.entityName || '').trim().slice(0, 160);
     if (!entityName) {
       res.status(400).json({ error: 'entityName is required.' });
+      return;
+    }
+    const rawDomain = String(body.primaryDomain || '')
+      .trim()
+      .toLowerCase()
+      .replace(/^https?:\/\//, '')
+      .replace(/^www\./, '')
+      .split('/')[0]
+      .replace(/:\d+$/, '');
+    if (rawDomain && !isValidPublicDomain(rawDomain)) {
+      res.status(400).json({
+        error: 'primaryDomain must be a valid public domain name (localhost, internal hosts, and IP literals are not permitted).',
+      });
       return;
     }
     try {
       const item = liveDaemon.upsertWatchlistItem({
         entityName,
-        primaryDomain: body.primaryDomain,
-        notes: body.notes,
+        primaryDomain: rawDomain || undefined,
+        notes: typeof body.notes === 'string' ? body.notes.slice(0, 500) : undefined,
       });
       res.json({ ok: true, item, items: liveDaemon.getWatchlist() });
     } catch (err: unknown) {
@@ -622,6 +654,23 @@ async function startServer() {
       if (maybeSnap && typeof maybeSnap === 'object' && maybeSnap.investigationId) {
         liveDaemon.saveLongitudinalSnapshot(maybeSnap);
       }
+      // v30.0: Record canonical entity & subsidiaries into SQLite WAL global_entity_memory for cross-case collision detection
+      const archiveFingerprints: Array<{
+        fingerprintType: 'CANONICAL_ENTITY' | 'LEGAL_DBA_ENTITY' | 'DIRECTOR_OR_PSC' | 'NAMED_BANK' | 'OFFSHORE_INTERMEDIARY' | 'WALLET_ADDRESS' | 'SHELL_ADDRESS';
+        rawLabel: string;
+        sourceModule: string;
+      }> = [
+        { fingerprintType: 'CANONICAL_ENTITY', rawLabel: saved.entityName, sourceModule: 'Archive' },
+        ...(saved.legalName && saved.legalName !== saved.entityName
+          ? [{ fingerprintType: 'LEGAL_DBA_ENTITY' as const, rawLabel: saved.legalName, sourceModule: 'Archive' }]
+          : []),
+        ...saved.subsidiaries.slice(0, 20).map((sub) => ({
+          fingerprintType: 'LEGAL_DBA_ENTITY' as const,
+          rawLabel: sub,
+          sourceModule: 'Archive:Subsidiaries',
+        })),
+      ];
+      liveDaemon.recordGlobalEntityMemory(saved.investigationId, saved.entityName, saved.completedAtIso, archiveFingerprints);
       res.json({ ok: true, item: saved });
     } catch (err: unknown) {
       res.status(500).json({ error: err instanceof Error ? err.message : 'Failed to archive investigation.' });
@@ -761,11 +810,13 @@ async function startServer() {
       uploadedFileContext?: string;
     };
 
-    const query = String(body.query || '').trim();
+    const query = String(body.query || '').trim().slice(0, 300);
     if (!query) {
       res.status(400).json({ error: 'Search query is required.' });
       return;
     }
+    const boundedUploadedFileContext =
+      typeof body.uploadedFileContext === 'string' ? body.uploadedFileContext.slice(0, 500_000) : undefined;
 
     res.writeHead(200, {
       'Content-Type': 'application/x-ndjson; charset=utf-8',
@@ -820,8 +871,8 @@ async function startServer() {
           geography: body.geography,
           timeRange: body.timeRange,
           focus: body.focus,
-          constraints: body.constraints,
-          uploadedFileContext: body.uploadedFileContext,
+          constraints: typeof body.constraints === 'string' ? body.constraints.slice(0, 1000) : undefined,
+          uploadedFileContext: boundedUploadedFileContext,
         },
         (ev) => sendLine(ev)
       );
@@ -848,7 +899,7 @@ async function startServer() {
       uploadedFileContext?: string;
     };
 
-    const query = String(body.query || '').trim();
+    const query = String(body.query || '').trim().slice(0, 300);
     if (!query) {
       res.status(400).json({ error: 'Search query is required.' });
       return;
@@ -860,8 +911,9 @@ async function startServer() {
         geography: body.geography,
         timeRange: body.timeRange,
         focus: body.focus,
-        constraints: body.constraints,
-        uploadedFileContext: body.uploadedFileContext,
+        constraints: typeof body.constraints === 'string' ? body.constraints.slice(0, 1000) : undefined,
+        uploadedFileContext:
+          typeof body.uploadedFileContext === 'string' ? body.uploadedFileContext.slice(0, 500_000) : undefined,
       });
 
       res.json({ intelligence });

@@ -225,7 +225,13 @@ export type SquadId =
   | 'squadQ'
   | 'squadR'
   | 'squadS'
-  | 'squadT';
+  | 'squadT'
+  | 'squadU'
+  | 'squadV'
+  | 'squadW'
+  | 'squadX'
+  | 'squadY'
+  | 'squadZ';
 
 export interface ClaimCitation {
   claim_id: string;
@@ -420,6 +426,95 @@ export interface CyberInfraTelemetry {
     date: string;
     snippet: string;
   }[];
+  virusTotalIntel?: VirusTotalDomainIntel | null;
+  otxThreatIntel?: OtxDomainThreatIntel | null;
+}
+
+export interface ActiveConnectorsMap {
+  openfec: boolean;
+  courtlistener: boolean;
+  companiesHouse: boolean;
+  lda: boolean;
+  github: boolean;
+  nvd: boolean;
+  virustotal: boolean;
+  otx: boolean;
+  etherscan: boolean;
+  alchemyEth: boolean;
+  alchemySol: boolean;
+}
+
+export interface VirusTotalDomainIntel {
+  domain: string;
+  maliciousCount: number;
+  suspiciousCount: number;
+  harmlessCount: number;
+  undetectedCount: number;
+  reputationScore: number;
+  registrar: string;
+  creationDate: string;
+  lastDnsRecords: Array<{ type: string; value: string; ttl?: number }>;
+  categories: string[];
+  url: string;
+}
+
+export interface OtxDomainThreatIntel {
+  domain: string;
+  pulseCount: number;
+  classification: 'BENIGN_CONTROL' | 'THREAT_PULSE_DETECTED';
+  cleanBenignControl: boolean;
+  malwareFamilies: string[];
+  adversaries: string[];
+  pulses: Array<{
+    name: string;
+    created: string;
+    adversary?: string;
+    tags: string[];
+  }>;
+  url: string;
+}
+
+export interface UkCompaniesHouseUboTelemetry {
+  authenticated: boolean;
+  companies: Array<{
+    companyNumber: string;
+    title: string;
+    companyStatus: string;
+    companyType: string;
+    dateOfCreation: string;
+    addressSnippet: string;
+    officers: Array<{
+      name: string;
+      officerRole: string;
+      appointedOn: string;
+      nationality?: string;
+      countryOfResidence?: string;
+      resignedOn?: string;
+    }>;
+    personsWithSignificantControl: Array<{
+      name: string;
+      kind: string;
+      naturesOfControl: string[];
+      notifiedOn: string;
+      countryOfResidence?: string;
+      nationality?: string;
+      ceasedOn?: string;
+    }>;
+    url: string;
+  }>;
+  totalOfficers: number;
+  totalPscUbos: number;
+  summaryVerdict: string;
+}
+
+export interface RegulationsGovCommentRecord {
+  commentId: string;
+  docketId: string;
+  agencyId: string;
+  title: string;
+  postedDate: string;
+  organization: string;
+  url: string;
 }
 
 export interface SwarmBehaviorTelemetry {
@@ -613,6 +708,190 @@ export interface PatentGrantCaptureTelemetry {
   grantCaptureVerdict: string;
 }
 
+export type OnChainTargetClassification =
+  | 'EVM_ADDRESS'
+  | 'SOLANA_ADDRESS'
+  | 'BITCOIN_ADDRESS'
+  | 'ENS_NAME'
+  | 'CORPORATE_ENTITY';
+
+export interface MultiChainCryptoForensicsTelemetry {
+  targetClassification: OnChainTargetClassification;
+  rawTarget: string;
+  resolvedEvmAddress: string | null;
+  resolvedEnsName: string | null;
+  resolvedSolanaAddress: string | null;
+  resolvedBitcoinAddress: string | null;
+  rpcModes: {
+    evmRpc: 'ALCHEMY_RPC' | 'PUBLIC_RPC_FALLBACK';
+    solanaRpc: 'ALCHEMY_RPC' | 'PUBLIC_RPC_FALLBACK';
+    contractAudit: 'ETHERSCAN_V2' | 'SOURCIFY_ZERO_KEY';
+  };
+  ofacSanctionsScreening: {
+    listsLoadedCount: number;
+    totalSanctionedAddressesIndexed: number;
+    targetDirectMatch: boolean;
+    taintedCounterparties: {
+      address: string;
+      listCurrency: string;
+      relation: 'TARGET' | 'COUNTERPARTY';
+    }[];
+    cleanBenignControl: boolean;
+    summary: string;
+  };
+  evmIntelligence: {
+    address: string;
+    ensName: string | null;
+    ethBalanceEth: number | null;
+    isContract: boolean;
+    bytecodeBytes: number;
+    contractVerified: boolean;
+    contractName: string | null;
+    compilerVersion: string | null;
+    proxyImplementation: string | null;
+    sourcifyChainsMatched: number[];
+    privilegedAdminBackdoors: string[];
+    unverifiedSelectorsDecoded: {
+      selector: string;
+      signature: string;
+      isPrivilegedBackdoor: boolean;
+    }[];
+    erc20TokenBalances: {
+      contractAddress: string;
+      rawBalance: string;
+    }[];
+    topCounterparties: {
+      address: string;
+      txCount: number;
+      direction: 'IN' | 'OUT' | 'BOTH';
+      totalValueEth: number;
+    }[];
+    normalTxCount: number;
+    erc20TxCount: number;
+    explorerUrl: string;
+  } | null;
+  solanaIntelligence: {
+    address: string;
+    solBalance: number | null;
+    ownerProgram: string | null;
+    accountType: string | null;
+    mintAuthority: string | null;
+    freezeAuthority: string | null;
+    isMintable: boolean;
+    isFreezable: boolean;
+    top10HolderPct: number | null;
+    whaleAccounts: {
+      address: string;
+      uiAmount: number;
+      pctOfSupply: number | null;
+    }[];
+    recentSignaturesCount: number;
+    recentCounterparties: string[];
+    explorerUrl: string;
+  } | null;
+  bitcoinIntelligence: {
+    address: string;
+    fundedSats: number;
+    spentSats: number;
+    balanceBtc: number;
+    utxoTxCount: number;
+    recentTxids: string[];
+    topCounterparties: string[];
+    explorerUrl: string;
+  } | null;
+  goPlusAudit: {
+    evmAddressSecurity: {
+      checked: boolean;
+      flaggedRisks: string[];
+      isMalicious: boolean;
+    } | null;
+    evmTokenSecurity: {
+      checked: boolean;
+      tokenName: string | null;
+      tokenSymbol: string | null;
+      isHoneypot: boolean;
+      hiddenOwner: boolean;
+      isMintable: boolean;
+      isProxy: boolean;
+      buyTaxPct: number | null;
+      sellTaxPct: number | null;
+      top10HolderPct: number | null;
+      flaggedRisks: string[];
+    } | null;
+    solanaTokenSecurity: {
+      checked: boolean;
+      tokenName: string | null;
+      tokenSymbol: string | null;
+      isMintable: boolean;
+      isFreezable: boolean;
+      mutableMetadata: boolean;
+      lpLockedPct: number | null;
+      top10HolderPct: number | null;
+      flaggedRisks: string[];
+    } | null;
+  };
+  rugCheckAudit: {
+    tokenMint: string;
+    score: number | null;
+    riskLevel: 'GOOD' | 'WARN' | 'DANGER' | 'UNKNOWN';
+    lpBurnedPct: number | null;
+    insiderOrSniperWarnings: string[];
+    risks: { name: string; level: string; description: string }[];
+    reportUrl: string;
+  } | null;
+  dexScreenerMarket: {
+    pairsFound: number;
+    topPairs: {
+      chainId: string;
+      dexId: string;
+      pairAddress: string;
+      baseSymbol: string;
+      quoteSymbol: string;
+      priceUsd: number | null;
+      liquidityUsd: number | null;
+      fdvUsd: number | null;
+      fdvToLiquidityRatio: number | null;
+      volume24hUsd: number | null;
+      buys24h: number;
+      sells24h: number;
+      pairCreatedAtIso: string | null;
+      url: string;
+    }[];
+    anomalies: string[];
+  };
+  defiLlamaIntel: {
+    matchedHacks: {
+      name: string;
+      dateIso: string | null;
+      amountStolenUsd: number;
+      classification: string;
+      technique: string;
+      chain: string[];
+      url: string;
+    }[];
+    matchedTreasuries: {
+      name: string;
+      symbol: string;
+      totalTreasuryUsd: number;
+      ownTokensUsd: number;
+      stablecoinsUsd: number;
+      majorsUsd: number;
+      url: string;
+    }[];
+    liveCoinPrices: {
+      coinKey: string;
+      symbol: string;
+      priceUsd: number;
+      confidence: number | null;
+    }[];
+  };
+  multi_hop_treasury_flows?: MultiHopTreasuryFlowRecord[];
+  synchronized_cashout_alerts?: SynchronizedCashoutAlert[];
+  cleanOnChainBenignControl: boolean;
+  riskFlags: string[];
+  summaryVerdict: string;
+}
+
 export interface DarkPoolCryptoTelemetry {
   form13fAndNportFilings: {
     form: string;
@@ -630,6 +909,7 @@ export interface DarkPoolCryptoTelemetry {
     snippet: string;
   }[];
   derivativesVerdict: string;
+  onChainForensics?: MultiChainCryptoForensicsTelemetry;
 }
 
 export interface LegalSlappBankruptcyTelemetry {
@@ -641,6 +921,7 @@ export interface LegalSlappBankruptcyTelemetry {
     dateFiled: string;
     judgeAssigned: string;
     suitNature: string;
+    recordType?: 'RECAP_DOCKET' | 'OPINION' | 'NEWS_INDEXED';
     url: string;
   }[];
   forumConcentration: { court: string; count: number }[];
@@ -907,7 +1188,7 @@ export interface ZkTlsAttestationRecord {
 
 export interface RecursivePivotDiscovery {
   value: string;
-  type: 'DOMAIN' | 'IP' | 'ASN' | 'PACKAGE';
+  type: 'DOMAIN' | 'IP' | 'ASN' | 'PACKAGE' | 'LEGAL_ENTITY';
   depth: number;
   discoveredFrom: string;
   status: 'HIT' | 'EMPTY' | 'ERR';
@@ -1324,7 +1605,18 @@ export interface BayesianEvidenceContribution {
     | 'ATTACHED_LEAD'
     | 'PROXY_KINSHIP'
     | 'POLITICAL_INFLUENCE'
-    | 'SHADOW_INFRA_SUBAWARD';
+    | 'SHADOW_INFRA_SUBAWARD'
+    | 'MUNICIPAL_FOIA'
+    | 'LABOR_WARFARE'
+    | 'FCC_SPECTRUM'
+    | 'GLOBAL_BLACKLIST_OFFSHORE'
+    | 'AVIATION_SHADOW_TRUST'
+    | 'CLIENT_TECH_TRACKERS'
+    | 'BREACH_VELOCITY'
+    | 'SHELL_ADDRESS_CLUSTERING'
+    | 'ADTECH_TOS_SURVEILLANCE'
+    | 'ACTIVE_COVERUP_SCRUBBING'
+    | 'ONCHAIN_AML_CRYPTO';
   observedValue: string;
   likelihoodRatio: number;
   logOddsDelta: number;
@@ -1419,25 +1711,96 @@ export interface AdversarialAchFinding {
   nonDiagnosticFilteredCount: number;
   negativeLikelihoodRatio: number;
   logOddsPenalty: number;
-  verdict: 'SURVIVED_RED_TEAM' | 'WEAKENED_BY_STEELMAN' | 'REFUTED_NON_DIAGNOSTIC';
+  verdict:
+    | 'SURVIVED_RED_TEAM'
+    | 'WEAKENED_BY_STEELMAN'
+    | 'REFUTED_NON_DIAGNOSTIC'
+    | 'UNCORROBORATED_SINGLE_SOURCE';
   steelmanRationale: string;
   evidenceMatrix: AdversarialAchEvidenceItem[];
+  canonicalEventKey?: string;
+  corroborating_streams?: string[];
 }
 
 export interface AdversarialAchReport {
   targetEntity: string;
   generatedAtIso: string;
   totalFindingsEvaluated: number;
+  coreFindingsEvaluated?: number;
   survivedCount: number;
   weakenedCount: number;
   refutedCount: number;
+  uncorroboratedCount?: number;
   preRedTeamPosterior: number;
   postRedTeamPosterior: number;
+  leadLikelihoodRatio?: number;
+  leadLogOddsDelta?: number;
+  coreAchCalibrationLr?: number;
+  coreAchLogOddsDelta?: number;
   combinedNegativeLr: number;
   totalRedTeamLogOddsDelta: number;
   bulletproofThresholdMet: boolean;
+  benignControlsSummary?: string[];
   findings: AdversarialAchFinding[];
   executiveVerdict: string;
+}
+
+export interface CanonicalIdentityAnchor {
+  exactDomain: string;
+  canonicalName: string;
+  legalName?: string;
+  knownAliases: string[];
+  primaryEcosystem: string;
+  sectorKeywords: string[];
+  verifiedContractAddresses?: string[];
+}
+
+export interface QuarantinedCollisionRecord {
+  source:
+    | 'COURTLISTENER'
+    | 'OPENALEX'
+    | 'WEB_SEARCH'
+    | 'DEXSCREENER_ONCHAIN'
+    | 'GROUNDING_SOURCE'
+    | 'GRAPH_NODE'
+    | 'UK_COMPANIES_HOUSE'
+    | 'PROPUBLICA_990';
+  title: string;
+  url?: string;
+  matchedFragment?: string;
+  rejection_reason: 'ENTITY_COLLISION_FILTERED';
+  detail: string;
+}
+
+export interface LegalDbaPivotRecord {
+  legalEntityName: string;
+  brandAlias: string;
+  connectorPhrase: string;
+  sourceProvenance: 'LEGAL_DBA_EXTRACTION';
+  sourceCitation: string;
+  jurisdictionHint: string;
+  ukCompaniesHouseNumber?: string;
+  ukCompanyStatus?: string;
+  incorporationDate?: string;
+  registeredAddress?: string;
+  directors: string[];
+  pscsAndUbos: string[];
+  gleifLei?: string;
+  gleifStatus?: string;
+  secFilingsMatchedCount: number;
+  sanctionsOrOffshoreHits: string[];
+}
+
+export interface LegalDbaPivotTelemetry {
+  extractedLegalEntities: string[];
+  pivotsExecuted: LegalDbaPivotRecord[];
+  mergedDirectors: string[];
+  mergedPscsAndUbos: string[];
+  mergedIncorporationDates: string[];
+  mergedRegisteredAddresses: string[];
+  resolvedGleifLei?: string;
+  resolvedGleifStatus?: string;
+  summaryVerdict: string;
 }
 
 export interface MetadataAuthorPivotHit {
@@ -1512,6 +1875,9 @@ export interface LongitudinalSnapshot {
   peakBurstZScore: number;
   wikipediaLargeDeletionsCount: number;
   lobbyingFilingsCount: number;
+  githubRepoCount?: number;
+  wikipediaVerdict?: string | null;
+  tlsFingerprintSha256?: string | null;
 }
 
 export interface LongitudinalDeltaItem {
@@ -1844,11 +2210,37 @@ export interface LiveBusinessIntelligence {
     squadR?: string[];
     squadS?: string[];
     squadT?: string[];
+    squadU?: string[];
+    squadV?: string[];
+    squadW?: string[];
+    squadX?: string[];
+    squadY?: string[];
+    squadZ?: string[];
   };
+  hqResolutionSource?: string;
   sanitizedTarget?: SanitizedTargetQuery;
   proxyKinship?: ProxyKinshipTelemetry;
   politicalInfluence?: PoliticalInfluenceTelemetry;
   shadowInfraSubawards?: ShadowInfraSubawardTelemetry;
+  municipalFoia?: MunicipalFoiaTelemetry;
+  laborWarfare?: LaborWarfareTelemetry;
+  fccSpectrum?: FccSpectrumTelemetry;
+  globalBlacklistsOffshore?: GlobalBlacklistOffshoreTelemetry;
+  aviationShadowTrusts?: AviationShadowTrustTelemetry;
+  clientTechArchitecture?: ClientTechArchitectureTelemetry;
+  cloudIxpCompute?: CloudIxpComputeTelemetry;
+  breachVelocitySurface?: BreachVelocityTelemetry;
+  shellAddressClustering?: ShellAddressClusteringTelemetry;
+  adTechTosSurveillance?: AdTechTosSurveillanceTelemetry;
+  stackToPowerCapstone?: SovereignStackToPowerCapstoneTelemetry;
+  canonicalIdentityAnchor?: CanonicalIdentityAnchor;
+  quarantinedEntityCollisions?: QuarantinedCollisionRecord[];
+  legalDbaPivots?: LegalDbaPivotTelemetry;
+  globalBankingFlows?: GlobalBankingCapitalFlowsTelemetry;
+  primaryLegalEnforcement?: PrimaryLegalEnforcementTelemetry;
+  phoenixNewEndeavors?: PhoenixAndNewEndeavorsTelemetry;
+  crossCaseMemory?: CrossCaseMemoryTelemetry;
+  globalLegalCounsel?: GlobalLegalCounselTelemetry;
   shadowFinance?: ShadowFinanceTelemetry;
   cyberTelemetry?: CyberInfraTelemetry;
   swarmTelemetry?: SwarmBehaviorTelemetry;
@@ -1932,6 +2324,20 @@ export interface ProxyKinshipTelemetry {
     }>;
     sourceUrls: string[];
   };
+  institutional13fHolders?: Array<{
+    holderName: string;
+    filingDate?: string;
+    sharesOrValue?: string;
+    formType?: string;
+    sourceUrl: string;
+  }>;
+  boardInterlocks?: Array<{
+    personName: string;
+    organizations: string[];
+    sources: string[];
+    classification: 'BOARD_INTERLOCK';
+  }>;
+  ukCompaniesHouseUbo?: UkCompaniesHouseUboTelemetry;
   secFilingsPulledCount: number;
   summaryVerdict: string;
 }
@@ -1954,9 +2360,35 @@ export interface PoliticalInfluenceTelemetry {
     filingYear: number;
     filingPeriod: string;
     lobbyingIssues: string[];
+    governmentEntities?: string[];
+    specificIssues?: string[];
+    revolvingDoorLobbyists?: Array<{
+      name: string;
+      coveredPosition: string;
+    }>;
     contributionPayees: string[];
     url: string;
   }>;
+  revolvingDoorSummary?: {
+    totalFormerGovLobbyists: number;
+    targetedAgencies: string[];
+    specificBillsOrIssues: string[];
+    quarterlySpendUsd: number;
+    revolvingDoorRoster: Array<{
+      lobbyistName: string;
+      coveredPosition: string;
+      registrantName: string;
+      filingYear: number;
+      agencies: string[];
+      url: string;
+    }>;
+    agencyContractOverlaps: Array<{
+      agency: string;
+      lobbyingCount: number;
+      federalAwardCount: number;
+      federalObligatedUsd: number;
+    }>;
+  };
   openFecSummary: {
     apiMode: 'PUBLIC_DEMO_KEY' | 'ENV_KEY' | 'UNAVAILABLE';
     committees: Array<{
@@ -1979,6 +2411,32 @@ export interface PoliticalInfluenceTelemetry {
       count: number;
       url: string;
     }>;
+    partisanSplit?: {
+      demUsd: number;
+      repUsd: number;
+      indOtherUsd: number;
+      totalUsd: number;
+      demPct: number;
+      repPct: number;
+      indOtherPct: number;
+      topRecipientCommittees: Array<{
+        committeeName: string;
+        party: string;
+        totalAmountUsd: number;
+        count: number;
+      }>;
+    };
+    scheduleEIndependentExpenditures?: Array<{
+      committeeId: string;
+      committeeName: string;
+      candidateName: string;
+      candidateParty: string;
+      supportOppose: 'SUPPORT' | 'OPPOSE' | 'UNKNOWN';
+      amountUsd: number;
+      expenditureDate: string;
+      purpose: string;
+      url: string;
+    }>;
     totalPacDisbursementsUsd: number;
     totalExecutiveContributionsUsd: number;
   };
@@ -1993,6 +2451,137 @@ export interface PoliticalInfluenceTelemetry {
     totalAssetsUsd: number;
     matchReason: string;
     url: string;
+  }>;
+  regulationsGovComments?: RegulationsGovCommentRecord[];
+  summaryVerdict: string;
+}
+
+export interface MunicipalFoiaTelemetry {
+  totalCompletedRequests: number;
+  releases: Array<{
+    requestId: string;
+    title: string;
+    agencyName: string;
+    jurisdiction: string;
+    status: string;
+    datetimeDone: string;
+    category: 'ALPR_SURVEILLANCE' | 'MUNICIPAL_CONTRACT' | 'TAX_ABATEMENT' | 'POLICE_AUDIT' | 'GENERAL_FOIA';
+    fileCount: number;
+    url: string;
+  }>;
+  agenciesHit: string[];
+  surveillanceOrContractHits: number;
+  rawPayloadCaptured: boolean;
+  summaryVerdict: string;
+}
+
+export interface LaborWarfareTelemetry {
+  olmsPersuaderFilings: Array<{
+    formType: 'LM-10' | 'LM-20' | 'LM-21';
+    employerOrFiler: string;
+    consultantFirm: string;
+    filingYear: string;
+    snippet: string;
+    url: string;
+  }>;
+  warnActLayoffs: Array<{
+    noticeTitle: string;
+    stateOrJurisdiction: string;
+    noticeDate: string;
+    estimatedEmployees: number | null;
+    sourceUrl: string;
+  }>;
+  h1bLcaSignals: Array<{
+    title: string;
+    fiscalYear: string;
+    snippet: string;
+    sourceUrl: string;
+  }>;
+  layoffInsiderCorrelations: Array<{
+    layoffDate: string;
+    insiderFilingDate: string;
+    dayDelta: number;
+    formType: string;
+    accessionNumber: string;
+    note: string;
+  }>;
+  summaryVerdict: string;
+}
+
+export interface FccSpectrumTelemetry {
+  fccEquipmentAuthorizations: Array<{
+    fccId: string;
+    granteeCode: string;
+    granteeName: string;
+    productDescription: string;
+    frequencyBand: string;
+    grantDate: string;
+    prototypeRiskTag: 'SURVEILLANCE_RF' | 'DRONE_TELEMETRY' | 'EXPERIMENTAL_PROTOTYPE' | 'STANDARD_RF';
+    url: string;
+  }>;
+  ulsExperimentalLicenses: Array<{
+    callSign: string;
+    licenseeName: string;
+    serviceCode: string;
+    status: string;
+    grantDate: string;
+    locationOrFreq: string;
+    url: string;
+  }>;
+  summaryVerdict: string;
+}
+
+export interface GlobalBlacklistOffshoreTelemetry {
+  screenedEntityNames: string[];
+  screenedExecutiveNames: string[];
+  worldBankDebarments: Array<{
+    firmName: string;
+    country: string;
+    grounds: string;
+    fromDate: string;
+    toDate: string;
+    matchedTarget: string;
+    url: string;
+  }>;
+  samGovExclusions: Array<{
+    entityName: string;
+    exclusionType: string;
+    excludingAgency: string;
+    activeDate: string;
+    matchedTarget: string;
+    url: string;
+  }>;
+  icijOffshoreLeaksHits: Array<{
+    nodeName: string;
+    dataset: string;
+    jurisdiction: string;
+    matchedQuery: string;
+    matchBasis: 'EXACT_ENTITY' | 'EXECUTIVE_NAME_CHECK';
+    url: string;
+  }>;
+  totalVerifiedHits: number;
+  cleanScreeningBenignControl: boolean;
+  summaryVerdict: string;
+}
+
+export interface AviationShadowTrustTelemetry {
+  hqZipCodesChecked: string[];
+  aircraftRecords: Array<{
+    nNumber: string;
+    registrantName: string;
+    aircraftModel: string;
+    cityStateZip: string;
+    isShadowTrust: boolean;
+    trusteeInstitution?: string;
+    zipMatchesHq: boolean;
+    sourceUrl: string;
+  }>;
+  maWindowCorrelations: Array<{
+    nNumber: string;
+    trusteeOrRegistrant: string;
+    sec8kDate: string;
+    sec8kTitle: string;
+    correlationNote: string;
   }>;
   summaryVerdict: string;
 }
@@ -2187,4 +2776,617 @@ export interface PlanetaryRegistryIngestResponse {
   sources: PlanetarySourceIngestReport[];
   stats: PlanetaryRegistryStats;
 }
+
+// =============================================================================
+// v29.0 FULL-ALPHABET SOVEREIGN ARCHITECTURE (SQUADS U–Z · 260 AGENTS)
+// =============================================================================
+
+export interface ClientTechArchitectureTelemetry {
+  primaryDomain: string;
+  homepageFetched: boolean;
+  jsBundlesInspected: Array<{
+    url: string;
+    bytesRead: number;
+    apiRoutesFound: string[];
+    featureFlagsFound: string[];
+    stagingHostsFound: string[];
+    fingerprintingSignatures: string[];
+  }>;
+  discoveredApiRoutes: string[];
+  discoveredFeatureFlags: string[];
+  stagingOrInternalHosts: string[];
+  fingerprintingSignatures: string[];
+  publicSchemaEndpoints: Array<{
+    path: string;
+    url: string;
+    httpStatus: number;
+    exposed: boolean;
+    summary: string;
+  }>;
+  mobileAppIds: {
+    androidPackages: string[];
+    iosBundleIds: string[];
+  };
+  exodusPrivacyReports: Array<{
+    handle: string;
+    appName: string;
+    trackersCount: number;
+    permissionsCount: number;
+    trackers: string[];
+    reportUrl: string;
+    sourceMode: 'EXODUS_API_TOKEN' | 'PUBLIC_FALLBACK';
+  }>;
+  summaryVerdict: string;
+}
+
+export interface CloudIxpComputeTelemetry {
+  peeringDbNetworks: Array<{
+    asn: string;
+    networkName: string;
+    infoType: string;
+    infoTraffic: string;
+    policyGeneral: string;
+    ixpCount: number;
+    facilityCount: number;
+    ixps: string[];
+    facilities: string[];
+    url: string;
+  }>;
+  colocationFacilities: string[];
+  ixpExchanges: string[];
+  tier1TransitDependencies: string[];
+  huggingFaceModels: Array<{
+    modelId: string;
+    author: string;
+    pipelineTag: string;
+    downloads: number;
+    likes: number;
+    baseModelOrTags: string[];
+    url: string;
+  }>;
+  dockerHubRepos: Array<{
+    namespace: string;
+    name: string;
+    pullCount: number;
+    starCount: number;
+    lastUpdated: string;
+    url: string;
+  }>;
+  cloudCdnChains: Array<{
+    provider: 'AWS' | 'GCP' | 'AZURE' | 'CLOUDFLARE' | 'AKAMAI' | 'FASTLY' | 'OTHER';
+    evidenceHost: string;
+    signalType: 'DNS_CNAME' | 'ASN_HOLDER' | 'SUBDOMAIN_PATTERN';
+  }>;
+  summaryVerdict: string;
+}
+
+export interface BreachVelocityTelemetry {
+  stateAgBreaches: Array<{
+    sourceAgency: 'WA_STATE_AG' | 'CA_STATE_AG' | 'TX_STATE_AG' | 'STATE_AG_PUBLIC';
+    organizationName: string;
+    breachStartDate: string;
+    notificationDate: string;
+    notificationDelayDays: number | null;
+    residentsAffected: number | null;
+    breachType: string;
+    url: string;
+  }>;
+  averageNotificationDelayDays: number | null;
+  maxNotificationDelayDays: number | null;
+  totalAffectedResidents: number;
+  passiveExposureChecks: Array<{
+    path: string;
+    url: string;
+    httpStatus: number;
+    exposed: boolean;
+    classification: 'EXPOSED_CRITICAL' | 'DISALLOWED_ADMIN_STAGING' | 'BENIGN_CONTROL';
+    detail: string;
+  }>;
+  robotsDisallowedAdminPaths: string[];
+  securityTxtFound: boolean;
+  correlatedKevCount: number;
+  correlatedVtMalicious: number;
+  correlatedOtxPulses: number;
+  cleanExposureBenignControl: boolean;
+  summaryVerdict: string;
+}
+
+export interface ShellAddressClusteringTelemetry {
+  clusteredAddresses: Array<{
+    normalizedAddress: string;
+    zipOrJurisdiction: string;
+    entitiesAtAddress: string[];
+    sources: string[];
+    entityCount: number;
+    clusterClassification: 'MAIL_DROP_REGISTERED_AGENT_SHELL' | 'OFFSHORE_FIDUCIARY_SUITE' | 'PHYSICAL_OPERATIONAL_HQ';
+    matchedRegisteredAgentPattern?: string;
+  }>;
+  mailDropClusterCount: number;
+  offshoreSuiteCount: number;
+  physicalHqAddress: string;
+  infrastructurePermitsAndPuc: Array<{
+    jurisdiction: string;
+    sourceCategory: 'MUNICIPAL_ZONING' | 'STATE_PUC_POWER_WATER' | 'INDUSTRIAL_DATACENTER_PERMIT';
+    title: string;
+    snippet: string;
+    url: string;
+  }>;
+  summaryVerdict: string;
+}
+
+export interface AdTechTosSurveillanceTelemetry {
+  primaryDomain: string;
+  adsTxtDirectCount: number;
+  adsTxtResellerCount: number;
+  adsTxtExchanges: Array<{
+    exchangeDomain: string;
+    publisherAccountId: string;
+    relationship: 'DIRECT' | 'RESELLER';
+    certAuthorityId?: string;
+    sourceFile: 'ads.txt' | 'app-ads.txt';
+  }>;
+  sellersJsonSellersCount: number;
+  sellersJsonSample: Array<{
+    sellerId: string;
+    name: string;
+    domain: string;
+    sellerType: string;
+  }>;
+  policyWaybackClauseDiffs: Array<{
+    policyPath: '/terms' | '/privacy';
+    clauseCategory: 'FORCED_ARBITRATION' | 'CLASS_ACTION_WAIVER' | 'BIOMETRIC_TELEMETRY' | 'AI_MODEL_TRAINING';
+    status: 'INSERTED_IN_LATEST' | 'PRESENT_IN_BOTH' | 'REMOVED_IN_LATEST';
+    earliestSnapshotTimestamp: string;
+    latestSnapshotTimestamp: string;
+    excerpt: string;
+    waybackUrl: string;
+  }>;
+  tosdrSummary: {
+    serviceName: string;
+    ratingGrade: string;
+    score: number | null;
+    serviceUrl: string;
+    notableCases: string[];
+  } | null;
+  euDsaGdprNotices: Array<{
+    regulator: string;
+    title: string;
+    snippet: string;
+    url: string;
+  }>;
+  summaryVerdict: string;
+}
+
+export interface SovereignStackToPowerCapstoneTelemetry {
+  generatedAtIso: string;
+  stackToPowerChain: Array<{
+    layerOrder: number;
+    layerCode: 'V_BARE_METAL_IXP' | 'U_Y_CLIENT_ADTECH' | 'G_W_BREACH_EXPOSURE' | 'Q_X_SHELL_CLUSTERS' | 'P_R_LOBBYING_COURTS';
+    layerTitle: string;
+    squads: string[];
+    verifiedSignalCount: number;
+    keyFindings: string[];
+  }>;
+  activeCoverUpAlerts: Array<{
+    alertType:
+      | 'DELETED_GITHUB_REPOS'
+      | 'SUDDEN_WIKIPEDIA_WHITEWASH'
+      | 'TLS_CERT_ROTATION'
+      | 'SCRUBBED_POLICY_OR_SILENT_DELETION';
+    severity: 'CRITICAL' | 'HIGH' | 'MEDIUM';
+    beforeValue: string;
+    afterValue: string;
+    summary: string;
+  }>;
+  coverUpBaselineStatus: 'PRIOR_SNAPSHOT_COMPARED' | 'INITIAL_BASELINE_CAPTURED';
+  executiveSnapshotMetrics: {
+    jsEndpointsCount: number;
+    mobileTrackersCount: number;
+    ixpAndColoCount: number;
+    cloudProviders: string[];
+    adTechResellersCount: number;
+    maxBreachDelayDays: number | null;
+    mailDropShellClustersCount: number;
+    activeCoverUpAlertsCount: number;
+  };
+  summaryVerdict: string;
+}
+
+// =============================================================================
+// v30.0 GLOBAL "FOLLOW THE MONEY", BANKING, OFFSHORE FLOWS & NEW-ENDEAVOR TYPES
+// =============================================================================
+
+export interface MultiHopTreasuryFlowRecord {
+  chain: 'EVM' | 'SOLANA' | 'BITCOIN';
+  hopDepth: 1 | 2 | 3;
+  sourceAddress: string;
+  intermediaryAddress?: string;
+  destinationAddress: string;
+  destinationLabel: string;
+  destinationCategory:
+    | 'CEX_DEPOSIT_HOT_WALLET'
+    | 'INSTITUTIONAL_CUSTODIAN'
+    | 'CROSS_CHAIN_BRIDGE'
+    | 'STABLECOIN_MINT_BURN'
+    | 'SANCTIONED_OR_MIXER'
+    | 'UNLABELED_CLUSTER';
+  assetSymbol: string;
+  amountNative: number;
+  amountUsdEstimate?: number | null;
+  txHash: string;
+  timestampIso: string;
+  explorerUrl: string;
+}
+
+export interface SynchronizedCashoutAlert {
+  alertId: string;
+  severity: 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  deltaDays: number;
+  timingRelation: 'BEFORE_EVENT' | 'AFTER_EVENT' | 'SAME_DAY';
+  treasuryFlowTxHash: string;
+  destinationLabel: string;
+  destinationCategory: MultiHopTreasuryFlowRecord['destinationCategory'];
+  outflowAmountNative: number;
+  assetSymbol: string;
+  outflowTimestampIso: string;
+  correlatedEventStream: string;
+  correlatedEventTitle: string;
+  correlatedEventDateIso: string;
+  narrative: string;
+}
+
+export interface GlobalBankingCapitalFlowsTelemetry {
+  formDCapTableOfferings: Array<{
+    issuerName: string;
+    cik: string;
+    filingDate: string;
+    totalOfferingUsd: number | null;
+    totalAmountSoldUsd: number | null;
+    exemptionTypes: string[];
+    relatedPersons: string[];
+    filingUrl: string;
+  }>;
+  formAdvInstitutionalBackers: Array<{
+    adviserName: string;
+    crdOrCik: string;
+    filingDate: string;
+    estimatedAumNote: string;
+    offshoreJurisdictions: string[];
+    sourceUrl: string;
+  }>;
+  creditFacilitiesAndCharges: Array<{
+    source: 'SEC_CREDIT_AGREEMENT' | 'UK_COMPANIES_HOUSE_CHARGE';
+    entityName: string;
+    lenderOrChargee: string;
+    facilityRole: 'SYNDICATE_BANK' | 'COMMERCIAL_LENDER' | 'COLLATERAL_AGENT' | 'ESCROW_BANK' | 'SECURED_CHARGEE';
+    dateIso: string;
+    amountOrSecurityNote: string;
+    jurisdiction: string;
+    status: string;
+    sourceUrl: string;
+  }>;
+  namedBanksAndPaymentRails: Array<{
+    institutionName: string;
+    role: 'COMMERCIAL_BANK' | 'CORRESPONDENT_BANK' | 'CUSTODIAN_BANK' | 'EMI_PAYMENT_PROCESSOR' | 'OFFSHORE_BANK' | 'REGULATED_MSB';
+    jurisdiction: string;
+    sourceEvidence: string;
+    sourceUrl: string;
+  }>;
+  offshoreBankingJurisdictions: Array<{
+    jurisdiction: string;
+    mentionCount: number;
+    sources: string[];
+    contextExcerpt: string;
+  }>;
+  procurementPrimeToSubFlows: Array<{
+    awardId: string;
+    awardingAgency: string;
+    primeRecipient: string;
+    subRecipient: string;
+    amountUsd: number;
+    actionDate: string;
+    awardType: 'PRIME_CONTRACT' | 'SUB_AWARD' | 'SOLE_SOURCE_OR_MOD';
+    description: string;
+    url: string;
+  }>;
+  totalFormDOfferingUsd: number;
+  totalProcurementFlowUsd: number;
+  summaryVerdict: string;
+}
+
+export interface RecapExtractedDocument {
+  docketTitle: string;
+  docketUrl: string;
+  court: string;
+  filingDate: string;
+  documentSource: 'RECAP_FREE_PDF' | 'RECAP_PLAINTEXT' | 'COURTLISTENER_OPINION_TEXT';
+  extractedCoDefendants: string[];
+  extractedBanksAndWireIntermediaries: string[];
+  extractedDollarDamages: string[];
+  extractedWalletAddresses: Array<{
+    chain: 'EVM' | 'SOLANA' | 'BITCOIN';
+    address: string;
+  }>;
+  extractedShellOrOffshoreEntities: string[];
+  textSampleChars: number;
+}
+
+export interface GlobalRegulatoryEnforcementHit {
+  agency:
+    | 'SEC_LITIGATION'
+    | 'CFTC_ENFORCEMENT'
+    | 'DOJ_PRESS'
+    | 'FINCEN_ADVISORY'
+    | 'UK_FCA_WARNING'
+    | 'FTC_ENFORCEMENT'
+    | 'CFPB_ENFORCEMENT'
+    | 'EC_COMPETITION';
+  title: string;
+  publishedDateIso: string;
+  summary: string;
+  url: string;
+}
+
+export interface PrimaryLegalEnforcementTelemetry {
+  recapDocumentsMined: RecapExtractedDocument[];
+  globalEnforcementHits: GlobalRegulatoryEnforcementHit[];
+  pivotsEnqueuedToPhase4: Array<{
+    entityName: string;
+    category: 'BANK_OR_INTERMEDIARY' | 'CO_DEFENDANT' | 'SHELL_OR_OFFSHORE' | 'WALLET_ADDRESS';
+    sourceDocket: string;
+  }>;
+  feedsQueried: string[];
+  summaryVerdict: string;
+}
+
+export interface PhoenixCompanyAlert {
+  dissolvedEntityName: string;
+  dissolvedDateIso: string;
+  successorEntityName: string;
+  incorporatedDateIso: string;
+  gapDays: number;
+  overlappingDirectors: string[];
+  overlappingAddressOrSector: string;
+  jurisdiction: string;
+  severity: 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  rationale: string;
+}
+
+export interface OutwardOfficerEntityPivot {
+  principalName: string;
+  principalRole: string;
+  affiliatedEntityName: string;
+  entityStatus: string;
+  incorporationDateIso: string;
+  dissolutionDateIso?: string;
+  jurisdiction: string;
+  registeredAddress?: string;
+  sourceRegistry: 'UK_COMPANIES_HOUSE' | 'SEC_FORM_D' | 'ICIJ_OFFSHORE_LEAKS' | 'GITHUB_MAINTAINER_DNA';
+  isRecentIncorporation18m: boolean;
+  sourceUrl: string;
+}
+
+export interface NewEndeavorRadarHit {
+  signalType:
+    | 'RECENT_INCORPORATION_18M'
+    | 'FRESH_DOMAIN_OR_TLS_SAN'
+    | 'PUBLIC_TRADEMARK_FILING'
+    | 'GITHUB_COMMIT_EMAIL_DNA';
+  label: string;
+  detectedDateIso: string;
+  linkedPrincipalOrDna: string;
+  detail: string;
+  url: string;
+}
+
+export interface PhoenixAndNewEndeavorsTelemetry {
+  principalsPivoted: string[];
+  affiliatedEntities: OutwardOfficerEntityPivot[];
+  phoenixCompanyAlerts: PhoenixCompanyAlert[];
+  newEndeavorRadar: NewEndeavorRadarHit[];
+  githubCommitEmailDna: Array<{
+    authorName: string;
+    emailDomain: string;
+    reposObserved: string[];
+    profileUrl: string;
+  }>;
+  summaryVerdict: string;
+}
+
+export type GlobalEntityFingerprintType =
+  | 'CANONICAL_ENTITY'
+  | 'LEGAL_DBA_ENTITY'
+  | 'DIRECTOR_OR_PSC'
+  | 'NAMED_BANK'
+  | 'OFFSHORE_INTERMEDIARY'
+  | 'WALLET_ADDRESS'
+  | 'SHELL_ADDRESS';
+
+export interface GlobalEntityFingerprintInput {
+  fingerprintType: GlobalEntityFingerprintType;
+  rawLabel: string;
+  sourceModule: string;
+  metadataNote?: string;
+}
+
+export interface CrossCaseEntityCollisionRecord {
+  fingerprintKey: string;
+  fingerprintType: GlobalEntityFingerprintType;
+  matchedLabel: string;
+  priorInvestigationId: string;
+  priorTargetEntity: string;
+  priorRecordedAtIso: string;
+  priorSourceModule: string;
+  currentSourceModule: string;
+  severity: 'MEDIUM' | 'HIGH' | 'CRITICAL';
+  collisionScope?: 'CROSS_TARGET' | 'SAME_TARGET_PRIOR_RUN';
+}
+
+export interface CrossCaseMemoryTelemetry {
+  fingerprintsCheckedCount: number;
+  priorInvestigationsMatched: number;
+  collisions: CrossCaseEntityCollisionRecord[];
+  crossTargetCollisions?: CrossCaseEntityCollisionRecord[];
+  sameTargetPriorRuns?: CrossCaseEntityCollisionRecord[];
+  summaryVerdict: string;
+}
+
+export interface FollowTheMoneySankeyNode {
+  id: string;
+  label: string;
+  column: 0 | 1 | 2 | 3;
+  category: 'INFLOW' | 'OPERATING_ENTITY' | 'BANK_OR_RAIL' | 'OUTFLOW_OR_ENDEAVOR';
+  valueLabel: string;
+  url?: string;
+}
+
+export interface FollowTheMoneySankeyLink {
+  sourceId: string;
+  targetId: string;
+  weight: number;
+  label: string;
+}
+
+export interface FollowTheMoneySankeyData {
+  entityName: string;
+  nodes: FollowTheMoneySankeyNode[];
+  links: FollowTheMoneySankeyLink[];
+  summaryLines: string[];
+}
+
+// =============================================================================
+// v31.0 GLOBAL LEGAL COUNSEL ENGINE (SQUADS P & Z)
+// =============================================================================
+
+export interface EcfrRegulationReference {
+  titleNumber: number;
+  titleName: string;
+  sectionCitation: string;
+  heading: string;
+  excerpt: string;
+  sectorTrigger: string;
+  url: string;
+}
+
+export interface ControllingPrecedentReference {
+  caseName: string;
+  citation: string;
+  court: string;
+  dateFiled: string;
+  suitOrIssueCategory: string;
+  snippet: string;
+  url: string;
+}
+
+export interface UkEuLegalReference {
+  jurisdiction: 'UK_STATUTE' | 'UK_CASE_LAW' | 'EU_REGULATION_DIRECTIVE';
+  citation: string;
+  title: string;
+  dateOrYear: string;
+  relevanceTrigger: string;
+  excerpt: string;
+  url: string;
+}
+
+export interface StatutoryExposureRow {
+  jurisdiction: string;
+  statuteOrRegulation: string;
+  liveCitationUrl: string;
+  statutoryElements: string;
+  verifiedEvidenceAnchor: string;
+  evidentiaryStrength: 'STRONG' | 'MODERATE' | 'GAP';
+  missingProofRequired: string;
+}
+
+export interface CorporateVeilLiabilityAssessment {
+  overallVeilIntegrity: 'SEPARATE_CORPORATE_STRUCTURE' | 'ELEVATED_VEIL_RISK' | 'HIGH_ALTER_EGO_OR_CONTROL_EXPOSURE';
+  alterEgoFactorsObserved: string[];
+  controlPersonExposureSummary: string;
+  ukPscAndDirectorDisqualificationSummary: string;
+  offshoreOrPhoenixTransferIndicators: string[];
+  verifiedPrincipalsReferenced: string[];
+}
+
+export interface OpposingCounselDefenseSim {
+  defenseId: string;
+  motionOrDefenseGround: string;
+  opposingCounselArgument: string;
+  prosecutorialRebuttal: string;
+  candidAssessment: 'PROSECUTION_SURVIVES_MTD' | 'CONTESTED_FACT_ISSUE' | 'DEFENSE_LIKELY_PREVAILS';
+}
+
+export interface StatuteOfLimitationsClockRow {
+  claimOrStatute: string;
+  jurisdiction: string;
+  statutoryWindowYears: number;
+  earliestVerifiedEventDate: string;
+  latestVerifiedEventDate: string;
+  estimatedExpirationWindow: string;
+  tollingDoctrineNote: string;
+}
+
+export interface EvidentiaryAdmissibilityCert {
+  fre901AuthenticationBasis: string;
+  fre902_13_ElectronicRecordsBasis: string;
+  fre902_14_CertifiedCopyHashBasis: string;
+  sha256ManifestFile: string;
+  merkleRootHex: string;
+  ed25519PublicKeyFile: string;
+  rfc3161TsaStatus: string;
+  bitcoinAnchorStatus: string;
+  chainOfCustodyGaps: string[];
+}
+
+export interface RegulatoryReferralTemplate {
+  referralId: string;
+  targetAgency: string;
+  programOrChannel: string;
+  jurisdiction: string;
+  whistleblowerBountyEligibility: string;
+  statutoryBasis: string;
+  executiveFactSummary: string;
+  keyAttachedArtifacts: string[];
+  recommendedEnforcementRelief: string;
+}
+
+export interface TargetedFoiaRequestTemplate {
+  requestId: string;
+  regime: 'US_FOIA_5_USC_552' | 'UK_FOI_ACT_2000' | 'EU_REG_1049_2001' | 'STATE_PUBLIC_RECORDS';
+  recipientAgency: string;
+  gapAddressed: string;
+  recordsRequestedText: string;
+  dateRange: string;
+}
+
+export interface GlobalLegalCounselTelemetry {
+  generatedAtIso: string;
+  disclaimer: string;
+  detectedJurisdictions: string[];
+  detectedSectorTriggers: string[];
+  ukNexusDetected: boolean;
+  euNexusDetected: boolean;
+  offshoreCrossBorderDiscoveryEligible: boolean;
+  ecfrRegulations: EcfrRegulationReference[];
+  controllingPrecedents: ControllingPrecedentReference[];
+  ukLegislationHits: UkEuLegalReference[];
+  ukCaseLawHits: UkEuLegalReference[];
+  eurLexHits: UkEuLegalReference[];
+  apisQueried: string[];
+  statutoryExposureMatrix: StatutoryExposureRow[];
+  venueAndForumAnalysis: {
+    activeVenues: string[];
+    forcedArbitrationEnforceability: string;
+    crossBorderDiscovery1782Analysis: string;
+  };
+  corporateVeilAssessment: CorporateVeilLiabilityAssessment;
+  opposingCounselSimulations: OpposingCounselDefenseSim[];
+  statuteOfLimitationsClocks: StatuteOfLimitationsClockRow[];
+  regulatoryReferrals: RegulatoryReferralTemplate[];
+  targetedFoiaTemplates: TargetedFoiaRequestTemplate[];
+  overallLegalExposureTier: 'LOW_BASELINE' | 'MODERATE_REGULATORY_WATCH' | 'ELEVATED_ENFORCEMENT_EXPOSURE' | 'CRITICAL_MULTI_JURISDICTION_EXPOSURE';
+  summaryVerdict: string;
+}
+
+
+
 
